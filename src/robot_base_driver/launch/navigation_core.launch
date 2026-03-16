@@ -1,0 +1,40 @@
+<launch>
+    <!-- true: 室外融合GPS，false: 室内仅里程计/LIO -->
+    <arg name="outdoor_mode" default="true" />
+    <arg name="imu_topic" default="/imu/data" />
+
+    <!-- 1) 底盘驱动：发布 /odom 与 /gps/fix -->
+    <node pkg="robot_base_driver" type="base_driver_node.py" name="base_driver" output="screen" />
+
+    <!-- 2) 本地EKF：融合 /odom + /Odometry，产出 /odometry/local -->
+    <node pkg="robot_localization" type="ekf_localization_node" name="ekf_local" clear_params="true" output="screen">
+        <rosparam command="load" file="$(find robot_base_driver)/config/ekf_local.yaml" />
+        <remap from="odometry/filtered" to="/odometry/local" />
+    </node>
+
+    <!-- 3) 室外：GPS转里程计 + 全局EKF -->
+    <group if="$(arg outdoor_mode)">
+        <node pkg="robot_localization" type="navsat_transform_node" name="navsat_transform" clear_params="true" output="screen">
+            <remap from="gps/fix" to="/gps/fix" />
+            <remap from="imu/data" to="$(arg imu_topic)" />
+            <remap from="odometry/filtered" to="/odometry/local" />
+            <param name="frequency" value="30" />
+            <param name="wait_for_datum" value="false" />
+            <param name="zero_altitude" value="true" />
+            <param name="publish_filtered_gps" value="true" />
+            <param name="use_odometry_yaw" value="true" />
+            <param name="broadcast_cartesian_transform" value="true" />
+            <param name="broadcast_cartesian_transform_as_parent_frame" value="true" />
+        </node>
+
+        <node pkg="robot_localization" type="ekf_localization_node" name="ekf_global" clear_params="true" output="screen">
+            <rosparam command="load" file="$(find robot_base_driver)/config/ekf_global.yaml" />
+            <remap from="odometry/filtered" to="/odometry/global" />
+        </node>
+    </group>
+
+    <!-- 4) 室内：给 map->odom 固定变换，方便全局规划使用 map 坐标 -->
+    <group unless="$(arg outdoor_mode)">
+        <node pkg="tf" type="static_transform_publisher" name="map_to_odom" args="0 0 0 0 0 0 map odom 100" />
+    </group>
+</launch>

@@ -1,0 +1,27 @@
+<launch>
+    <!-- 串口参数 -->
+    <arg name="port" default="/dev/ttyUSB0"/>
+    <arg name="baudrate" default="115200"/>
+
+    <!-- 机器人参数 -->
+    <arg name="wheelbase" default="0.67"/>
+    <arg name="wheel_radius" default="0.1275"/>
+
+    <!-- 坐标系参数 -->
+    <arg name="base_frame" default="base_link"/>
+    <arg name="odom_frame" default="odom"/>
+
+    <!-- 启动底盘驱动节点 -->
+    <node pkg="robot_base_driver" type="base_driver_node.py" name="robot_base_driver" output="screen">
+        <param name="port" value="$(arg port)"/>
+        <param name="baudrate" value="$(arg baudrate)"/>
+        <param name="wheelbase" value="$(arg wheelbase)"/>
+        <param name="wheel_radius" value="$(arg wheel_radius)"/>
+        <param name="base_frame" value="$(arg base_frame)"/>
+        <param name="odom_frame" value="$(arg odom_frame)"/>
+    </node>
+
+    <!-- 静态 TF 发布: base_link 到 laser_link -->
+    <!-- 根据实际安装位置修改 args: x y z yaw pitch roll -->
+    <node pkg="tf" type="static_transform_publisher" name="base_to_laser" args="0.1 0 0.5 0 0 0 base_link laser_link 100" />
+</launch>
