@@ -1,0 +1,88 @@
+<launch>
+    <!-- 真车完整部署 launch，包含底盘驱动、Livox、点云->scan、静态TF 和 Neupan 节点（含模型参数） -->
+
+    <!-- 基本参数 -->
+    <arg name="port" default="/dev/ttyUSB0"/>
+    <arg name="baudrate" default="115200"/>
+    <arg name="base_frame" default="base_link"/>
+    <arg name="odom_frame" default="odom"/>
+    <arg name="wheelbase" default="0.67"/>
+
+    <arg name="rviz_enable" default="false"/>
+    <arg name="publish_freq" default="10.0"/>
+    <arg name="msg_frame_id" default="livox_frame"/>
+    <arg name="xfer_format" default="0"/> <!-- 0: PointCloud2 -->
+
+    <!-- pointcloud_to_laserscan 参数，可由外部覆盖 -->
+    <arg name="pc_min_height" default="0.2"/> <!-- 最小高度：过滤掉雷达安装平面以下的点（如车体、地面），需高于雷达实际安装高度 -->
+    <arg name="pc_max_height" default="0.8"/> <!-- 最大高度：过滤掉过高的点（如天花板），只保留需要避障的高度范围 -->
+    <arg name="pc_range_min" default="0.4"/> <!-- 最小距离：雷达为中心，此半径内的点被忽略（盲区），用于过滤车头/自身结构 -->
+    <arg name="pc_range_max" default="30.0"/> <!-- 最大距离：超过此距离的点被忽略 -->
+    <arg name="pc_angle_increment" default="0.0087"/> <!-- 角度增量：生成的 LaserScan 数据的角度分辨率（弧度） -->
+
+    <!-- Neupan 参数 -->
+    <arg name="config_file" default='$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml'/>
+    <arg name="map_frame" default='odom'/>
+    <arg name="lidar_frame" default='base_link'/>
+    <arg name="scan_downsample" default='1'/>
+    <arg name="scan_range" default='0.1 50.0'/>
+    <arg name="scan_angle_range" default='-3.14 3.14'/>
+    <arg name="dune_checkpoint" default='$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth'/>
+    <arg name="refresh_initial_path" default='true'/>
+
+    <!-- 1. 启动底盘驱动 -->
+    <include file="$(find robot_base_driver)/launch/driver.launch">
+        <arg name="port" value="$(arg port)"/>
+        <arg name="baudrate" value="$(arg baudrate)"/>
+        <arg name="base_frame" value="$(arg base_frame)"/>
+        <arg name="odom_frame" value="$(arg odom_frame)"/>
+        <arg name="wheelbase" value="$(arg wheelbase)"/>
+    </include>
+
+    <!-- 2. 启动 Livox 雷达 -->
+    <include file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch">
+        <arg name="rviz_enable" value="$(arg rviz_enable)"/>
+        <arg name="publish_freq" value="$(arg publish_freq)"/>
+        <arg name="msg_frame_id" value="$(arg msg_frame_id)"/>
+        <arg name="xfer_format" value="$(arg xfer_format)"/>
+    </include>
+
+    <!-- 3. 静态 TF（雷达 -> 底盘） -->
+    <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 $(arg base_frame) $(arg msg_frame_id) 100"/>
+
+    <!-- 4. 点云转 LaserScan -->
+    <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan">
+        <remap from="cloud_in" to="/livox/lidar"/>
+        <remap from="scan" to="/scan"/>
+        <param name="target_frame" value="$(arg base_frame)"/>
+        <param name="transform_tolerance" value="0.01"/>
+        <param name="min_height" value="$(arg pc_min_height)"/>
+        <param name="max_height" value="$(arg pc_max_height)"/>
+        <param name="angle_min" value="-3.14159"/>
+        <param name="angle_max" value="3.14159"/>
+        <param name="angle_increment" value="$(arg pc_angle_increment)"/>
+        <param name="scan_time" value="0.1"/>
+        <param name="range_min" value="$(arg pc_range_min)"/>
+        <param name="range_max" value="$(arg pc_range_max)"/>
+        <param name="use_inf" value="true"/>
+    </node>
+
+    <!-- 5. Neupan 节点 -->
+    <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
+        <param name="config_file" value="$(arg config_file)"/>
+        <param name="map_frame" value="$(arg map_frame)"/>
+        <param name="base_frame" value="$(arg base_frame)"/>
+        <param name="lidar_frame" value="$(arg lidar_frame)"/>
+        <param name="scan_downsample" value="$(arg scan_downsample)"/>
+        <param name="scan_range" value="$(arg scan_range)"/>
+        <param name="scan_angle_range" value="$(arg scan_angle_range)"/>
+        <param name="marker_size" value="0.05"/>
+        <param name="marker_z" value="0.3"/>
+        <param name="dune_checkpoint" value="$(arg dune_checkpoint)"/>
+        <param name="refresh_initial_path" value="$(arg refresh_initial_path)"/>
+
+        <!-- remap 输出到底盘（匹配底盘实际订阅的话题） -->
+        <remap from="/neupan_goal" to="/move_base_simple/goal"/>
+    </node>
+
+</launch>
