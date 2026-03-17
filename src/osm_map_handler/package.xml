@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>osm_map_handler</name>
+  <version>0.0.1</version>
+  <description>Handler for OSM tiles and road-level grid map generation</description>
+  <maintainer email="nuc@todo.todo">nuc</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+</package>
