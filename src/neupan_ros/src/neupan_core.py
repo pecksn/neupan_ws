@@ -53,7 +53,8 @@ class neupan_core:
 
         self.scan_downsample = int(rospy.get_param("~scan_downsample", "1"))
 
-        scan_range_para = rospy.get_param("~scan_range", "0.0, 5.0")
+        scan_range_para = rospy.get_param("~scan_range", "0.0 5.0")
+        scan_range_para = scan_range_para.replace(",", " ")
         self.scan_range = np.fromstring(scan_range_para, dtype=np.float32, sep=" ")
 
         self.dune_checkpoint = rospy.get_param("~dune_checkpoint", None)
@@ -280,6 +281,10 @@ class neupan_core:
             return
 
     def path_callback(self, path):
+
+        if not path.poses or len(path.poses) == 0:
+            rospy.logwarn("Received empty path from Hybrid A*, ignoring...")
+            return
 
         initial_point_list = []
 

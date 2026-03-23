@@ -1,70 +1,112 @@
 <launch>
-    <!-- 运行模式 -->
-    <arg name="outdoor_mode" default="false" />
-    <arg name="indoor_map_file" default="/home/nuc/lxw//maps/my_indoor_map.yaml" />
-    <arg name="imu_topic" default="/imu/data" />
-    <arg name="enable_livox_driver" default="false" />
-    <arg name="enable_rviz" default="true" />
+    <!-- ==================== 1. 全局运行模式配置 ==================== -->
+    <arg name="outdoor_mode"        default="false" doc="true: 室外GPS地图 | false: 室内栅格地图"/>
+    <!-- 开启此项提供高精度激光里程计 /Odometry -->
+    <arg name="run_fast_lio_slam"   default="false"  doc="是否启动 FAST-LIO 激光里程计" />
+    <arg name="use_amcl_indoor"     default="true" doc="在室内是否使用 AMCL 对齐 Map 与 Odom (依赖静态地图)" />
+    
+    <!-- 基础传感器配置 -->
+    <arg name="enable_livox_driver" default="true"  doc="实车必须开启雷达驱动"/>
+    <arg name="enable_rviz"         default="true" />
+    <arg name="imu_topic"           default="/imu/data" />
+    <arg name="indoor_map_file"     default="/home/nuc/lxw/maps/my_corridor_fastlio.yaml" />
 
-    <!-- 1) 状态估计与底盘通信 -->
+    <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
         <arg name="outdoor_mode" value="$(arg outdoor_mode)" />
-        <arg name="imu_topic" value="$(arg imu_topic)" />
+        <arg name="imu_topic"    value="$(arg imu_topic)" />
     </include>
 
-    <!-- 2) 雷达驱动 -->
+    <!-- ==================== 3. 激光雷达 & 3D转2D处理 ==================== -->
+    <!-- 3.1 启动 Livox MID360 -->
     <group if="$(arg enable_livox_driver)">
         <include file="$(find livox_ros_driver2)/launch_ROS1/rviz_MID360.launch">
-            <arg name="rviz_enable" value="false"/>
+            <arg name="rviz_enable"  value="false"/>
             <arg name="msg_frame_id" value="livox_frame"/>
-            <arg name="xfer_format" value="0"/>
+            <!-- pointcloud_to_laserscan 需要标准点云 0 或 2 -->
+            <arg name="xfer_format"  value="0"/>
         </include>
     </group>
 
-    <!-- 3) 雷达外参与2D激光投影 -->
+    <!-- 3.2 雷达机械安装外参 (请根据实车尺寸调整位置) -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100"/>
+
+    <!-- 3.3 FAST-LIO / 高精度里程计 -->
+    <group if="$(arg run_fast_lio_slam)">
+        <include file="$(find fast_lio)/launch/mapping_mid360.launch">
+            <arg name="rviz" value="false" /> 
+        </include>
+    </group>
+
+    <!-- 3.4 3D点云截取为2D (给局部避障和可能的AMCL定位用) -->
     <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan" output="screen">
+        <!-- 恢复读取雷达的原始话题 -->
         <remap from="cloud_in" to="/livox/lidar"/>
-        <remap from="scan" to="/scan"/>
+        <remap from="scan"     to="/scan"/>
         <param name="target_frame" value="base_link"/>
-        <param name="min_height" value="0.2"/>
-        <param name="max_height" value="0.8"/>
-        <param name="angle_min" value="-3.14159"/>
-        <param name="angle_max" value="3.14159"/>
-        <param name="range_max" value="30.0"/>
-        <param name="use_inf" value="true"/>
+        <param name="transform_tolerance" value="0.01"/>
+        <param name="min_height"   value="0.2"/>
+        <param name="max_height"   value="0.8"/>
+        <param name="angle_min"    value="-3.14159"/>
+        <param name="angle_max"    value="3.14159"/>
+        <param name="angle_increment" value="0.0087"/>
+        <param name="scan_time" value="0.1"/>
+        <param name="range_max"    value="30.0"/>
+        <param name="range_min"    value="0.4"/>
+        <param name="use_inf"      value="true"/>
     </node>
 
-    <!-- 4) 地图层 -->
+    <!-- ==================== 4. 环境地图 & 全局定位 ==================== -->
     <group unless="$(arg outdoor_mode)">
         <node name="map_server" pkg="map_server" type="map_server" args="$(arg indoor_map_file)" output="screen" />
+        
+        <group if="$(arg use_amcl_indoor)">
+            <node pkg="amcl" type="amcl" name="amcl" output="screen">
+                <remap from="scan" to="/scan"/>
+                <param name="odom_frame_id" value="odom"/>
+                <param name="base_frame_id" value="base_link"/>
+                <param name="global_frame_id" value="map"/>
+            </node>
+        </group>
+        <group unless="$(arg use_amcl_indoor)">
+            <node pkg="tf" type="static_transform_publisher" name="map_to_odom" args="0 0 0 0 0 0 map odom 100" />
+        </group>
     </group>
 
     <group if="$(arg outdoor_mode)">
-        <!-- 方案 B+: 3x3 道路级 OSM 拼接地图 (由 osm_map_handler 提供) -->
         <node pkg="osm_map_handler" type="osm_tile_stitcher.py" name="osm_road_map" output="screen">
             <param name="map_dir" value="$(env HOME)/lxw/ros_maps/20" />
         </node>
     </group>
 
-    <!-- 5) 全局规划 (Hybrid A*) -->
+    <!-- ==================== 5. 导航规划体系 ==================== -->
     <node name="hybrid_astar" pkg="hybrid_astar" type="hybrid_astar" output="screen">
         <remap from="/map" to="/map" />
     </node>
-    <node name="hybrid_tf_broadcaster" pkg="hybrid_astar" type="tf_broadcaster" output="screen" />
+    <!-- 禁用导致 map<->odom 循环冲突的 hybrid_tf_broadcaster，改为发射 map->path 的补充静态tf -->
+    <!-- <node name="hybrid_tf_broadcaster" pkg="hybrid_astar" type="tf_broadcaster" output="screen" /> -->
+    <node pkg="tf" type="static_transform_publisher" name="map_to_path" args="0 0 0 0 0 0 map path 100" />
 
-    <!-- 6) 局部规划/控制 (NeuPAN) -->
     <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
         <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml"/>
-        <param name="map_frame" value="map"/>
-        <param name="base_frame" value="base_link"/>
+        <param name="map_frame"   value="map"/>
+        <param name="base_frame"  value="base_link"/>
         <param name="lidar_frame" value="base_link"/>
+        <param name="scan_downsample" value="1"/>
+        <param name="scan_range" value="0.1 50.0"/>
+        <param name="scan_angle_range" value="-3.14 3.14"/>
+        <param name="marker_size" value="0.05"/>
+        <param name="marker_z" value="0.3"/>
         <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
+        <!-- 核心修复: 强制Neupan刷新初始路径，否则它会使用其自带的硬编码坐标进行乱跑 -->
+        <param name="refresh_initial_path" value="true"/>
+        
+        <!-- 取消 NeuPAN 直接接收 Nav Goal 的权限，强制它只能听从 Hybrid-A* 发出的 sPath。这才是正确的 "全局+局部" 架构 -->
         <remap from="/initial_path" to="/sPath" />
-        <remap from="/neupan_goal" to="/move_base_simple/goal"/>
+        <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
     </node>
 
-    <!-- 7) 可视化 -->
+    <!-- ==================== 6. 数据可视化 ==================== -->
     <group if="$(arg enable_rviz)">
         <node name="rviz" pkg="rviz" type="rviz" args="-d $(find hybrid_astar)/launch/config.rviz" />
     </group>

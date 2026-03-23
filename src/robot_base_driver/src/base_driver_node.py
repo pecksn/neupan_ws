@@ -147,14 +147,14 @@ class RobotBaseDriver:
 
                             # 发布 TF: odom -> base_link
                             quat = tf.transformations.quaternion_from_euler(0, 0, self.th)
-                            # 【修改】取消直接发布TF，把状态交由 EKF 融合
-                            # self.tf_broadcaster.sendTransform(
-                            #     (self.x, self.y, 0),
-                            #     quat,
-                            #     current_time,
-                            #     self.base_frame,
-                            #     self.odom_frame
-                            # )
+                            # 【修改】这里恢复直接发布TF，因为你的 launch 文件中没有启动 EKF
+                            self.tf_broadcaster.sendTransform(
+                                (self.x, self.y, 0),
+                                quat,
+                                current_time,
+                                self.base_frame,
+                                self.odom_frame
+                            )
 
                             # 发布 Odom 消息
                             odom = Odometry()

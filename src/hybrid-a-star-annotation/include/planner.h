@@ -107,7 +107,7 @@ class Planner {
   /// A lookup table for configurations of the vehicle and their spatial occupancy enumeration
   Constants::config collisionLookup[Constants::headings * Constants::positions]; 
   /// A lookup of analytical solutions (Dubin's paths)
-  float* dubinsLookup = new float [Constants::headings * Constants::headings * Constants::dubinsWidth * Constants::dubinsWidth];
+  float* dubinsLookup = new float [Constants::headings * Constants::headings * (int)std::pow(Constants::dubinsWidth / Constants::cellSize, 2)];
 };
 }
 #endif // PLANNER_H

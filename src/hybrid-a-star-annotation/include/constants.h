@@ -63,13 +63,13 @@ static const bool twoD = true;
 /// [#] --- Limits the maximum search depth of the algorithm, possibly terminating without the solution
 static const int iterations = 30000; //最大迭代次数
 /// [m] --- Uniformly adds a padding around the vehicle
-static const double bloating = 0; //膨胀范围
+static const double bloating = 0.05; //膨胀范围
 /// [m] --- The width of the vehicle
-static const double width = 1.75 + 2 * bloating;//车的宽度
+static const double width = 0.60 + 2 * bloating;//车的宽度
 /// [m] --- The length of the vehicle
-static const double length = 2.65 + 2 * bloating;//车的长度
+static const double length = 0.85 + 2 * bloating;//车的长度
 /// [m] --- The minimum turning radius of the vehicle
-static const float r = 6;//最小转弯半径
+static const float r = 0.85;//最小转弯半径
 /// [m] --- The number of discretizations in heading
 static const int headings = 72;//车体朝向的离散数量
 /// [°] --- The discretization value of the heading (goal condition)
@@ -112,7 +112,7 @@ static const float penaltyCOD = 2.0;
 /// [m] --- The distance to the goal when the analytical solution (Dubin's shot) first triggers
 static const float dubinsShotDistance = 100;
 /// [m] --- The step size for the analytical solution (Dubin's shot) primarily relevant for collision checking
-static const float dubinsStepSize = 1;
+static const float dubinsStepSize = 0.05;
 
 
 // ______________________
@@ -131,7 +131,7 @@ static const int dubinsArea = dubinsWidth * dubinsWidth; //Dubin搜索区域的�
 //用于预计算所有可能的转向的框的大小
 static const int bbSize = std::ceil((sqrt(width * width + length* length) + 4) / cellSize);
 /// [#] --- The sqrt of the number of discrete positions per cell
-static const int positionResolution = 10;//每个cell里的离散位置数量的平方根
+static const int positionResolution = 1;//每个cell里的离散位置数量的平方根,10-》1
 /// [#] --- The number of discrete positions per cell
 static const int positions = positionResolution * positionResolution;//位置的数量
 /// A structure describing the relative position of the occupied cell based on the center of the vehicle
@@ -146,11 +146,11 @@ struct config {//用以获取每个theta的查找表的结构体
   /// the number of cells occupied by this configuration of the vehicle
   int length;//长度，
   /*!
-     \var relPos pos[64]
+     \var relPos pos[1024]
      \brief The maximum number of occupied cells
      \todo needs to be dynamic
   */
-  relPos pos[64];//这里为什么是64有待考证
+  relPos pos[1024];//这里为什么是64有待考证
 };
 
 // _________________
