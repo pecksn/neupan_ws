@@ -243,10 +243,7 @@ void Planner::plan() {
 
     delete [] nodes3D;
     delete [] nodes2D;
-    //注：这里的nSolution是new出来的，应该在用完后删除
-    //(下面增加的两句待验证)
-    if(nSolution)
-        delete [] nSolution;
+    //注：这里的nSolution是new出来的，不应该在这里delete[]，这会引起 double free 或 invalid pointer 崩溃
 
   } else {
     std::cout << "missing goal or start" << std::endl;

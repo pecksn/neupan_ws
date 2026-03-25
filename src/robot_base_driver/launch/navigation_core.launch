@@ -3,8 +3,22 @@
     <arg name="outdoor_mode" default="true" />
     <arg name="imu_topic" default="/imu/data" />
 
+    <!-- 串口&底盘参数 -->
+    <arg name="port" default="/dev/ttyUSB0"/>
+    <arg name="baudrate" default="115200"/>
+    <arg name="base_frame" default="base_link"/>
+    <arg name="odom_frame" default="odom"/>
+    <arg name="wheelbase" default="0.67"/>
+
     <!-- 1) 底盘驱动：发布 /odom 与 /gps/fix -->
-    <node pkg="robot_base_driver" type="base_driver_node.py" name="base_driver" output="screen" />
+    <include file="$(find robot_base_driver)/launch/driver.launch">
+        <arg name="port" value="$(arg port)"/>
+        <arg name="baudrate" value="$(arg baudrate)"/>
+        <arg name="base_frame" value="$(arg base_frame)"/>
+        <arg name="odom_frame" value="$(arg odom_frame)"/>
+        <arg name="wheelbase" value="$(arg wheelbase)"/>
+        <arg name="publish_tf" value="false" />
+    </include>
 
     <!-- 2) 本地EKF：融合 /odom + /Odometry，产出 /odometry/local -->
     <node pkg="robot_localization" type="ekf_localization_node" name="ekf_local" clear_params="true" output="screen">

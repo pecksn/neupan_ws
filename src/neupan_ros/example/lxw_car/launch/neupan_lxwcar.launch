@@ -12,7 +12,7 @@
     <arg name="rviz_enable" default="true"/>
     <arg name="publish_freq" default="10.0"/>
     <arg name="msg_frame_id" default="livox_frame"/>
-    <arg name="xfer_format" default="0"/> <!-- 0: PointCloud2 -->
+    <arg name="xfer_format" default="1"/> <!-- 1: CustomMsg for FAST-LIO -->
 
     <!-- pointcloud_to_laserscan 参数，可由外部覆盖 -->
     <arg name="pc_min_height" default="0.2"/> <!-- 最小高度：过滤掉雷达安装平面以下的点（如车体、地面），需高于雷达实际安装高度 -->
@@ -31,13 +31,19 @@
     <arg name="dune_checkpoint" default='$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth'/>
     <arg name="refresh_initial_path" default='true'/>
 
-    <!-- 1. 启动底盘驱动 -->
-    <include file="$(find robot_base_driver)/launch/driver.launch">
+    <!-- 1. 启动底盘驱动与状态估计 (EKF) -->
+    <include file="$(find robot_base_driver)/launch/navigation_core.launch">
         <arg name="port" value="$(arg port)"/>
         <arg name="baudrate" value="$(arg baudrate)"/>
         <arg name="base_frame" value="$(arg base_frame)"/>
         <arg name="odom_frame" value="$(arg odom_frame)"/>
         <arg name="wheelbase" value="$(arg wheelbase)"/>
+        <arg name="outdoor_mode" value="false" />
+    </include>
+
+    <!-- 1.1 启动 FAST-LIO 激光里程计提供高精度 odometry 数据给 EKF -->
+    <include file="$(find fast_lio)/launch/mapping_mid360.launch">
+        <arg name="rviz" value="false" />
     </include>
 
     <!-- 2. 启动 Livox 雷达 -->
@@ -48,12 +54,14 @@
         <arg name="xfer_format" value="$(arg xfer_format)"/>
     </include>
 
-    <!-- 3. 静态 TF（雷达 -> 底盘） -->
+    <!-- 3. 静态 TF -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 $(arg base_frame) $(arg msg_frame_id) 100"/>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 $(arg base_frame) body 100"/>
+    <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 $(arg odom_frame) camera_init 100"/>
 
-    <!-- 4. 点云转 LaserScan -->
+    <!-- 4. 点云转 LaserScan: 使用 FAST-LIO 提取并去畸变后的 body 坐标系点云 -->
     <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan">
-        <remap from="cloud_in" to="/livox/lidar"/>
+        <remap from="cloud_in" to="/cloud_registered_body"/>
         <remap from="scan" to="/scan"/>
         <param name="target_frame" value="$(arg base_frame)"/>
         <param name="transform_tolerance" value="0.01"/>

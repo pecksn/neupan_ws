@@ -148,7 +148,8 @@ class RobotBaseDriver:
                             # 发布 TF: odom -> base_link
                             quat = tf.transformations.quaternion_from_euler(0, 0, self.th)
                             # 【修改】这里恢复直接发布TF，因为你的 launch 文件中没有启动 EKF
-                            self.tf_broadcaster.sendTransform(
+                            if rospy.get_param("~publish_tf", False):
+                                self.tf_broadcaster.sendTransform(
                                 (self.x, self.y, 0),
                                 quat,
                                 current_time,

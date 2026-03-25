@@ -2,7 +2,7 @@
     <!-- ==================== 1. 全局运行模式配置 ==================== -->
     <arg name="outdoor_mode"        default="false" doc="true: 室外GPS地图 | false: 室内栅格地图"/>
     <!-- 开启此项提供高精度激光里程计 /Odometry -->
-    <arg name="run_fast_lio_slam"   default="false"  doc="是否启动 FAST-LIO 激光里程计" />
+    <arg name="run_fast_lio_slam"   default="true"  doc="是否启动 FAST-LIO 激光里程计" />
     <arg name="use_amcl_indoor"     default="true" doc="在室内是否使用 AMCL 对齐 Map 与 Odom (依赖静态地图)" />
     
     <!-- 基础传感器配置 -->
@@ -23,13 +23,15 @@
         <include file="$(find livox_ros_driver2)/launch_ROS1/rviz_MID360.launch">
             <arg name="rviz_enable"  value="false"/>
             <arg name="msg_frame_id" value="livox_frame"/>
-            <!-- pointcloud_to_laserscan 需要标准点云 0 或 2 -->
-            <arg name="xfer_format"  value="0"/>
+            <!-- 需提供 CustomMsg 给 FAST-LIO -->
+            <arg name="xfer_format"  value="1"/>
         </include>
     </group>
 
     <!-- 3.2 雷达机械安装外参 (请根据实车尺寸调整位置) -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100"/>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 base_link body 100"/>
+    <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100"/>
 
     <!-- 3.3 FAST-LIO / 高精度里程计 -->
     <group if="$(arg run_fast_lio_slam)">
@@ -40,8 +42,8 @@
 
     <!-- 3.4 3D点云截取为2D (给局部避障和可能的AMCL定位用) -->
     <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan" output="screen">
-        <!-- 恢复读取雷达的原始话题 -->
-        <remap from="cloud_in" to="/livox/lidar"/>
+        <!-- 读取 FAST-LIO 去畸变后的点云 -->
+        <remap from="cloud_in" to="/cloud_registered_body"/>
         <remap from="scan"     to="/scan"/>
         <param name="target_frame" value="base_link"/>
         <param name="transform_tolerance" value="0.01"/>

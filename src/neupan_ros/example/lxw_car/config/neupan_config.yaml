@@ -4,7 +4,7 @@ step_time: 0.2
 ref_speed: 0.3
 device: 'cpu' # 作者确认只能用 CPU
 time_print: False
-collision_threshold: -0.05 #0.01
+collision_threshold: 0.01 #0.01
 
 # robot
 robot:
@@ -12,13 +12,13 @@ robot:
   wheelbase: 0.67       # 【修改】前后轮轴距 (单位: 米)
   max_speed: [2, 2] # 【修改】最大线速度(m/s), 最大倒车速度(m/s)
   max_acce: [1, 1]  # 【修改】最大加速度
-  length: 0.85          # 将车长缩短到0.85，避免假碰撞，0.95
+  length: 0.95          # 将车长缩短到0.85，避免假碰撞，0.95
   width: 0.60           # 将车宽缩短到0.60，避免假碰撞,0.67
 
 # initial path
 ipath:
   interval: 0.09
-  waypoints: []  #[[0, 0, 0], [3, 0, 0]]
+  waypoints: [[0, 0, 0], [4, 0, 0]]  #[[0, 0, 0], [3, 0, 0]]
   curve_style: 'reeds'   # 'dubins' or reeds or line
   min_radius: 0.85       # 最小转弯半径 R = L / tan(θ) = 0.67 / tan(40°) ≈ 0.80。设为 0.85 留有余量
   loop: False
@@ -36,8 +36,8 @@ pan:
 
 # adjust parameters
 adjust:
-  q_s: 0.3
-  p_u: 10.0     # 【调试】大幅增加平滑惩罚 (原 2.5)，抑制左右摆头震荡
+  q_s: 3.0     # 【调试】大幅增加状态误差权重 (原 1.0)，更积极地纠正偏离
+  p_u: 15.0     # 【调试】大幅增加平滑惩罚 (原 2.5)，抑制左右摆头震荡
   eta: 5.0
   d_max: 1.0   # 【调试】稍微减小最大距离 (原 2.0)，避免过远路径
   d_min: 0.1   # 【调试】稍微增大最小距离 (原 0.005)，避免在极限距离处纠结
