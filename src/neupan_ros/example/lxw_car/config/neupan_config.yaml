@@ -18,9 +18,9 @@ robot:
 # initial path
 ipath:
   interval: 0.09
-  waypoints: [[0, 0, 0], [4, 0, 0]]  #[[0, 0, 0], [3, 0, 0]]
+  waypoints: []  #[[0, 0, 0], [5, 0, 0],[10, 0, 0]]
   curve_style: 'reeds'   # 'dubins' or reeds or line
-  min_radius: 0.85       # 最小转弯半径 R = L / tan(θ) = 0.67 / tan(40°) ≈ 0.80。设为 0.85 留有余量
+  min_radius: 0.80       # 最小转弯半径 R = L / tan(θ) = 0.67 / tan(40°) ≈ 0.80。设为 0.85 留有余量
   loop: False
   arrive_threshold: 0.3
   close_threshold: 0.1
@@ -36,7 +36,7 @@ pan:
 
 # adjust parameters
 adjust:
-  q_s: 3.0     # 【调试】大幅增加状态误差权重 (原 1.0)，更积极地纠正偏离
+  q_s: 4.0     # 【调试】大幅增加状态误差权重 (原 1.0)，更积极地纠正偏离
   p_u: 15.0     # 【调试】大幅增加平滑惩罚 (原 2.5)，抑制左右摆头震荡
   eta: 5.0
   d_max: 1.0   # 【调试】稍微减小最大距离 (原 2.0)，避免过远路径

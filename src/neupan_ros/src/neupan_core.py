@@ -281,6 +281,18 @@ class neupan_core:
             return
 
     def path_callback(self, path):
+        path_frame = path.header.frame_id if path.header.frame_id else "map"
+        new_poses = []
+        try:
+            self.listener.waitForTransform(self.map_frame, path_frame, rospy.Time(0), rospy.Duration(0.5))
+            for p in path.poses:
+                p.header.frame_id = path_frame
+                p.header.stamp = rospy.Time(0)
+                new_poses.append(self.listener.transformPose(self.map_frame, p))
+            path.poses = new_poses
+        except Exception as e:
+            rospy.logwarn("TF Error transforming path: {}".format(e))
+            return
 
         if not path.poses or len(path.poses) == 0:
             rospy.logwarn("Received empty path from Hybrid A*, ignoring...")
