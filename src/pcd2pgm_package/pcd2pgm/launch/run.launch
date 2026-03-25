@@ -1,0 +1,22 @@
+<launch>
+    <node pkg="pcd2pgm" name="pcd2pgm" type="pcd2pgm" output="screen">
+        <!-- 要转换的原始pcd文件存放位置，修改为你保存地图的实际位置 -->
+        <!--param name="file_directory" value= "/home/nuc/lxw/fast_lio_ws/src/FAST_LIO/PCD/" /-->
+        <param name="file_directory" value= "/home/nuc/lxw/lio_sam_ws/src/LIO-SAM-MID360/PCD/" />
+        <!-- 原始pcd文件的名字，比如 scans.pcd;GlobalMap.pcd -->
+        <param name="file_name" value= "GlobalMap" />
+
+        <!-- 关键参数配置，outsdide:-6.8/7.8,corridor -->
+        <param name="thre_z_min" value= "-0.3" />
+        <param name="thre_z_max" value= "0.5" />
+        
+        <!-- 直通滤波标志位：0表示根据上述z轴阈值过滤，生成2D地图 -->
+        <param name="flag_pass_through" value= "0" />
+
+        <!-- 栅格地图分辨率 -->
+        <param name="map_resolution" value= "0.05" />
+        
+        <!-- 发布的话题名称 -->
+        <param name="map_topic_name" value= "map" />
+    </node>
+</launch>
