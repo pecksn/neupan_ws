@@ -300,6 +300,7 @@ class neupan_core:
 
         initial_point_list = []
 
+        print(f"--- Received Path with {len(path.poses)} poses ---")
         for i in range(len(path.poses)):
             p = path.poses[i]
             x = p.pose.position.x
@@ -317,6 +318,12 @@ class neupan_core:
                     theta = atan2(y2 - y, x2 - x)
                 else:
                     theta = initial_point_list[-1][2, 0]
+            
+            # Print the points out for debugging the left-turn issue (print the first 50 points to avoid spam)
+            if i < 50:
+                print(f"Point {i}: x={x:.4f}, y={y:.4f}, theta={theta:.4f} (deg: {theta*180/3.1415926:.2f})")
+            elif i == 50:
+                print(f"... [omitted remaining {len(path.poses) - 50} points] ...")
             
             points = np.array([x, y, theta, 1]).reshape(4, 1)
             initial_point_list.append(points)

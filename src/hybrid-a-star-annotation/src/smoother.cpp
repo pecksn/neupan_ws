@@ -5,6 +5,7 @@
  * @date 2019-11-19
  */
 #include "smoother.h"
+#include <algorithm>
 using namespace HybridAStar;
 //###################################################
 //                                     CUSP DETECTION
@@ -93,6 +94,7 @@ void Smoother::smoothPath(DynamicVoronoi& voronoi) {
 
 void Smoother::tracePath(const Node3D* node, int i, std::vector<Node3D> path) {
   if (node == nullptr) {
+    std::reverse(path.begin(), path.end());
     this->path = path;
     return;
   }

@@ -74,8 +74,8 @@ class RobotBaseDriver:
         # 转换为角度
         steering_deg = math.degrees(steering_angle)
 
-        # 【修复】增加转向角物理限幅 (例如 +/- 45度)，防止出现 90度的无效指令
-        max_steering_deg = 35.0 
+        # 【修复】增加转向角物理限幅 (例如 +/- 30度)，防止出现 90度的无效指令
+        max_steering_deg = 30.0 
         if steering_deg > max_steering_deg:
             steering_deg = max_steering_deg
         elif steering_deg < -max_steering_deg:

@@ -59,13 +59,18 @@ void Path::clear() {
 void Path::updatePath(std::vector<Node3D> nodePath) {
   path.header.stamp = ros::Time::now();
   int k = 0;
+  
+  if (nodePath.empty()) return;
 
   for (size_t i = 0; i < nodePath.size(); ++i) {
-    addSegment(nodePath[i]);
-    addNode(nodePath[i], k);
-    k++;
-    addVehicle(nodePath[i], k);
-    k++;
+    // 下采样：每隔10个点取一个，但始终保留第一个点(起点)和最后一个点(终点)
+    if (i == 0 || i == nodePath.size() - 1 || i % 10 == 0) {
+      addSegment(nodePath[i]);
+      addNode(nodePath[i], k);
+      k++;
+      addVehicle(nodePath[i], k);
+      k++;
+    }
   }
 
   return;
@@ -77,10 +82,10 @@ void Path::addSegment(const Node3D& node) {
   vertex.pose.position.x = node.getX() * Constants::cellSize;
   vertex.pose.position.y = node.getY() * Constants::cellSize;
   vertex.pose.position.z = 0;
-  vertex.pose.orientation.x = 0;
-  vertex.pose.orientation.y = 0;
-  vertex.pose.orientation.z = 0;
-  vertex.pose.orientation.w = 0;
+  
+  // Convert node heading to quaternion
+  vertex.pose.orientation = tf::createQuaternionMsgFromYaw(node.getT());
+  
   path.poses.push_back(vertex);
 }
 
