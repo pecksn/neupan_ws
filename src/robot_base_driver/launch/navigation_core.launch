@@ -48,7 +48,10 @@
     </group>
 
     <!-- 4) 室内：给 map->odom 固定变换，方便全局规划使用 map 坐标 -->
+    <arg name="publish_static_map_odom" default="true" />
     <group unless="$(arg outdoor_mode)">
-        <node pkg="tf" type="static_transform_publisher" name="map_to_odom" args="0 0 0 0 0 0 map odom 100" />
+        <group if="$(arg publish_static_map_odom)">
+            <node pkg="tf" type="static_transform_publisher" name="map_to_odom" args="0 0 0 0 0 0 map odom 100" />
+        </group>
     </group>
 </launch>
