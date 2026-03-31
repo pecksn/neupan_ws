@@ -63,14 +63,12 @@ void Path::updatePath(std::vector<Node3D> nodePath) {
   if (nodePath.empty()) return;
 
   for (size_t i = 0; i < nodePath.size(); ++i) {
-    // 下采样：每隔10个点取一个，但始终保留第一个点(起点)和最后一个点(终点)
-    if (i == 0 || i == nodePath.size() - 1 || i % 10 == 0) {
-      addSegment(nodePath[i]);
-      addNode(nodePath[i], k);
-      k++;
-      addVehicle(nodePath[i], k);
-      k++;
-    }
+    // 移除下采样，保留所有轨迹点以避免规划出“折线”并跳过障碍！
+    addSegment(nodePath[i]);
+    addNode(nodePath[i], k);
+    k++;
+    addVehicle(nodePath[i], k);
+    k++;
   }
 
   return;
@@ -79,8 +77,8 @@ void Path::updatePath(std::vector<Node3D> nodePath) {
 // ADD SEGMENT增加线性:将每个node的信息转为geometry_msgs放入向量path中
 void Path::addSegment(const Node3D& node) {
   geometry_msgs::PoseStamped vertex;
-  vertex.pose.position.x = node.getX() * Constants::cellSize;
-  vertex.pose.position.y = node.getY() * Constants::cellSize;
+  vertex.pose.position.x = node.getX() * Constants::cellSize + this->origin_x;
+  vertex.pose.position.y = node.getY() * Constants::cellSize + this->origin_y;
   vertex.pose.position.z = 0;
   
   // Convert node heading to quaternion
@@ -118,8 +116,8 @@ void Path::addNode(const Node3D& node, int i) {
     pathNode.color.b = Constants::purple.blue;
   }
 
-  pathNode.pose.position.x = node.getX() * Constants::cellSize;
-  pathNode.pose.position.y = node.getY() * Constants::cellSize;
+  pathNode.pose.position.x = node.getX() * Constants::cellSize + this->origin_x;
+  pathNode.pose.position.y = node.getY() * Constants::cellSize + this->origin_y;
   pathNodes.markers.push_back(pathNode);
 }
 
@@ -156,8 +154,8 @@ void Path::addVehicle(const Node3D& node, int i) {
     pathVehicle.color.b = Constants::teal.blue;
   }
 
-  pathVehicle.pose.position.x = node.getX() * Constants::cellSize;
-  pathVehicle.pose.position.y = node.getY() * Constants::cellSize;
+  pathVehicle.pose.position.x = node.getX() * Constants::cellSize + this->origin_x;
+  pathVehicle.pose.position.y = node.getY() * Constants::cellSize + this->origin_y;
   pathVehicle.pose.orientation = tf::createQuaternionMsgFromYaw(node.getT());
   pathVehicles.markers.push_back(pathVehicle);
 }

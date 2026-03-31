@@ -459,7 +459,7 @@ void  updateH(Node3D& start, const Node3D& goal, Node2D* nodes2D, float* dubinsL
     //      dubinsCost = dubins_path_length(&dubinsPath);
     
     //这里改用open motion planning library的算法
-    ompl::base::DubinsStateSpace dubinsPath(Constants::r);
+    ompl::base::DubinsStateSpace dubinsPath(Constants::r / Constants::cellSize);
     State* dbStart = (State*)dubinsPath.allocState();
     State* dbEnd = (State*)dubinsPath.allocState();
     dbStart->setXY(start.getX(), start.getY());
@@ -473,7 +473,7 @@ void  updateH(Node3D& start, const Node3D& goal, Node2D* nodes2D, float* dubinsL
   //假如车子可以后退，则可以启动Reeds-Shepp 算法
   if (Constants::reverse && !Constants::dubins) {
     //    ros::Time t0 = ros::Time::now();
-    ompl::base::ReedsSheppStateSpace reedsSheppPath(Constants::r);
+    ompl::base::ReedsSheppStateSpace reedsSheppPath(Constants::r / Constants::cellSize);
     State* rsStart = (State*)reedsSheppPath.allocState();
     State* rsEnd = (State*)reedsSheppPath.allocState();
     rsStart->setXY(start.getX(), start.getY());
@@ -532,7 +532,7 @@ Node3D* dubinsShot(Node3D& start, const Node3D& goal, CollisionDetection& config
   // initialize the path
   DubinsPath path;
   // calculate the path
-  dubins_init(q0, q1, Constants::r, &path);
+  dubins_init(q0, q1, Constants::r / Constants::cellSize, &path);
 
   int i = 0;
   float x = 0.f;

@@ -19,6 +19,7 @@
  *     Y - 表示网格的高度
  */
 #include <cmath>
+#include <vector>
 
 /*!
     \brief The namespace that wraps the entire project
@@ -65,11 +66,11 @@ static const int iterations = 30000; //最大迭代次数
 /// [m] --- Uniformly adds a padding around the vehicle
 static const double bloating = 0.05; //膨胀范围
 /// [m] --- The width of the vehicle
-static const double width = 0.60 + 2 * bloating;//车的宽度
+static const double width = 0.65 + 2 * bloating;//车的宽度
 /// [m] --- The length of the vehicle
-static const double length = 0.85 + 2 * bloating;//车的长度
+static const double length = 0.95 + 2 * bloating;//车的长度
 /// [m] --- The minimum turning radius of the vehicle
-static const float r = 0.85;//最小转弯半径
+static const float r = 0.80;//最小转弯半径
 /// [m] --- The number of discretizations in heading
 static const int headings = 72;//车体朝向的离散数量
 /// [°] --- The discretization value of the heading (goal condition)
@@ -79,7 +80,7 @@ static const float deltaHeadingRad = 2 * M_PI / (float)headings; //朝向离散�
 /// [c*M_PI] --- The heading part of the goal condition 
 static const float deltaHeadingNegRad = 2 * M_PI - deltaHeadingRad;
 /// [m] --- The cell size of the 2D grid of the world
-static const float cellSize = 1; //在2D网格中cell的大小
+static const float cellSize = 0.05; //在2D网格中cell的大小, MUST match Map resolution
 /*!
   \brief [m] --- The tie breaker breaks ties between nodes expanded in the same cell
 
@@ -112,7 +113,7 @@ static const float penaltyCOD = 2.0;
 /// [m] --- The distance to the goal when the analytical solution (Dubin's shot) first triggers
 static const float dubinsShotDistance = 100;
 /// [m] --- The step size for the analytical solution (Dubin's shot) primarily relevant for collision checking
-static const float dubinsStepSize = 0.05;
+static const float dubinsStepSize = 1.0; // 0.05 meters is 1 grid cell at resolution 0.05
 
 
 // ______________________
@@ -146,11 +147,11 @@ struct config {//用以获取每个theta的查找表的结构体
   /// the number of cells occupied by this configuration of the vehicle
   int length;//长度，
   /*!
-     \var relPos pos[1024]
+     \var std::vector<relPos> pos
      \brief The maximum number of occupied cells
      \todo needs to be dynamic
   */
-  relPos pos[1024];//这里为什么是64有待考证
+  std::vector<relPos> pos; // Use vector to prevent buffer overflow with small cell sizes
 };
 
 // _________________

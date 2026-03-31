@@ -89,6 +89,14 @@ class Path {
   void addVehicle(const Node3D& node, int i);
 
   // ______________
+  // MAP ORIGIN METHODS
+  
+  void setOrigin(float x, float y) {
+    origin_x = x;
+    origin_y = y;
+  }
+
+  // ______________
   // PUBLISH METHODS
 
   /// Clears the path
@@ -117,6 +125,8 @@ class Path {
   visualization_msgs::MarkerArray pathVehicles;//车子数据结构，用于可视化
   /// Value that indicates that the path is smoothed/post processed
   bool smoothed = false;
+  float origin_x = 0.0;
+  float origin_y = 0.0;
 };
 }
 #endif // PATH_H

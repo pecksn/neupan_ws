@@ -56,6 +56,11 @@ void Planner::setMap(const nav_msgs::OccupancyGrid::Ptr map) {
   }
 
   grid = map;//更新地图指针
+  
+  // 更新路径发布的坐标原点偏移
+  path.setOrigin(map->info.origin.position.x, map->info.origin.position.y);
+  smoothedPath.setOrigin(map->info.origin.position.x, map->info.origin.position.y);
+  
   //update the configuration space with the current map
   configurationSpace.updateGrid(map);
   //create array for Voronoi diagram
@@ -109,8 +114,10 @@ void Planner::setMap(const nav_msgs::OccupancyGrid::Ptr map) {
 //###################################################
 //这是回调函数，当接收到始点时自动调用
 void Planner::setStart(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& initial) {
-  float x = initial->pose.pose.position.x / Constants::cellSize;
-  float y = initial->pose.pose.position.y / Constants::cellSize;
+  float origin_x = grid ? grid->info.origin.position.x : 0.0;
+  float origin_y = grid ? grid->info.origin.position.y : 0.0;
+  float x = (initial->pose.pose.position.x - origin_x) / Constants::cellSize;
+  float y = (initial->pose.pose.position.y - origin_y) / Constants::cellSize;
   float t = tf::getYaw(initial->pose.pose.orientation);
   // publish the start without covariance for rviz
   geometry_msgs::PoseStamped startN;
@@ -139,8 +146,10 @@ void Planner::setStart(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr&
 //###################################################
 void Planner::setGoal(const geometry_msgs::PoseStamped::ConstPtr& end) {
   // retrieving goal position
-  float x = end->pose.position.x / Constants::cellSize;
-  float y = end->pose.position.y / Constants::cellSize;
+  float origin_x = grid ? grid->info.origin.position.x : 0.0;
+  float origin_y = grid ? grid->info.origin.position.y : 0.0;
+  float x = (end->pose.position.x - origin_x) / Constants::cellSize;
+  float y = (end->pose.position.y - origin_y) / Constants::cellSize;
   float t = tf::getYaw(end->pose.orientation);
 
   std::cout << "I am seeing a new goal x:" << x << " y:" << y << " t:" << Helper::toDeg(t) << std::endl;
@@ -176,8 +185,10 @@ void Planner::plan() {
 
     // ________________________
     // retrieving goal position
-    float x = goal.pose.position.x / Constants::cellSize;
-    float y = goal.pose.position.y / Constants::cellSize;
+    float origin_x = grid ? grid->info.origin.position.x : 0.0;
+    float origin_y = grid ? grid->info.origin.position.y : 0.0;
+    float x = (goal.pose.position.x - origin_x) / Constants::cellSize;
+    float y = (goal.pose.position.y - origin_y) / Constants::cellSize;
     float t = tf::getYaw(goal.pose.orientation);
     // set theta to a value (0, 2PI]
     t = Helper::normalizeHeadingRad(t);
@@ -189,8 +200,8 @@ void Planner::plan() {
 
     // _________________________
     // retrieving start position
-    x = start.pose.pose.position.x / Constants::cellSize;
-    y = start.pose.pose.position.y / Constants::cellSize;
+    x = (start.pose.pose.position.x - origin_x) / Constants::cellSize;
+    y = (start.pose.pose.position.y - origin_y) / Constants::cellSize;
     t = tf::getYaw(start.pose.pose.orientation);
     // set theta to a value (0,2PI]
     t = Helper::normalizeHeadingRad(t);

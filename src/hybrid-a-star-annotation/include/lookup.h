@@ -291,13 +291,17 @@ inline void collisionLookup(Constants::config* lookup) {
 
       // GENERATE THE ACTUAL LOOKUP
       count = 0;//生成查找表
+      
+      lookup[q * Constants::headings + o].pos.clear(); // Clear vector
 
       for (int i = 0; i < size; ++i) {
         for (int j = 0; j < size; ++j) {
           if (cSpace[i * size + j]) {
             // compute the relative position of the car cells
-            lookup[q * Constants::headings + o].pos[count].x = j - (int)c.x;
-            lookup[q * Constants::headings + o].pos[count].y = i - (int)c.y;
+            Constants::relPos tempPos;
+            tempPos.x = j - (int)c.x;
+            tempPos.y = i - (int)c.y;
+            lookup[q * Constants::headings + o].pos.push_back(tempPos);
             // add one for the length of the current list
             count++;
           }
