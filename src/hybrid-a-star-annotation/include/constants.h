@@ -66,11 +66,11 @@ static const int iterations = 30000; //最大迭代次数
 /// [m] --- Uniformly adds a padding around the vehicle
 static const double bloating = 0.05; //膨胀范围
 /// [m] --- The width of the vehicle
-static const double width = 0.65 + 2 * bloating;//车的宽度
+static const double width = 0.67 + 2 * bloating;//车的宽度
 /// [m] --- The length of the vehicle
 static const double length = 0.95 + 2 * bloating;//车的长度
 /// [m] --- The minimum turning radius of the vehicle
-static const float r = 0.80;//最小转弯半径
+static const float r = 1.50;//最小转弯半径
 /// [m] --- The number of discretizations in heading
 static const int headings = 72;//车体朝向的离散数量
 /// [°] --- The discretization value of the heading (goal condition)
