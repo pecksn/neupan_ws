@@ -1,10 +1,10 @@
 # mpc
-receding: 50 # 预测步数/视野深度。数值越大，小车看路径看越远，转弯越早。对应距离 = receding * ipath.interval
+receding: 55 # 预测步数/视野深度。数值越大，小车看路径看越远，转弯越早。对应距离 = receding * ipath.interval
 step_time: 0.1 # 模拟步长(秒)。MPC 内部计算模型的时间间隔。
 ref_speed: 0.3 # 参考线速度 (m/s)。小车巡航的期望速度。
 device: 'cpu' # 计算设备。作者确认只能用 CPU。
 time_print: False # 是否打印每一步的计算耗时。
-collision_threshold: 0.01 # 碰撞阈值。离障碍物多近认为会发生碰撞（单位：米）。
+collision_threshold: 0.001 # 碰撞阈值。离障碍物多近认为会发生碰撞（单位：米）。
 
 # robot
 robot:
@@ -13,18 +13,18 @@ robot:
   max_speed: [1.0, 0.55] # [最大线速度(m/s), 最大前轮转角(rad)]。0.53 rad 约 30.3 度。
   max_acce: [1.0, 0.55]  # [最大加速度(m/s^2), 最大前轮转角角速度(rad/s)]。限制动作的突变程度。
   length: 0.95          #车体长度 (单位: 米)。用于碰撞检测。
-  width: 0.67           # 车体宽度 (单位: 米)。用于碰撞检测。
+  width: 0.60           # 车体宽度 (单位: 米)。用于碰撞检测。
 
 # initial path
 ipath:
   interval: 0.09 # 路径点间隔 (单位: 米)。控制给出的绿色路径点之间的物理距离。
   waypoints: [] # 初始路径点坐标库。通常留空，由规划器实时发送。[[0,0,0], [1,0,0], ...] 格式为 [[x,y,theta], ...]。
   curve_style: 'reeds'   # 曲线类型。'dubins' 只能前进；'reeds' 支持倒车（Reeds-Shepp 曲线）。
-  min_radius: 1.50         # 模型最小转弯半径 (单位: 米)。必须大于等于物理极限 L/tan(max_steer)。
+  min_radius: 1.40         # 模型最小转弯半径 (单位: 米)。必须大于等于物理极限 L/tan(max_steer)。
   loop: False # 路径是否循环。
-  arrive_threshold: 0.5 # 到达终点的距离阈值。
+  arrive_threshold: 0.5  #到达终点的距离阈值。
   close_threshold: 0.15 # 距离路径多近认为已经跟上了路径。
-  arrive_index_threshold: 3 # 距离终点还有多少个点时认为到达。
+  arrive_index_threshold: 2 # 距离终点还有多少个点时认为到达。
   
 # proximal alternating minimization network
 pan:
@@ -40,4 +40,4 @@ adjust:
   p_u: 14.5    # 控制量变化惩罚（平滑系数）。值越大，小车转向越慢、动作越稳，减少“过弯犹豫”和“震荡”。
   eta: 3.0    # 势场避障强度。值越大，离障碍物越远。
   d_max: 1.0   # 避障起作用的最大距离。
-  d_min: 0.1   # 避障必须生效的最小距离。   
+  d_min: 0.2   # 避障必须生效的最小距离。   
