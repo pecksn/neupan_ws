@@ -4,7 +4,7 @@ import os
 import cv2
 import numpy as np
 import math
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import NavSatFix
 
 class OSMTileStitcher:
@@ -20,12 +20,32 @@ class OSMTileStitcher:
         self.target_res = 1.0  # Hybrid A* 需求的分辨率 (cellSize=1.0)
         self.stitch_size = 5    # 5x5 拼接
         
+        # 默认初始坐标 (如果在室内没有 GPS，先用这个坐标显示地图)
+        self.default_lat = rospy.get_param('~default_lat', 23.0636) 
+        self.default_lon = rospy.get_param('~default_lon', 113.3727)
+        
+        
         # 话题
         self.grid_pub = rospy.Publisher('/map', OccupancyGrid, queue_size=1, latch=True)
         rospy.Subscriber('/gps/fix', NavSatFix, self.gps_callback)
+        rospy.Subscriber('/odometry/global', Odometry, self.odom_callback)
+        self.robot_x = 0.0
+        self.robot_y = 0.0
         
         self.current_tile = None
         rospy.loginfo(f"OSM {self.stitch_size}x{self.stitch_size} Tile Stitcher Node Started.")
+        self.force_initial_stitch()
+
+    
+    def force_initial_stitch(self):
+        cx, cy = self.lat_lon_to_tile(self.default_lat, self.default_lon)
+        self.current_tile = (cx, cy)
+        self.stitch_tiles(cx, cy)
+        rospy.loginfo(f"No GPS yet. Initialized map at default ({self.default_lat}, {self.default_lon})")
+
+    def odom_callback(self, msg):
+        self.robot_x = msg.pose.pose.position.x
+        self.robot_y = msg.pose.pose.position.y
 
     def lat_lon_to_tile(self, lat, lon, zoom=20):
         n = 2.0 ** zoom
@@ -44,18 +64,18 @@ class OSMTileStitcher:
 
     def load_tile(self, x, y):
         path = os.path.join(self.map_dir, str(x), f"{y}.png")
+        rospy.loginfo(f"Attempting to load: {path}")
         if not os.path.exists(path):
-            # 如果瓦片不存在，返回灰色（未知区域）
             return np.zeros((256, 256, 3), dtype=np.uint8) + 128
         img = cv2.imread(path)
         if img is None:
+            rospy.logerr(f'Corrupted image file: {path}')
             return np.zeros((256, 256, 3), dtype=np.uint8) + 128
         return img
 
     def stitch_tiles(self, cx, cy):
         offset = self.stitch_size // 2
         rows = []
-        # OSM Y 轴是从北向南增加，所以 cy-offset 是最北边（图像顶部）
         for y in range(cy - offset, cy + offset + 1):
             cols = []
             for x in range(cx - offset, cx + offset + 1):
@@ -63,44 +83,33 @@ class OSMTileStitcher:
             rows.append(np.hstack(cols))
         
         full_img = np.vstack(rows)
-        
-        # 转换为灰度并提取道路
         gray = cv2.cvtColor(full_img, cv2.COLOR_BGR2GRAY)
-        # 道路颜色阈值设为 210（OSM 中道路通常较亮）
-        _, thresh = cv2.threshold(gray, 210, 255, cv2.THRESH_BINARY)
+        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
         
-        # 转换为 OccupancyGrid 数据：0(路), 100(非路/障碍)
         grid_data_raw = np.where(thresh == 255, 0, 100).astype(np.int8)
         
-        # 计算缩放：Zoom 20 的原始分辨率约为 0.149m/px
-        # 5张瓦片总长 1280px * 0.149m/px ≈ 190m
         raw_width = 256 * self.stitch_size
         actual_meter_width = raw_width * 0.149
         target_width = int(actual_meter_width / self.target_res)
         
-        # 调整大小以适配 1m/px
         resized = cv2.resize(grid_data_raw.view(np.uint8), (target_width, target_width), interpolation=cv2.INTER_NEAREST)
         resized = resized.astype(np.int8)
-        
-        # 沿垂直轴翻转，使之符合 ROS 系统（Y轴向上为正）
         resized = np.flipud(resized)
 
-        # 构建并发布地图
         grid = OccupancyGrid()
         grid.header.stamp = rospy.Time.now()
         grid.header.frame_id = "map"
         grid.info.resolution = self.target_res
         grid.info.width = target_width
         grid.info.height = target_width
-        # 将原点设在地图中心，确保机器人位于地图中间
-        grid.info.origin.position.x = - (target_width * self.target_res) / 2.0
-        grid.info.origin.position.y = - (target_width * self.target_res) / 2.0
+        grid.info.origin.position.x = self.robot_x - (target_width * self.target_res) / 2.0
+        grid.info.origin.position.y = self.robot_y - (target_width * self.target_res) / 2.0
         grid.info.origin.orientation.w = 1.0
         
         grid.data = resized.flatten().tolist()
         
         self.grid_pub.publish(grid)
-        rospy.loginfo(f"Stitched {self.stitch_size}x{self.stitch_size} Map Updated! (Center: {cx}/{cy})")
+        rospy.loginfo(f"Stitched Map Updated! (Center: {cx}/{cy})")
 
 if __name__ == '__main__':
     try:

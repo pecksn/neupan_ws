@@ -78,14 +78,28 @@
     </group>
 
     <group if="$(arg outdoor_mode)">
+        <!-- 启动 OSM 大地图拼接节点 -->
         <node pkg="osm_map_handler" type="osm_tile_stitcher.py" name="osm_road_map" output="screen">
             <param name="map_dir" value="$(env HOME)/lxw/ros_maps/20" />
+            <param name="default_lat" value="23.04372080966278" /> 
+            <param name="default_lon" value="113.37478637695312" />
+        </node>
+        
+        <!-- 启动 C++ 全局 A* (接收 Rviz 的 /move_base_simple/goal，输出 /hybrid_astar_subgoal) -->
+        <node pkg="osm_map_handler" type="global_astar_node" name="global_astar_planner" output="screen">
+            <param name="lookahead_dist" value="15.0"/>
+            <remap from="/global_goal" to="/move_base_simple/goal"/>
         </node>
     </group>
 
     <!-- ==================== 5. 导航规划体系 ==================== -->
+    <!-- 动态决定 Hybrid A* 的目标话题：如果室外，听 C++ 规划器的局部目标；如果室内，直接听 Rviz 的总目标 -->
+    <arg name="hybrid_goal_topic" value="/hybrid_astar_subgoal" if="$(arg outdoor_mode)" />
+    <arg name="hybrid_goal_topic" value="/move_base_simple/goal" unless="$(arg outdoor_mode)" />
+
     <node name="hybrid_astar" pkg="hybrid_astar" type="hybrid_astar" output="screen">
         <remap from="/map" to="/map" />
+        <remap from="/move_base_simple/goal" to="$(arg hybrid_goal_topic)" />
     </node>
     <!-- 禁用导致 map<->odom 循环冲突的 hybrid_tf_broadcaster，改为发射 map->path 的补充静态tf -->
     <!-- <node name="hybrid_tf_broadcaster" pkg="hybrid_astar" type="tf_broadcaster" output="screen" /> -->
