@@ -18,7 +18,7 @@ class OSMTileStitcher:
         # 参数
         self.map_dir = rospy.get_param('~map_dir', os.path.expanduser('/home/nuc/lxw/ros_maps/20'))
         self.target_res = 1.0  # Hybrid A* 需求的分辨率 (cellSize=1.0)
-        self.stitch_size = 5    # 5x5 拼接
+        self.stitch_size = rospy.get_param('~stitch_size', 35)    # 5x5 拼接
         
         # 默认初始坐标 (如果在室内没有 GPS，先用这个坐标显示地图)
         self.default_lat = rospy.get_param('~default_lat', 23.0434) 

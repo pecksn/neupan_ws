@@ -80,7 +80,7 @@
     <group if="$(arg outdoor_mode)">
         <!-- 启动 OSM 大地图拼接节点 -->
         <node pkg="osm_map_handler" type="osm_tile_stitcher.py" name="osm_road_map" output="screen">
-            <param name="map_dir" value="$(env HOME)/lxw/ros_maps/20" />
+            <param name="map_dir" value="/home/nuc/lxw/ros_maps/20" />
             <param name="default_lat" value="23.05983" /> 
             <param name="default_lon" value="113.37856" />
         </node>
