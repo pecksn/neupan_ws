@@ -21,8 +21,8 @@ class OSMTileStitcher:
         self.stitch_size = 5    # 5x5 拼接
         
         # 默认初始坐标 (如果在室内没有 GPS，先用这个坐标显示地图)
-        self.default_lat = rospy.get_param('~default_lat', 23.0636) 
-        self.default_lon = rospy.get_param('~default_lon', 113.3727)
+        self.default_lat = rospy.get_param('~default_lat', 23.0434) 
+        self.default_lon = rospy.get_param('~default_lon', 113.3747)
         
         
         # 话题
@@ -84,9 +84,14 @@ class OSMTileStitcher:
         
         full_img = np.vstack(rows)
         gray = cv2.cvtColor(full_img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
         
-        grid_data_raw = np.where(thresh == 255, 0, 100).astype(np.int8)
+        
+        
+        # 将原始瓦片的亮度 (0~255) 连续映射到 ROS 栅格地图代价 (100~0)
+        # 越亮(OSM中的道路，接近255) 代价越小(0)；越暗(建筑/非道路，接近0)，代价越大(100)
+        # 找不到的瓦片原本是128灰底，映射后代价值变为50 (在 RViz 中是中灰色，被A*视为障碍边缘)
+        grid_data_raw = np.clip(100 - (gray / 255.0 * 100), 0, 100).astype(np.int8)
+
         
         raw_width = 256 * self.stitch_size
         actual_meter_width = raw_width * 0.149

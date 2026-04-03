@@ -81,8 +81,8 @@
         <!-- 启动 OSM 大地图拼接节点 -->
         <node pkg="osm_map_handler" type="osm_tile_stitcher.py" name="osm_road_map" output="screen">
             <param name="map_dir" value="$(env HOME)/lxw/ros_maps/20" />
-            <param name="default_lat" value="23.04372080966278" /> 
-            <param name="default_lon" value="113.37478637695312" />
+            <param name="default_lat" value="23.05983" /> 
+            <param name="default_lon" value="113.37856" />
         </node>
         
         <!-- 启动 C++ 全局 A* (接收 Rviz 的 /move_base_simple/goal，输出 /hybrid_astar_subgoal) -->
