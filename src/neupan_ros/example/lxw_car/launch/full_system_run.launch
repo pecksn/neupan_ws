@@ -79,16 +79,16 @@
 
     <group if="$(arg outdoor_mode)">
         <!-- 启动 OSM 大地图拼接节点 -->
-        <node pkg="osm_map_handler" type="osm_tile_stitcher.py" name="osm_road_map" output="screen">
-            <param name="map_dir" value="/home/nuc/lxw/ros_maps/20" />
-            <param name="default_lat" value="23.05983" /> 
-            <param name="default_lon" value="113.37856" />
+        <node pkg="osm_map_handler" type="static_osm_map_server.py" name="osm_road_map" output="screen">
+            <param name="map_dir" value="/home/nuc/lxw/ros_maps/19" />
+            <param name="default_lat" value="23.0398" /> 
+            <param name="default_lon" value="113.39002" />
         </node>
         
-        <!-- 启动 C++ 全局 A* (接收 Rviz 的 /move_base_simple/goal，输出 /hybrid_astar_subgoal) -->
-        <node pkg="osm_map_handler" type="global_astar_node" name="global_astar_planner" output="screen">
-            <param name="lookahead_dist" value="15.0"/>
-            <remap from="/global_goal" to="/move_base_simple/goal"/>
+        <!-- 启动 OSM 矢量网格全功能 A* 规划器 -->
+        <node pkg="osm_map_handler" type="osm_vector_planner.py" name="osm_vector_planner" output="screen">
+            <param name="default_lat" value="23.0398" />
+            <param name="default_lon" value="113.39002" />
         </node>
     </group>
 

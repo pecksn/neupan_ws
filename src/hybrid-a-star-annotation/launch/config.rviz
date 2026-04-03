@@ -32,6 +32,12 @@ Preferences:
 Visualization Manager:
   Class: ""
   Displays:
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /osm_vector_map
+      Name: OSM_Vector_Roads
+      Queue Size: 100
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
