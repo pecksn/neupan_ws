@@ -70,7 +70,7 @@ static const double width = 0.60 + 2 * bloating;//车的宽度
 /// [m] --- The length of the vehicle
 static const double length = 0.95 + 2 * bloating;//车的长度
 /// [m] --- The minimum turning radius of the vehicle
-static const float r = 1.40;//最小转弯半径
+static const float r = 1.85;//最小转弯半径
 /// [m] --- The number of discretizations in heading
 static const int headings = 72;//车体朝向的离散数量
 /// [°] --- The discretization value of the heading (goal condition)
