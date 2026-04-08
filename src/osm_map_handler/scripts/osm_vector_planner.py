@@ -3,8 +3,8 @@ import rospy
 import xml.etree.ElementTree as ET
 import math
 import heapq
-from geometry_msgs.msg import PoseStamped, Point
-from nav_msgs.msg import Path, Odometry
+from geometry_msgs.msg import PoseStamped, Point, PoseWithCovarianceStamped
+from nav_msgs.msg import Path, Odometry, OccupancyGrid
 from visualization_msgs.msg import Marker
 
 class OSMVectorPlanner:
@@ -13,6 +13,13 @@ class OSMVectorPlanner:
         
         self.osm_file = rospy.get_param('~osm_file', '/home/nuc/lxw/ros_maps/map.osm')
         self.lookahead = rospy.get_param('~lookahead_dist', 5.0)
+        self.strict_road_mode = rospy.get_param('~strict_road_mode', True)
+        self.goal_snap_max_dist = rospy.get_param('~goal_snap_max_dist', 10.0)
+        self.start_snap_max_dist = rospy.get_param('~start_snap_max_dist', 15.0)
+        self.auto_set_initialpose = rospy.get_param('~auto_set_initialpose', True)
+        self.initialpose_cov_xy = rospy.get_param('~initialpose_cov_xy', 2.0)
+        self.initialpose_cov_yaw = rospy.get_param('~initialpose_cov_yaw', 0.25)
+        self.enable_pose_markers = rospy.get_param('~publish_pose_markers', True)
         
         # 严格对齐的原点
         self.origin_lat = rospy.get_param('~default_lat', 23.0398)
@@ -32,17 +39,31 @@ class OSMVectorPlanner:
         self.adj = {}
         self.current_path = []
         self.robot_x, self.robot_y = 0.0, 0.0
+        self.robot_yaw = 0.0
         self.has_odom = False
+        self.has_map = False
+        self.initialpose_sent = False
         
         self.path_pub = rospy.Publisher('/osm_global_path', Path, queue_size=1)
         self.marker_pub = rospy.Publisher('/osm_vector_map', Marker, queue_size=1, latch=True)
         self.subgoal_pub = rospy.Publisher('/hybrid_astar_subgoal', PoseStamped, queue_size=1)
+        self.initialpose_pub = rospy.Publisher('/initialpose', PoseWithCovarianceStamped, queue_size=1, latch=True)
         
+        rospy.Subscriber('/map', OccupancyGrid, self.map_callback)
         rospy.Subscriber('/odometry/global', Odometry, self.odom_callback)
         rospy.Subscriber('/move_base_simple/goal', PoseStamped, self.goal_callback)
         
         self.load_graph()
         rospy.Timer(rospy.Duration(0.1), self.timer_callback)
+
+    def _yaw_from_quat(self, q):
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return math.atan2(siny_cosp, cosy_cosp)
+
+    def _quat_from_yaw(self, yaw):
+        half = 0.5 * yaw
+        return (0.0, 0.0, math.sin(half), math.cos(half))
 
     def latlon_to_xy(self, lat, lon):
         x = (lon - self.origin_lon) * (math.pi / 180.0) * self.EARTH_RADIUS * math.cos(self.origin_lat * math.pi / 180.0)
@@ -66,9 +87,12 @@ class OSMVectorPlanner:
         marker = Marker()
         marker.header.frame_id = "map"
         marker.header.stamp = rospy.Time.now()
+        marker.ns = "osm_roads"
+        marker.id = 0
         marker.type = Marker.LINE_LIST
+        marker.action = Marker.ADD
         marker.scale.x = 0.4 # 稍微加厚显示
-        marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.0, 1.0, 1.0, 0.8 # 改为青色区分
+        marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.10, 0.35, 1.0, 0.9
         marker.pose.orientation.w = 1.0
         
         way_count = 0
@@ -84,12 +108,16 @@ class OSMVectorPlanner:
                 nds = [nd.get('ref') for nd in way.findall('nd')]
                 for i in range(len(nds)):
                     n1 = nds[i]
+                    if n1 not in temp_nodes:
+                        continue
                     if n1 not in self.nodes:
                         self.nodes[n1] = temp_nodes[n1]
                         self.adj[n1] = []
                     
                     if i < len(nds) - 1:
                         n2 = nds[i+1]
+                        if n2 not in temp_nodes:
+                            continue
                         if n2 not in self.nodes:
                             self.nodes[n2] = temp_nodes[n2]
                             self.adj[n2] = []
@@ -107,63 +135,235 @@ class OSMVectorPlanner:
 
     def odom_callback(self, msg):
         self.robot_x, self.robot_y = msg.pose.pose.position.x, msg.pose.pose.position.y
+        self.robot_yaw = self._yaw_from_quat(msg.pose.pose.orientation)
         self.has_odom = True
+
+    def map_callback(self, msg):
+        self.has_map = (msg.info.width > 0 and msg.info.height > 0)
 
     def find_nearest_node(self, x, y):
         min_dist, closest = float('inf'), None
         for nid, (nx, ny) in self.nodes.items():
             d = math.hypot(nx - x, ny - y)
-            if d < min_dist: min_dist, closest = d, nid
-        return closest
+            if d < min_dist:
+                min_dist, closest = d, nid
+        return closest, min_dist
 
-    def goal_callback(self, msg):
-        if not self.has_odom or not self.nodes: return
-        gx, gy = msg.pose.position.x, msg.pose.position.y
-        start_id, goal_id = self.find_nearest_node(self.robot_x, self.robot_y), self.find_nearest_node(gx, gy)
-        
-        open_set = [(0, start_id)]
-        came_from, g_score = {}, {nid: float('inf') for nid in self.nodes}
-        g_score[start_id] = 0
-        
+    def publish_initialpose(self):
+        init = PoseWithCovarianceStamped()
+        init.header.frame_id = "map"
+        init.header.stamp = rospy.Time.now()
+        init.pose.pose.position.x = self.robot_x
+        init.pose.pose.position.y = self.robot_y
+        qx, qy, qz, qw = self._quat_from_yaw(self.robot_yaw)
+        init.pose.pose.orientation.x = qx
+        init.pose.pose.orientation.y = qy
+        init.pose.pose.orientation.z = qz
+        init.pose.pose.orientation.w = qw
+        init.pose.covariance = [
+            self.initialpose_cov_xy, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, self.initialpose_cov_xy, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 99999.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 99999.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 99999.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, self.initialpose_cov_yaw,
+        ]
+        self.initialpose_pub.publish(init)
+        self.initialpose_sent = True
+
+    def publish_pose_markers(self, start_xy=None):
+        if not self.enable_pose_markers:
+            return
+
+        if start_xy is None:
+            start_xy = (self.robot_x, self.robot_y)
+
+        start_marker = Marker()
+        start_marker.header.frame_id = "map"
+        start_marker.header.stamp = rospy.Time.now()
+        start_marker.ns = "osm_pose"
+        start_marker.id = 1001
+        start_marker.type = Marker.SPHERE
+        start_marker.action = Marker.ADD
+        start_marker.pose.position.x = start_xy[0]
+        start_marker.pose.position.y = start_xy[1]
+        start_marker.pose.position.z = 0.5
+        start_marker.pose.orientation.w = 1.0
+        start_marker.scale.x = 1.0
+        start_marker.scale.y = 1.0
+        start_marker.scale.z = 1.0
+        start_marker.color.r = 1.0
+        start_marker.color.g = 0.85
+        start_marker.color.b = 0.0
+        start_marker.color.a = 0.95
+        self.marker_pub.publish(start_marker)
+
+        current_marker = Marker()
+        current_marker.header.frame_id = "map"
+        current_marker.header.stamp = rospy.Time.now()
+        current_marker.ns = "osm_pose"
+        current_marker.id = 1002
+        current_marker.type = Marker.ARROW
+        current_marker.action = Marker.ADD
+        current_marker.pose.position.x = self.robot_x
+        current_marker.pose.position.y = self.robot_y
+        current_marker.pose.position.z = 0.4
+        qx, qy, qz, qw = self._quat_from_yaw(self.robot_yaw)
+        current_marker.pose.orientation.x = qx
+        current_marker.pose.orientation.y = qy
+        current_marker.pose.orientation.z = qz
+        current_marker.pose.orientation.w = qw
+        current_marker.scale.x = 1.6
+        current_marker.scale.y = 0.35
+        current_marker.scale.z = 0.35
+        current_marker.color.r = 0.05
+        current_marker.color.g = 0.95
+        current_marker.color.b = 0.15
+        current_marker.color.a = 0.95
+        self.marker_pub.publish(current_marker)
+
+    def run_graph_astar(self, start_id, goal_id):
+        open_set = [(0.0, start_id)]
+        came_from = {}
+        g_score = {start_id: 0.0}
+
         while open_set:
             current = heapq.heappop(open_set)[1]
-            if current == goal_id: break
-            for neighbor, weight in self.adj[current]:
+            if current == goal_id:
+                break
+
+            for neighbor, weight in self.adj.get(current, []):
                 tentative_g = g_score[current] + weight
-                if tentative_g < g_score[neighbor]:
+                if tentative_g < g_score.get(neighbor, float('inf')):
                     came_from[neighbor] = current
                     g_score[neighbor] = tentative_g
-                    h = math.hypot(self.nodes[goal_id][0]-self.nodes[neighbor][0], self.nodes[goal_id][1]-self.nodes[neighbor][1])
+                    h = math.hypot(
+                        self.nodes[goal_id][0] - self.nodes[neighbor][0],
+                        self.nodes[goal_id][1] - self.nodes[neighbor][1],
+                    )
                     heapq.heappush(open_set, (tentative_g + h, neighbor))
-                    
-        path = []
+
+        if goal_id not in came_from and goal_id != start_id:
+            return []
+
+        path_ids = [goal_id]
         curr = goal_id
-        if curr in came_from or curr == start_id:
-            while curr in came_from:
-                path.append(self.nodes[curr]); curr = came_from[curr]
-            path.append(self.nodes[start_id]); path.reverse()
-            
-        self.current_path = path + [(gx, gy)]
+        while curr in came_from:
+            curr = came_from[curr]
+            path_ids.append(curr)
+        path_ids.reverse()
+        return path_ids
+
+    def goal_callback(self, msg):
+        if not self.has_odom or not self.nodes or not self.has_map:
+            rospy.logwarn_throttle(1.0, "OSM planner waiting for map/odometry/global/OSM graph")
+            return
+
+        if self.auto_set_initialpose:
+            # 每次收到新目标时，用当前融合定位刷新 Hybrid A* 起点
+            self.publish_initialpose()
+
+        gx, gy = msg.pose.position.x, msg.pose.position.y
+        start_id, start_dist = self.find_nearest_node(self.robot_x, self.robot_y)
+        goal_id, goal_dist = self.find_nearest_node(gx, gy)
+
+        if start_id is None or goal_id is None:
+            rospy.logwarn("OSM planner cannot find nearest drivable node")
+            return
+
+        if self.strict_road_mode:
+            if start_dist > self.start_snap_max_dist:
+                rospy.logwarn(
+                    f"Start is too far from drivable graph ({start_dist:.2f}m > {self.start_snap_max_dist:.2f}m). "
+                    "Check GPS/TF alignment or road graph coverage."
+                )
+                return
+            if goal_dist > self.goal_snap_max_dist:
+                rospy.logwarn(
+                    f"Goal is too far from drivable graph ({goal_dist:.2f}m > {self.goal_snap_max_dist:.2f}m). "
+                    "Please click near blue road lines."
+                )
+                return
+
+        path_ids = self.run_graph_astar(start_id, goal_id)
+        if not path_ids:
+            rospy.logwarn("OSM graph A* failed to find a drivable path")
+            return
+
+        path = [self.nodes[nid] for nid in path_ids]
+        if not self.strict_road_mode:
+            path.append((gx, gy))
+
+        self.current_path = path
+
         nav_path = Path()
         nav_path.header.frame_id = "map"
         nav_path.header.stamp = rospy.Time.now()
-        for (px, py) in self.current_path:
+        for i, (px, py) in enumerate(self.current_path):
             p = PoseStamped()
+            p.header = nav_path.header
             p.pose.position.x, p.pose.position.y, p.pose.orientation.w = px, py, 1.0
+            if i < len(self.current_path) - 1:
+                nx, ny = self.current_path[i + 1]
+                yaw = math.atan2(ny - py, nx - px)
+                qx, qy, qz, qw = self._quat_from_yaw(yaw)
+                p.pose.orientation.x = qx
+                p.pose.orientation.y = qy
+                p.pose.orientation.z = qz
+                p.pose.orientation.w = qw
             nav_path.poses.append(p)
         self.path_pub.publish(nav_path)
 
+        self.publish_pose_markers(start_xy=self.current_path[0])
+        rospy.loginfo(
+            f"Road path planned: {len(self.current_path)} points, start snap {start_dist:.2f}m, goal snap {goal_dist:.2f}m"
+        )
+
     def timer_callback(self, event):
-        if not self.has_odom or not self.current_path: return
+        if not self.has_odom:
+            return
+
+        if self.auto_set_initialpose and not self.initialpose_sent and self.has_map:
+            self.publish_initialpose()
+
+        if not self.current_path:
+            self.publish_pose_markers()
+            return
+
         while len(self.current_path) > 1:
-            if math.hypot(self.current_path[0][0]-self.robot_x, self.current_path[0][1]-self.robot_y) < 2.0:
+            if math.hypot(self.current_path[0][0]-self.robot_x, self.current_path[0][1]-self.robot_y) < max(0.8, self.lookahead * 0.5):
                 self.current_path.pop(0)
-            else: break
-        target = self.current_path[0]
+            else:
+                break
+
+        target_idx = len(self.current_path) - 1
+        accum = 0.0
+        prev_x, prev_y = self.robot_x, self.robot_y
+        for i, (px, py) in enumerate(self.current_path):
+            accum += math.hypot(px - prev_x, py - prev_y)
+            if accum >= self.lookahead:
+                target_idx = i
+                break
+            prev_x, prev_y = px, py
+
+        target = self.current_path[target_idx]
         goal_msg = PoseStamped()
         goal_msg.header.frame_id, goal_msg.header.stamp = "map", rospy.Time.now()
         goal_msg.pose.position.x, goal_msg.pose.position.y = target[0], target[1]
+
+        if target_idx < len(self.current_path) - 1:
+            nx, ny = self.current_path[target_idx + 1]
+            yaw = math.atan2(ny - target[1], nx - target[0])
+        else:
+            yaw = self.robot_yaw
+        qx, qy, qz, qw = self._quat_from_yaw(yaw)
+        goal_msg.pose.orientation.x = qx
+        goal_msg.pose.orientation.y = qy
+        goal_msg.pose.orientation.z = qz
+        goal_msg.pose.orientation.w = qw
+
         self.subgoal_pub.publish(goal_msg)
+        self.publish_pose_markers(start_xy=self.current_path[0])
 
 if __name__ == '__main__':
     try: OSMVectorPlanner(); rospy.spin()

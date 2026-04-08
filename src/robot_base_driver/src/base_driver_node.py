@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import rospy
 import tf
+from collections import deque
 from geometry_msgs.msg import Twist, Quaternion
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import NavSatFix
@@ -16,6 +17,12 @@ class RobotBaseDriver:
         self.baudrate = rospy.get_param('~baudrate', 115200)
         self.base_frame = rospy.get_param('~base_frame', 'base_link')
         self.odom_frame = rospy.get_param('~odom_frame', 'odom')
+        self.gps_frame = rospy.get_param('~gps_frame', 'gps_link')
+        self.gps_cov_xy = rospy.get_param('~gps_cov_xy', 9.0)
+        self.gps_cov_z = rospy.get_param('~gps_cov_z', 25.0)
+        self.gps_jump_reject_m = rospy.get_param('~gps_jump_reject_m', 30.0)
+        self.gps_max_speed_mps = rospy.get_param('~gps_max_speed_mps', 20.0)
+        self.gps_filter_window = max(1, int(rospy.get_param('~gps_filter_window', 5)))
         
         # 机器人运动学参数 (Ackermann)
         self.wheelbase = rospy.get_param('~wheelbase', 0.67) # 轴距 (m)
@@ -48,6 +55,63 @@ class RobotBaseDriver:
         self.offset_x = 0.0
         self.offset_y = 0.0
         self.offset_th = 0.0
+
+        self.last_gps_lat = None
+        self.last_gps_lon = None
+        self.last_gps_stamp = None
+        self.gps_filter_buf = deque(maxlen=self.gps_filter_window)
+
+    def _parse_gps_lat_lon(self, parts):
+        """
+        支持两种常见格式：
+        1) GPS,<lat>,<lon>[, ...]
+        2) GPS,<lat>,N/S,<lon>,E/W[, ...]
+        """
+        if len(parts) < 3:
+            raise ValueError('GPS fields not enough')
+
+        # 格式2: GPS,39.9,N,116.4,E
+        if len(parts) >= 5 and parts[2].upper() in ('N', 'S') and parts[4].upper() in ('E', 'W'):
+            lat = float(parts[1])
+            lon = float(parts[3])
+
+            if parts[2].upper() == 'S':
+                lat = -abs(lat)
+            else:
+                lat = abs(lat)
+
+            if parts[4].upper() == 'W':
+                lon = -abs(lon)
+            else:
+                lon = abs(lon)
+        else:
+            # 格式1: GPS,39.9,116.4 (后续附加字段忽略)
+            lat = float(parts[1])
+            lon = float(parts[2])
+
+        if abs(lat) > 90.0 or abs(lon) > 180.0:
+            raise ValueError(f'GPS lat/lon out of range: lat={lat}, lon={lon}')
+
+        return lat, lon
+
+    def _haversine_distance_m(self, lat1, lon1, lat2, lon2):
+        r = 6378137.0
+        p1 = math.radians(lat1)
+        p2 = math.radians(lat2)
+        dlat = p2 - p1
+        dlon = math.radians(lon2 - lon1)
+        a = math.sin(dlat / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dlon / 2.0) ** 2)
+        c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+        return r * c
+
+    def _smooth_lat_lon(self, lat, lon):
+        self.gps_filter_buf.append((lat, lon))
+        if len(self.gps_filter_buf) <= 1:
+            return lat, lon
+
+        lat_mean = sum(p[0] for p in self.gps_filter_buf) / float(len(self.gps_filter_buf))
+        lon_mean = sum(p[1] for p in self.gps_filter_buf) / float(len(self.gps_filter_buf))
+        return lat_mean, lon_mean
 
     def cmd_vel_callback(self, msg):
         """
@@ -190,49 +254,50 @@ class RobotBaseDriver:
                 # 【新增】解析下位机发上来的 GPS 数据
                 elif line.startswith("GPS"):
                     parts = line.replace(',', ' ').split()
-                    # 假设格式如: GPS,39.12345,116.12345 (Latitude, Longitude)
                     if len(parts) >= 3:
                         try:
+                            lat, lon = self._parse_gps_lat_lon(parts)
+                            gps_stamp = rospy.Time.now()
+
+                            # 抑制明显不合理的 GPS 突跳，避免 map 系抖动
+                            if self.last_gps_lat is not None and self.last_gps_stamp is not None:
+                                dt = (gps_stamp - self.last_gps_stamp).to_sec()
+                                if dt > 1e-3:
+                                    jump_m = self._haversine_distance_m(self.last_gps_lat, self.last_gps_lon, lat, lon)
+                                    speed_mps = jump_m / dt
+                                    if jump_m > self.gps_jump_reject_m and speed_mps > self.gps_max_speed_mps:
+                                        rospy.logwarn_throttle(
+                                            1.0,
+                                            f"Reject GPS jump ({jump_m:.1f}m, {speed_mps:.1f}m/s): {line}"
+                                        )
+                                        return
+
+                            lat_s, lon_s = self._smooth_lat_lon(lat, lon)
+
                             gps_msg = NavSatFix()
-                            gps_msg.header.stamp = rospy.Time.now()
-                            gps_msg.header.frame_id = "gps_link"
-                            
-                            # 通常 GPS 数据格式中第二个是纬度，第三个是经度
-                            lat = float(parts[1])
-                            lon = float(parts[2])
-                            
-                            # 【处理南纬/西经的加负号问题】
-                            # 假设下位机发上来的格式是: GPS,纬度值,N/S,经度值,E/W
-                            # 例如: GPS,39.9,N,116.4,E 或 GPS,39.9,S,116.4,W
-                            # 如果下位机发的是带方向字母的格式，则进行智能判断：
-                            if len(parts) >= 5:
-                                lat_dir = parts[2].upper()
-                                lon_raw = float(parts[3])
-                                lon_dir = parts[4].upper()
-                                if lat_dir == 'S': lat = -lat
-                                if lon_dir == 'W': lon = -lon_raw
-                                else: lon = lon_raw
-                            else:
-                                # 如果下位机没发字母，直接认为它自己在内部已经加了负号
-                                pass
-                                
-                            gps_msg.latitude = lat
-                            gps_msg.longitude = lon
+                            gps_msg.header.stamp = gps_stamp
+                            gps_msg.header.frame_id = self.gps_frame
+
+                            gps_msg.latitude = lat_s
+                            gps_msg.longitude = lon_s
                             gps_msg.altitude = 0.0  # 如果有高度也可以解析
                             
                             # 设置正常状态
                             gps_msg.status.status = 0
                             gps_msg.status.service = 1
                             
-                            # 设置合理的协方差 (单位: m^2) 保证 Navsat 会信任它
+                            # GPS 协方差可参数化，便于室外调小/调大融合强度
                             gps_msg.position_covariance = [
-                                2.0, 0.0, 0.0,
-                                0.0, 2.0, 0.0,
-                                0.0, 0.0, 5.0
+                                self.gps_cov_xy, 0.0, 0.0,
+                                0.0, self.gps_cov_xy, 0.0,
+                                0.0, 0.0, self.gps_cov_z
                             ]
                             gps_msg.position_covariance_type = 1 # 1: COVARIANCE_TYPE_APPROXIMATED
                             
                             self.gps_pub.publish(gps_msg)
+                            self.last_gps_lat = lat
+                            self.last_gps_lon = lon
+                            self.last_gps_stamp = gps_stamp
                         except ValueError:
                             rospy.logwarn(f"Invalid GPS data from MCU: {line}")
                 else:

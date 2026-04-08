@@ -2,6 +2,13 @@
     <!-- true: 室外融合GPS，false: 室内仅里程计/LIO -->
     <arg name="outdoor_mode" default="true" />
     <arg name="imu_topic" default="/imu/data" />
+    <arg name="use_fixed_datum" default="false" />
+    <arg name="datum_lat" default="23.0398" />
+    <arg name="datum_lon" default="113.39002" />
+    <arg name="datum_yaw" default="0.0" />
+    <arg name="navsat_delay" default="0.35" />
+    <arg name="navsat_transform_timeout" default="0.50" />
+    <arg name="outdoor_ekf_tf_time_offset" default="0.0" />
 
     <!-- 串口&底盘参数 -->
     <arg name="port" default="/dev/ttyUSB0"/>
@@ -9,6 +16,12 @@
     <arg name="base_frame" default="base_link"/>
     <arg name="odom_frame" default="odom"/>
     <arg name="wheelbase" default="0.67"/>
+    <arg name="gps_frame" default="gps_link"/>
+    <arg name="gps_cov_xy" default="9.0"/>
+    <arg name="gps_cov_z" default="25.0"/>
+    <arg name="gps_jump_reject_m" default="30.0"/>
+    <arg name="gps_max_speed_mps" default="20.0"/>
+    <arg name="gps_filter_window" default="5"/>
 
     <!-- 1) 底盘驱动：发布 /odom 与 /gps/fix -->
     <include file="$(find robot_base_driver)/launch/driver.launch">
@@ -18,11 +31,18 @@
         <arg name="odom_frame" value="$(arg odom_frame)"/>
         <arg name="wheelbase" value="$(arg wheelbase)"/>
         <arg name="publish_tf" value="false" />
+        <arg name="gps_frame" value="$(arg gps_frame)"/>
+        <arg name="gps_cov_xy" value="$(arg gps_cov_xy)"/>
+        <arg name="gps_cov_z" value="$(arg gps_cov_z)"/>
+        <arg name="gps_jump_reject_m" value="$(arg gps_jump_reject_m)"/>
+        <arg name="gps_max_speed_mps" value="$(arg gps_max_speed_mps)"/>
+        <arg name="gps_filter_window" value="$(arg gps_filter_window)"/>
     </include>
 
     <!-- 2) 本地EKF：融合 /odom + /Odometry，产出 /odometry/local -->
     <node pkg="robot_localization" type="ekf_localization_node" name="ekf_local" clear_params="true" output="screen">
         <rosparam command="load" file="$(find robot_base_driver)/config/ekf_local.yaml" />
+        <param if="$(arg outdoor_mode)" name="transform_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
         <remap from="odometry/filtered" to="/odometry/local" />
     </node>
 
@@ -33,7 +53,10 @@
             <remap from="imu/data" to="$(arg imu_topic)" />
             <remap from="odometry/filtered" to="/odometry/local" />
             <param name="frequency" value="30" />
-            <param name="wait_for_datum" value="false" />
+            <param name="delay" value="$(arg navsat_delay)" />
+            <param name="transform_timeout" value="$(arg navsat_transform_timeout)" />
+            <param name="wait_for_datum" value="$(arg use_fixed_datum)" />
+            <rosparam if="$(arg use_fixed_datum)" param="datum" subst_value="true">[$(arg datum_lat), $(arg datum_lon), $(arg datum_yaw)]</rosparam>
             <param name="zero_altitude" value="true" />
             <param name="publish_filtered_gps" value="true" />
             <param name="use_odometry_yaw" value="true" />
@@ -43,6 +66,8 @@
 
         <node pkg="robot_localization" type="ekf_localization_node" name="ekf_global" clear_params="true" output="screen">
             <rosparam command="load" file="$(find robot_base_driver)/config/ekf_global.yaml" />
+            <param name="transform_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
+            <param name="publish_tf" value="true" />
             <remap from="odometry/filtered" to="/odometry/global" />
         </node>
     </group>

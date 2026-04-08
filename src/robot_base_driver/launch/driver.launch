@@ -11,6 +11,12 @@
     <arg name="base_frame" default="base_link"/>
     <arg name="odom_frame" default="odom"/>
     <arg name="publish_tf" default="true"/>
+    <arg name="gps_frame" default="gps_link"/>
+    <arg name="gps_cov_xy" default="9.0"/>
+    <arg name="gps_cov_z" default="25.0"/>
+    <arg name="gps_jump_reject_m" default="30.0"/>
+    <arg name="gps_max_speed_mps" default="20.0"/>
+    <arg name="gps_filter_window" default="5"/>
 
     <!-- 启动底盘驱动节点 -->
     <node pkg="robot_base_driver" type="base_driver_node.py" name="robot_base_driver" output="screen">
@@ -21,6 +27,12 @@
         <param name="base_frame" value="$(arg base_frame)"/>
         <param name="odom_frame" value="$(arg odom_frame)"/>
         <param name="publish_tf" value="$(arg publish_tf)"/>
+        <param name="gps_frame" value="$(arg gps_frame)"/>
+        <param name="gps_cov_xy" value="$(arg gps_cov_xy)"/>
+        <param name="gps_cov_z" value="$(arg gps_cov_z)"/>
+        <param name="gps_jump_reject_m" value="$(arg gps_jump_reject_m)"/>
+        <param name="gps_max_speed_mps" value="$(arg gps_max_speed_mps)"/>
+        <param name="gps_filter_window" value="$(arg gps_filter_window)"/>
     </node>
 
     <!-- 静态 TF 发布: base_link 到 laser_link -->

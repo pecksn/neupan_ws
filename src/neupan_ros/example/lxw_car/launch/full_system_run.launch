@@ -11,10 +11,46 @@
     <arg name="imu_topic"           default="/imu/data" />
     <arg name="indoor_map_file"     default="/home/nuc/lxw/maps/my_corridor_fastlio.yaml" />
 
+    <!-- OSM 地图原点（建议与 datum 一致） -->
+    <arg name="map_origin_lat" default="23.0398" />
+    <arg name="map_origin_lon" default="113.39002" />
+    <!-- 室外 GPS 固定基准点，防止每次启动原点漂移 -->
+    <arg name="use_fixed_datum" default="true" doc="true: 使用固定datum对齐GPS与OSM原点" />
+    <arg name="datum_yaw" default="0.0" />
+    <arg name="navsat_delay" default="0.35" doc="navsat_transform 延迟处理时间(秒)，用于等待 odom->base_link TF 到位" />
+    <arg name="navsat_transform_timeout" default="0.50" doc="navsat_transform TF 查询超时(秒)" />
+    <arg name="outdoor_ekf_tf_time_offset" default="0.0" doc="室外时 EKF TF 时间偏移，建议 0 以避免时序警告" />
+    <arg name="gps_cov_xy" default="9.0" doc="GPS 平面协方差(m^2)，越大越不信任 GPS" />
+    <arg name="gps_cov_z" default="25.0" doc="GPS 高程协方差(m^2)" />
+    <arg name="gps_jump_reject_m" default="30.0" doc="单次 GPS 跳变拒绝阈值(米)" />
+    <arg name="gps_max_speed_mps" default="20.0" doc="GPS 跳变拒绝的速度阈值(m/s)" />
+    <arg name="gps_filter_window" default="5" doc="GPS 滑动平均窗口，增大可减小静止抖动" />
+
+    <!-- 室外 OSM 规划参数 -->
+    <arg name="osm_lookahead_dist" default="4.0" />
+    <arg name="strict_road_mode" default="true" />
+    <arg name="goal_snap_max_dist" default="8.0" />
+    <arg name="start_snap_max_dist" default="12.0" />
+    <arg name="auto_set_initialpose" default="true" />
+    <arg name="publish_pose_markers" default="true" />
+    <arg name="enable_gps_goal_bridge" default="true" />
+
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
         <arg name="outdoor_mode" value="$(arg outdoor_mode)" />
         <arg name="imu_topic"    value="$(arg imu_topic)" />
+        <arg name="use_fixed_datum" value="$(arg use_fixed_datum)" />
+        <arg name="datum_lat" value="$(arg map_origin_lat)" />
+        <arg name="datum_lon" value="$(arg map_origin_lon)" />
+        <arg name="datum_yaw" value="$(arg datum_yaw)" />
+        <arg name="navsat_delay" value="$(arg navsat_delay)" />
+        <arg name="navsat_transform_timeout" value="$(arg navsat_transform_timeout)" />
+        <arg name="outdoor_ekf_tf_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
+        <arg name="gps_cov_xy" value="$(arg gps_cov_xy)" />
+        <arg name="gps_cov_z" value="$(arg gps_cov_z)" />
+        <arg name="gps_jump_reject_m" value="$(arg gps_jump_reject_m)" />
+        <arg name="gps_max_speed_mps" value="$(arg gps_max_speed_mps)" />
+        <arg name="gps_filter_window" value="$(arg gps_filter_window)" />
         <!-- 本launch内部自行管理 amcl/static_map_odom，防止和底层冲突 -->
         <arg name="publish_static_map_odom" value="false" />
     </include>
@@ -33,6 +69,8 @@
     <!-- 3.2 雷达机械安装外参 (请根据实车尺寸调整位置) -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100"/>
     <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 base_link body 100"/>
+    <!-- GPS 天线外参，供 navsat_transform 去除 GPS 与车体原点偏移 -->
+    <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="0.0 0.0 0.25 0 0 0 base_link gps_link 100"/>
     <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100"/>
 
     <!-- 3.3 FAST-LIO / 高精度里程计 -->
@@ -81,14 +119,28 @@
         <!-- 启动 OSM 大地图拼接节点 -->
         <node pkg="osm_map_handler" type="static_osm_map_server.py" name="osm_road_map" output="screen">
             <param name="map_dir" value="/home/nuc/lxw/ros_maps/19" />
-            <param name="default_lat" value="23.0398" /> 
-            <param name="default_lon" value="113.39002" />
+            <param name="default_lat" value="$(arg map_origin_lat)" /> 
+            <param name="default_lon" value="$(arg map_origin_lon)" />
         </node>
         
         <!-- 启动 OSM 矢量网格全功能 A* 规划器 -->
         <node pkg="osm_map_handler" type="osm_vector_planner.py" name="osm_vector_planner" output="screen">
-            <param name="default_lat" value="23.0398" />
-            <param name="default_lon" value="113.39002" />
+            <param name="default_lat" value="$(arg map_origin_lat)" />
+            <param name="default_lon" value="$(arg map_origin_lon)" />
+            <param name="lookahead_dist" value="$(arg osm_lookahead_dist)" />
+            <param name="strict_road_mode" value="$(arg strict_road_mode)" />
+            <param name="goal_snap_max_dist" value="$(arg goal_snap_max_dist)" />
+            <param name="start_snap_max_dist" value="$(arg start_snap_max_dist)" />
+            <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
+            <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
+        </node>
+
+        <!-- 经由经纬度输入目标点：/gps_goal_ll -> /move_base_simple/goal -->
+        <node if="$(arg enable_gps_goal_bridge)" pkg="osm_map_handler" type="gps_goal_bridge.py" name="gps_goal_bridge" output="screen">
+            <param name="default_lat" value="$(arg map_origin_lat)" />
+            <param name="default_lon" value="$(arg map_origin_lon)" />
+            <param name="input_topic" value="/gps_goal_ll" />
+            <param name="output_topic" value="/move_base_simple/goal" />
         </node>
     </group>
 
