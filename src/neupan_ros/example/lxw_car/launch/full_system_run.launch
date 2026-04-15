@@ -20,11 +20,15 @@
     <arg name="navsat_delay" default="0.35" doc="navsat_transform 延迟处理时间(秒)，用于等待 odom->base_link TF 到位" />
     <arg name="navsat_transform_timeout" default="0.50" doc="navsat_transform TF 查询超时(秒)" />
     <arg name="outdoor_ekf_tf_time_offset" default="0.0" doc="室外时 EKF TF 时间偏移，建议 0 以避免时序警告" />
-    <arg name="gps_cov_xy" default="9.0" doc="GPS 平面协方差(m^2)，越大越不信任 GPS" />
-    <arg name="gps_cov_z" default="25.0" doc="GPS 高程协方差(m^2)" />
-    <arg name="gps_jump_reject_m" default="30.0" doc="单次 GPS 跳变拒绝阈值(米)" />
-    <arg name="gps_max_speed_mps" default="20.0" doc="GPS 跳变拒绝的速度阈值(m/s)" />
-    <arg name="gps_filter_window" default="5" doc="GPS 滑动平均窗口，增大可减小静止抖动" />
+    <arg name="gps_cov_xy" default="49.0" doc="GPS 平面协方差(m^2)，越大越不信任 GPS" />
+    <arg name="gps_cov_z" default="121.0" doc="GPS 高程协方差(m^2)" />
+    <arg name="gps_jump_reject_m" default="8.0" doc="单次 GPS 跳变拒绝阈值(米)" />
+    <arg name="gps_max_speed_mps" default="8.0" doc="GPS 跳变拒绝的速度阈值(m/s)" />
+    <arg name="gps_filter_window" default="15" doc="GPS 滑动平均窗口，增大可减小静止抖动" />
+    <arg name="gps_stationary_speed_mps" default="0.15" doc="车速低于该阈值时视为静止，用于抑制GPS漂移" />
+    <arg name="gps_stationary_jump_m" default="1.5" doc="静止时允许的GPS最大漂移(米)，超出则丢弃" />
+    <arg name="gps_cov_stationary_scale" default="6.0" doc="静止时GPS协方差放大倍数，减弱全局拉扯" />
+    <arg name="gps_ema_alpha" default="0.2" doc="GPS EMA平滑系数(0-1)，越小越平滑" />
 
     <!-- 室外 OSM 规划参数 -->
     <arg name="osm_lookahead_dist" default="4.0" />
@@ -51,6 +55,10 @@
         <arg name="gps_jump_reject_m" value="$(arg gps_jump_reject_m)" />
         <arg name="gps_max_speed_mps" value="$(arg gps_max_speed_mps)" />
         <arg name="gps_filter_window" value="$(arg gps_filter_window)" />
+        <arg name="gps_stationary_speed_mps" value="$(arg gps_stationary_speed_mps)" />
+        <arg name="gps_stationary_jump_m" value="$(arg gps_stationary_jump_m)" />
+        <arg name="gps_cov_stationary_scale" value="$(arg gps_cov_stationary_scale)" />
+        <arg name="gps_ema_alpha" value="$(arg gps_ema_alpha)" />
         <!-- 本launch内部自行管理 amcl/static_map_odom，防止和底层冲突 -->
         <arg name="publish_static_map_odom" value="false" />
     </include>

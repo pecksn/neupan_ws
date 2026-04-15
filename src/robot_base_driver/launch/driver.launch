@@ -17,6 +17,10 @@
     <arg name="gps_jump_reject_m" default="30.0"/>
     <arg name="gps_max_speed_mps" default="20.0"/>
     <arg name="gps_filter_window" default="5"/>
+    <arg name="gps_stationary_speed_mps" default="0.15"/>
+    <arg name="gps_stationary_jump_m" default="1.5"/>
+    <arg name="gps_cov_stationary_scale" default="6.0"/>
+    <arg name="gps_ema_alpha" default="0.2"/>
 
     <!-- 启动底盘驱动节点 -->
     <node pkg="robot_base_driver" type="base_driver_node.py" name="robot_base_driver" output="screen">
@@ -33,6 +37,10 @@
         <param name="gps_jump_reject_m" value="$(arg gps_jump_reject_m)"/>
         <param name="gps_max_speed_mps" value="$(arg gps_max_speed_mps)"/>
         <param name="gps_filter_window" value="$(arg gps_filter_window)"/>
+        <param name="gps_stationary_speed_mps" value="$(arg gps_stationary_speed_mps)"/>
+        <param name="gps_stationary_jump_m" value="$(arg gps_stationary_jump_m)"/>
+        <param name="gps_cov_stationary_scale" value="$(arg gps_cov_stationary_scale)"/>
+        <param name="gps_ema_alpha" value="$(arg gps_ema_alpha)"/>
     </node>
 
     <!-- 静态 TF 发布: base_link 到 laser_link -->

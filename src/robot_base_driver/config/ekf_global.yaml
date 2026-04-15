@@ -2,7 +2,7 @@ frequency: 30
 sensor_timeout: 0.2
 two_d_mode: true
 publish_tf: false
-transform_time_offset: 0.05
+transform_time_offset: 0.0
 map_frame: map
 odom_frame: odom
 base_link_frame: base_link
@@ -37,3 +37,5 @@ odom2_config: [true,  true,  false,
                false, false, false]
 odom2_differential: false
 odom2_queue_size: 10
+odom2_pose_rejection_threshold: 4.0
+odom2_twist_rejection_threshold: 2.0
