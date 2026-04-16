@@ -24,10 +24,16 @@ class RobotBaseDriver:
         self.gps_max_speed_mps = rospy.get_param('~gps_max_speed_mps', 20.0)
         self.gps_filter_window = max(1, int(rospy.get_param('~gps_filter_window', 5)))
         self.gps_stationary_speed_mps = max(0.01, float(rospy.get_param('~gps_stationary_speed_mps', 0.15)))
-        self.gps_stationary_jump_m = max(0.2, float(rospy.get_param('~gps_stationary_jump_m', 1.5)))
-        self.gps_cov_stationary_scale = max(1.0, float(rospy.get_param('~gps_cov_stationary_scale', 6.0)))
-        self.gps_ema_alpha = float(rospy.get_param('~gps_ema_alpha', 0.2))
+        self.gps_stationary_jump_m = max(0.2, float(rospy.get_param('~gps_stationary_jump_m', 4.0)))
+        self.gps_cov_stationary_scale = max(1.0, float(rospy.get_param('~gps_cov_stationary_scale', 2.5)))
+        self.gps_ema_alpha = float(rospy.get_param('~gps_ema_alpha', 0.35))
         self.gps_ema_alpha = min(max(self.gps_ema_alpha, 0.01), 1.0)
+        self.gps_warmup_samples = max(
+            3,
+            int(rospy.get_param('~gps_warmup_samples', max(8, self.gps_filter_window)))
+        )
+        self.gps_use_odom_stamp = bool(rospy.get_param('~gps_use_odom_stamp', True))
+        self.gps_stamp_max_age_sec = max(0.02, float(rospy.get_param('~gps_stamp_max_age_sec', 0.25)))
         
         # 机器人运动学参数 (Ackermann)
         self.wheelbase = rospy.get_param('~wheelbase', 0.67) # 轴距 (m)
@@ -71,6 +77,7 @@ class RobotBaseDriver:
         self.last_odom_y = None
         self.last_odom_stamp = None
         self.odom_speed_mps = 0.0
+        self.gps_valid_count = 0
 
     def _parse_gps_lat_lon(self, parts):
         """
@@ -100,10 +107,26 @@ class RobotBaseDriver:
             lat = float(parts[1])
             lon = float(parts[2])
 
+        # 一些下位机会输出 ddmm.mmmm（度分）格式，这里自动兜底转换
+        if abs(lat) > 90.0 or abs(lon) > 180.0:
+            lat = self._convert_dm_to_decimal(lat)
+            lon = self._convert_dm_to_decimal(lon)
+
         if abs(lat) > 90.0 or abs(lon) > 180.0:
             raise ValueError(f'GPS lat/lon out of range: lat={lat}, lon={lon}')
 
         return lat, lon
+
+    def _convert_dm_to_decimal(self, value):
+        sign = -1.0 if value < 0.0 else 1.0
+        value_abs = abs(value)
+
+        deg = int(value_abs / 100.0)
+        minute = value_abs - (deg * 100.0)
+        if minute >= 60.0:
+            return value
+
+        return sign * (deg + minute / 60.0)
 
     def _haversine_distance_m(self, lat1, lon1, lat2, lon2):
         r = 6378137.0
@@ -287,7 +310,11 @@ class RobotBaseDriver:
                     if len(parts) >= 3:
                         try:
                             lat, lon = self._parse_gps_lat_lon(parts)
-                            gps_stamp = rospy.Time.now()
+                            now = rospy.Time.now()
+                            gps_stamp = now
+                            if self.gps_use_odom_stamp and self.last_odom_stamp is not None:
+                                if (now - self.last_odom_stamp).to_sec() <= self.gps_stamp_max_age_sec:
+                                    gps_stamp = self.last_odom_stamp
 
                             # 抑制明显不合理的 GPS 突跳，避免 map 系抖动
                             if self.last_gps_lat is not None and self.last_gps_stamp is not None:
@@ -305,7 +332,10 @@ class RobotBaseDriver:
                                         return
 
                             # 车辆近似静止时，拒绝大幅GPS漂移，避免 map->odom 被持续拉扯
-                            if self.last_pub_gps_lat is not None and self.odom_speed_mps < self.gps_stationary_speed_mps:
+                            warmup_done = self.gps_valid_count >= self.gps_warmup_samples
+                            is_stationary = self.odom_speed_mps < self.gps_stationary_speed_mps
+
+                            if warmup_done and self.last_pub_gps_lat is not None and is_stationary:
                                 drift_m = self._haversine_distance_m(
                                     self.last_pub_gps_lat,
                                     self.last_pub_gps_lon,
@@ -326,7 +356,7 @@ class RobotBaseDriver:
                             lat_s, lon_s = self._ema_lat_lon(lat_s, lon_s)
 
                             # 静止时增大协方差，降低GPS在全局融合里的拉扯力度
-                            cov_scale = self.gps_cov_stationary_scale if self.odom_speed_mps < self.gps_stationary_speed_mps else 1.0
+                            cov_scale = self.gps_cov_stationary_scale if (warmup_done and is_stationary) else 1.0
                             cov_xy = self.gps_cov_xy * cov_scale
                             cov_z = self.gps_cov_z * cov_scale
 
@@ -356,6 +386,7 @@ class RobotBaseDriver:
                             self.last_gps_stamp = gps_stamp
                             self.last_pub_gps_lat = lat_s
                             self.last_pub_gps_lon = lon_s
+                            self.gps_valid_count += 1
                         except ValueError:
                             rospy.logwarn(f"Invalid GPS data from MCU: {line}")
                 else:

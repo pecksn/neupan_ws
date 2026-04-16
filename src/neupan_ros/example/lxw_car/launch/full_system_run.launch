@@ -17,18 +17,22 @@
     <!-- 室外 GPS 固定基准点，防止每次启动原点漂移 -->
     <arg name="use_fixed_datum" default="true" doc="true: 使用固定datum对齐GPS与OSM原点" />
     <arg name="datum_yaw" default="0.0" />
-    <arg name="navsat_delay" default="0.35" doc="navsat_transform 延迟处理时间(秒)，用于等待 odom->base_link TF 到位" />
-    <arg name="navsat_transform_timeout" default="0.50" doc="navsat_transform TF 查询超时(秒)" />
+    <arg name="navsat_delay" default="0.60" doc="navsat_transform 延迟处理时间(秒)，用于等待 odom->base_link TF 到位" />
+    <arg name="navsat_transform_timeout" default="1.00" doc="navsat_transform TF 查询超时(秒)" />
     <arg name="outdoor_ekf_tf_time_offset" default="0.0" doc="室外时 EKF TF 时间偏移，建议 0 以避免时序警告" />
-    <arg name="gps_cov_xy" default="49.0" doc="GPS 平面协方差(m^2)，越大越不信任 GPS" />
-    <arg name="gps_cov_z" default="121.0" doc="GPS 高程协方差(m^2)" />
-    <arg name="gps_jump_reject_m" default="8.0" doc="单次 GPS 跳变拒绝阈值(米)" />
-    <arg name="gps_max_speed_mps" default="8.0" doc="GPS 跳变拒绝的速度阈值(m/s)" />
-    <arg name="gps_filter_window" default="15" doc="GPS 滑动平均窗口，增大可减小静止抖动" />
+    <arg name="gps_cov_xy" default="4.0" doc="GPS 平面协方差(m^2)，越大越不信任 GPS" />
+    <arg name="gps_cov_z" default="25.0" doc="GPS 高程协方差(m^2)" />
+    <arg name="gps_jump_reject_m" default="12.0" doc="单次 GPS 跳变拒绝阈值(米)" />
+    <arg name="gps_max_speed_mps" default="12.0" doc="GPS 跳变拒绝的速度阈值(m/s)" />
+    <arg name="gps_filter_window" default="8" doc="GPS 滑动平均窗口，增大可减小静止抖动" />
     <arg name="gps_stationary_speed_mps" default="0.15" doc="车速低于该阈值时视为静止，用于抑制GPS漂移" />
-    <arg name="gps_stationary_jump_m" default="1.5" doc="静止时允许的GPS最大漂移(米)，超出则丢弃" />
-    <arg name="gps_cov_stationary_scale" default="6.0" doc="静止时GPS协方差放大倍数，减弱全局拉扯" />
-    <arg name="gps_ema_alpha" default="0.2" doc="GPS EMA平滑系数(0-1)，越小越平滑" />
+    <arg name="gps_stationary_jump_m" default="4.0" doc="静止时允许的GPS最大漂移(米)，超出则丢弃" />
+    <arg name="gps_cov_stationary_scale" default="2.5" doc="静止时GPS协方差放大倍数，减弱全局拉扯" />
+    <arg name="gps_ema_alpha" default="0.35" doc="GPS EMA平滑系数(0-1)，越小越平滑" />
+    <arg name="gps_warmup_samples" default="12" doc="启动时先接收若干GPS样本后再启用静止抑抖" />
+    <arg name="gps_use_odom_stamp" default="true" doc="GPS消息优先使用最近里程计时间戳，减少TF时序告警" />
+    <arg name="gps_stamp_max_age_sec" default="0.25" doc="可复用里程计时间戳的最大时间差(秒)" />
+    <arg name="use_global_ekf" default="false" doc="false: 稳定模式直接使用/odometry/gps; true: 使用ekf_global" />
 
     <!-- 室外 OSM 规划参数 -->
     <arg name="osm_lookahead_dist" default="4.0" />
@@ -37,6 +41,7 @@
     <arg name="start_snap_max_dist" default="12.0" />
     <arg name="auto_set_initialpose" default="true" />
     <arg name="publish_pose_markers" default="true" />
+    <arg name="gps_marker_timeout" default="2.0" />
     <arg name="enable_gps_goal_bridge" default="true" />
 
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
@@ -59,6 +64,10 @@
         <arg name="gps_stationary_jump_m" value="$(arg gps_stationary_jump_m)" />
         <arg name="gps_cov_stationary_scale" value="$(arg gps_cov_stationary_scale)" />
         <arg name="gps_ema_alpha" value="$(arg gps_ema_alpha)" />
+        <arg name="gps_warmup_samples" value="$(arg gps_warmup_samples)" />
+        <arg name="gps_use_odom_stamp" value="$(arg gps_use_odom_stamp)" />
+        <arg name="gps_stamp_max_age_sec" value="$(arg gps_stamp_max_age_sec)" />
+        <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
         <!-- 本launch内部自行管理 amcl/static_map_odom，防止和底层冲突 -->
         <arg name="publish_static_map_odom" value="false" />
     </include>
@@ -141,6 +150,7 @@
             <param name="start_snap_max_dist" value="$(arg start_snap_max_dist)" />
             <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
             <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
+            <param name="gps_marker_timeout" value="$(arg gps_marker_timeout)" />
         </node>
 
         <!-- 经由经纬度输入目标点：/gps_goal_ll -> /move_base_simple/goal -->

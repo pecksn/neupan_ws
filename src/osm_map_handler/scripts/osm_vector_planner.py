@@ -5,6 +5,7 @@ import math
 import heapq
 from geometry_msgs.msg import PoseStamped, Point, PoseWithCovarianceStamped
 from nav_msgs.msg import Path, Odometry, OccupancyGrid
+from sensor_msgs.msg import NavSatFix
 from visualization_msgs.msg import Marker
 
 class OSMVectorPlanner:
@@ -20,6 +21,7 @@ class OSMVectorPlanner:
         self.initialpose_cov_xy = rospy.get_param('~initialpose_cov_xy', 2.0)
         self.initialpose_cov_yaw = rospy.get_param('~initialpose_cov_yaw', 0.25)
         self.enable_pose_markers = rospy.get_param('~publish_pose_markers', True)
+        self.gps_marker_timeout = max(0.2, float(rospy.get_param('~gps_marker_timeout', 2.0)))
         
         # 严格对齐的原点
         self.origin_lat = rospy.get_param('~default_lat', 23.0398)
@@ -42,6 +44,10 @@ class OSMVectorPlanner:
         self.robot_yaw = 0.0
         self.has_odom = False
         self.has_map = False
+        self.has_gps = False
+        self.gps_x = 0.0
+        self.gps_y = 0.0
+        self.last_gps_recv = None
         self.initialpose_sent = False
         
         self.path_pub = rospy.Publisher('/osm_global_path', Path, queue_size=1)
@@ -51,6 +57,7 @@ class OSMVectorPlanner:
         
         rospy.Subscriber('/map', OccupancyGrid, self.map_callback)
         rospy.Subscriber('/odometry/global', Odometry, self.odom_callback)
+        rospy.Subscriber('/gps/fix', NavSatFix, self.gps_callback)
         rospy.Subscriber('/move_base_simple/goal', PoseStamped, self.goal_callback)
         
         self.load_graph()
@@ -141,6 +148,17 @@ class OSMVectorPlanner:
     def map_callback(self, msg):
         self.has_map = (msg.info.width > 0 and msg.info.height > 0)
 
+    def gps_callback(self, msg):
+        if not (math.isfinite(msg.latitude) and math.isfinite(msg.longitude)):
+            return
+        if abs(msg.latitude) > 90.0 or abs(msg.longitude) > 180.0:
+            return
+        x, y = self.latlon_to_xy(msg.latitude, msg.longitude)
+        self.gps_x = x
+        self.gps_y = y
+        self.last_gps_recv = rospy.Time.now()
+        self.has_gps = True
+
     def find_nearest_node(self, x, y):
         min_dist, closest = float('inf'), None
         for nid, (nx, ny) in self.nodes.items():
@@ -175,28 +193,44 @@ class OSMVectorPlanner:
         if not self.enable_pose_markers:
             return
 
-        if start_xy is None:
-            start_xy = (self.robot_x, self.robot_y)
+        # 兼容旧版本：清掉历史遗留的中心黄点(ns=osm_pose,id=1001)
+        legacy_del = Marker()
+        legacy_del.header.frame_id = "map"
+        legacy_del.header.stamp = rospy.Time.now()
+        legacy_del.ns = "osm_pose"
+        legacy_del.id = 1001
+        legacy_del.action = Marker.DELETE
+        self.marker_pub.publish(legacy_del)
 
-        start_marker = Marker()
-        start_marker.header.frame_id = "map"
-        start_marker.header.stamp = rospy.Time.now()
-        start_marker.ns = "osm_pose"
-        start_marker.id = 1001
-        start_marker.type = Marker.SPHERE
-        start_marker.action = Marker.ADD
-        start_marker.pose.position.x = start_xy[0]
-        start_marker.pose.position.y = start_xy[1]
-        start_marker.pose.position.z = 0.5
-        start_marker.pose.orientation.w = 1.0
-        start_marker.scale.x = 1.0
-        start_marker.scale.y = 1.0
-        start_marker.scale.z = 1.0
-        start_marker.color.r = 1.0
-        start_marker.color.g = 0.85
-        start_marker.color.b = 0.0
-        start_marker.color.a = 0.95
-        self.marker_pub.publish(start_marker)
+        # 仅在真正规划出路径后显示起点球，避免待机时在地图中心误导为GPS点
+        if start_xy is not None:
+            start_marker = Marker()
+            start_marker.header.frame_id = "map"
+            start_marker.header.stamp = rospy.Time.now()
+            start_marker.ns = "osm_path"
+            start_marker.id = 1001
+            start_marker.type = Marker.SPHERE
+            start_marker.action = Marker.ADD
+            start_marker.pose.position.x = start_xy[0]
+            start_marker.pose.position.y = start_xy[1]
+            start_marker.pose.position.z = 0.5
+            start_marker.pose.orientation.w = 1.0
+            start_marker.scale.x = 1.0
+            start_marker.scale.y = 1.0
+            start_marker.scale.z = 1.0
+            start_marker.color.r = 0.10
+            start_marker.color.g = 0.70
+            start_marker.color.b = 1.0
+            start_marker.color.a = 0.95
+            self.marker_pub.publish(start_marker)
+        else:
+            start_del = Marker()
+            start_del.header.frame_id = "map"
+            start_del.header.stamp = rospy.Time.now()
+            start_del.ns = "osm_path"
+            start_del.id = 1001
+            start_del.action = Marker.DELETE
+            self.marker_pub.publish(start_del)
 
         current_marker = Marker()
         current_marker.header.frame_id = "map"
@@ -221,6 +255,30 @@ class OSMVectorPlanner:
         current_marker.color.b = 0.15
         current_marker.color.a = 0.95
         self.marker_pub.publish(current_marker)
+
+        if self.has_gps and self.last_gps_recv is not None:
+            gps_age = (rospy.Time.now() - self.last_gps_recv).to_sec()
+            gps_fresh = gps_age <= self.gps_marker_timeout
+
+            gps_marker = Marker()
+            gps_marker.header.frame_id = "map"
+            gps_marker.header.stamp = rospy.Time.now()
+            gps_marker.ns = "osm_roads"
+            gps_marker.id = 1003
+            gps_marker.type = Marker.SPHERE
+            gps_marker.action = Marker.ADD
+            gps_marker.pose.position.x = self.gps_x
+            gps_marker.pose.position.y = self.gps_y
+            gps_marker.pose.position.z = 0.6
+            gps_marker.pose.orientation.w = 1.0
+            gps_marker.scale.x = 0.8
+            gps_marker.scale.y = 0.8
+            gps_marker.scale.z = 0.8
+            gps_marker.color.r = 1.0
+            gps_marker.color.g = 0.92
+            gps_marker.color.b = 0.05
+            gps_marker.color.a = 0.95 if gps_fresh else 0.35
+            self.marker_pub.publish(gps_marker)
 
     def run_graph_astar(self, start_id, goal_id):
         open_set = [(0.0, start_id)]

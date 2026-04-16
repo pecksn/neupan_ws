@@ -6,8 +6,8 @@
     <arg name="datum_lat" default="23.0398" />
     <arg name="datum_lon" default="113.39002" />
     <arg name="datum_yaw" default="0.0" />
-    <arg name="navsat_delay" default="0.35" />
-    <arg name="navsat_transform_timeout" default="0.50" />
+    <arg name="navsat_delay" default="0.60" />
+    <arg name="navsat_transform_timeout" default="1.00" />
     <arg name="outdoor_ekf_tf_time_offset" default="0.0" />
 
     <!-- 串口&底盘参数 -->
@@ -23,9 +23,13 @@
     <arg name="gps_max_speed_mps" default="20.0"/>
     <arg name="gps_filter_window" default="5"/>
     <arg name="gps_stationary_speed_mps" default="0.15"/>
-    <arg name="gps_stationary_jump_m" default="1.5"/>
-    <arg name="gps_cov_stationary_scale" default="6.0"/>
-    <arg name="gps_ema_alpha" default="0.2"/>
+    <arg name="gps_stationary_jump_m" default="4.0"/>
+    <arg name="gps_cov_stationary_scale" default="2.5"/>
+    <arg name="gps_ema_alpha" default="0.35"/>
+    <arg name="gps_warmup_samples" default="8"/>
+    <arg name="gps_use_odom_stamp" default="true"/>
+    <arg name="gps_stamp_max_age_sec" default="0.25"/>
+    <arg name="use_global_ekf" default="false" />
 
     <!-- 1) 底盘驱动：发布 /odom 与 /gps/fix -->
     <include file="$(find robot_base_driver)/launch/driver.launch">
@@ -45,6 +49,9 @@
         <arg name="gps_stationary_jump_m" value="$(arg gps_stationary_jump_m)"/>
         <arg name="gps_cov_stationary_scale" value="$(arg gps_cov_stationary_scale)"/>
         <arg name="gps_ema_alpha" value="$(arg gps_ema_alpha)"/>
+        <arg name="gps_warmup_samples" value="$(arg gps_warmup_samples)"/>
+        <arg name="gps_use_odom_stamp" value="$(arg gps_use_odom_stamp)"/>
+        <arg name="gps_stamp_max_age_sec" value="$(arg gps_stamp_max_age_sec)"/>
     </include>
 
     <!-- 2) 本地EKF：融合 /odom + /Odometry，产出 /odometry/local -->
@@ -68,16 +75,29 @@
             <param name="zero_altitude" value="true" />
             <param name="publish_filtered_gps" value="true" />
             <param name="use_odometry_yaw" value="true" />
-            <param name="broadcast_cartesian_transform" value="true" />
-            <param name="broadcast_cartesian_transform_as_parent_frame" value="true" />
+            <param name="broadcast_cartesian_transform" value="false" />
+            <param name="broadcast_cartesian_transform_as_parent_frame" value="false" />
         </node>
 
-        <node pkg="robot_localization" type="ekf_localization_node" name="ekf_global" clear_params="true" output="screen">
-            <rosparam command="load" file="$(find robot_base_driver)/config/ekf_global.yaml" />
-            <param name="transform_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
-            <param name="publish_tf" value="true" />
-            <remap from="odometry/filtered" to="/odometry/global" />
-        </node>
+        <group if="$(arg use_global_ekf)">
+            <node pkg="robot_localization" type="ekf_localization_node" name="ekf_global" clear_params="true" output="screen">
+                <rosparam command="load" file="$(find robot_base_driver)/config/ekf_global.yaml" />
+                <param name="transform_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
+                <param name="publish_tf" value="true" />
+                <remap from="odometry/filtered" to="/odometry/global" />
+            </node>
+        </group>
+
+        <group unless="$(arg use_global_ekf)">
+            <!-- 稳定模式：直接使用 navsat 输出作为全局里程计，避免全局EKF发散 -->
+            <node pkg="robot_base_driver" type="global_odom_bridge.py" name="global_odom_bridge" output="screen">
+                <param name="input_topic" value="/odometry/gps" />
+                <param name="output_topic" value="/odometry/global" />
+                <param name="output_frame" value="map" />
+                <param name="child_frame" value="base_link" />
+            </node>
+            <node pkg="tf" type="static_transform_publisher" name="map_to_odom_outdoor" args="0 0 0 0 0 0 map odom 100" />
+        </group>
     </group>
 
     <!-- 4) 室内：给 map->odom 固定变换，方便全局规划使用 map 坐标 -->

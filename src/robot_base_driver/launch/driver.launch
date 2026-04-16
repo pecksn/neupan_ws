@@ -18,9 +18,12 @@
     <arg name="gps_max_speed_mps" default="20.0"/>
     <arg name="gps_filter_window" default="5"/>
     <arg name="gps_stationary_speed_mps" default="0.15"/>
-    <arg name="gps_stationary_jump_m" default="1.5"/>
-    <arg name="gps_cov_stationary_scale" default="6.0"/>
-    <arg name="gps_ema_alpha" default="0.2"/>
+    <arg name="gps_stationary_jump_m" default="4.0"/>
+    <arg name="gps_cov_stationary_scale" default="2.5"/>
+    <arg name="gps_ema_alpha" default="0.35"/>
+    <arg name="gps_warmup_samples" default="8"/>
+    <arg name="gps_use_odom_stamp" default="true"/>
+    <arg name="gps_stamp_max_age_sec" default="0.25"/>
 
     <!-- 启动底盘驱动节点 -->
     <node pkg="robot_base_driver" type="base_driver_node.py" name="robot_base_driver" output="screen">
@@ -41,6 +44,9 @@
         <param name="gps_stationary_jump_m" value="$(arg gps_stationary_jump_m)"/>
         <param name="gps_cov_stationary_scale" value="$(arg gps_cov_stationary_scale)"/>
         <param name="gps_ema_alpha" value="$(arg gps_ema_alpha)"/>
+        <param name="gps_warmup_samples" value="$(arg gps_warmup_samples)"/>
+        <param name="gps_use_odom_stamp" value="$(arg gps_use_odom_stamp)"/>
+        <param name="gps_stamp_max_age_sec" value="$(arg gps_stamp_max_age_sec)"/>
     </node>
 
     <!-- 静态 TF 发布: base_link 到 laser_link -->
