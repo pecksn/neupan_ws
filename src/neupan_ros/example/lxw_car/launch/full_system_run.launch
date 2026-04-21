@@ -33,14 +33,17 @@
     <arg name="gps_use_odom_stamp" default="true" doc="GPS消息优先使用最近里程计时间戳，减少TF时序告警" />
     <arg name="gps_stamp_max_age_sec" default="0.25" doc="可复用里程计时间戳的最大时间差(秒)" />
     <arg name="use_global_ekf" default="false" doc="false: 稳定模式直接使用/odometry/gps; true: 使用ekf_global" />
+    <arg name="align_map_odom_with_global_local" default="true" doc="用 /odometry/global 与 /odometry/local 对齐 map->odom，便于点云与全局标记一致" />
+    <arg name="map_odom_align_timeout" default="2.0" doc="map_odom 动态对齐消息接收超时(秒)" />
 
     <!-- 室外 OSM 规划参数 -->
     <arg name="osm_lookahead_dist" default="4.0" />
     <arg name="strict_road_mode" default="true" />
     <arg name="goal_snap_max_dist" default="8.0" />
-    <arg name="start_snap_max_dist" default="12.0" />
+    <arg name="start_snap_max_dist" default="40.0" />
     <arg name="auto_set_initialpose" default="true" />
     <arg name="publish_pose_markers" default="true" />
+    <arg name="publish_snap_debug_markers" default="true" />
     <arg name="gps_marker_timeout" default="2.0" />
     <arg name="enable_gps_goal_bridge" default="true" />
 
@@ -68,9 +71,25 @@
         <arg name="gps_use_odom_stamp" value="$(arg gps_use_odom_stamp)" />
         <arg name="gps_stamp_max_age_sec" value="$(arg gps_stamp_max_age_sec)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
+        <arg name="publish_static_map_odom_outdoor" value="false" if="$(arg align_map_odom_with_global_local)" />
+        <arg name="publish_static_map_odom_outdoor" value="true" unless="$(arg align_map_odom_with_global_local)" />
         <!-- 本launch内部自行管理 amcl/static_map_odom，防止和底层冲突 -->
         <arg name="publish_static_map_odom" value="false" />
     </include>
+
+    <group if="$(arg outdoor_mode)">
+        <group if="$(arg align_map_odom_with_global_local)">
+            <group unless="$(arg use_global_ekf)">
+                <node pkg="robot_base_driver" type="map_odom_align_bridge.py" name="map_odom_align_bridge" output="screen">
+                    <param name="global_topic" value="/odometry/global"/>
+                    <param name="local_topic" value="/odometry/local"/>
+                    <param name="parent_frame" value="map"/>
+                    <param name="child_frame" value="odom"/>
+                    <param name="timeout_sec" value="$(arg map_odom_align_timeout)"/>
+                </node>
+            </group>
+        </group>
+    </group>
 
     <!-- ==================== 3. 激光雷达 & 3D转2D处理 ==================== -->
     <!-- 3.1 启动 Livox MID360 -->
@@ -104,6 +123,23 @@
         <remap from="scan"     to="/scan"/>
         <param name="target_frame" value="base_link"/>
         <param name="transform_tolerance" value="0.01"/>
+        <param name="min_height"   value="0.2"/>
+        <param name="max_height"   value="0.8"/>
+        <param name="angle_min"    value="-3.14159"/>
+        <param name="angle_max"    value="3.14159"/>
+        <param name="angle_increment" value="0.0087"/>
+        <param name="scan_time" value="0.1"/>
+        <param name="range_max"    value="30.0"/>
+        <param name="range_min"    value="0.4"/>
+        <param name="use_inf"      value="true"/>
+    </node>
+
+    <!-- 仅用于RViz显示：将点云投影到 map 坐标，便于和室外全局标记对齐观察 -->
+    <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan_viz" output="screen">
+        <remap from="cloud_in" to="/cloud_registered_body"/>
+        <remap from="scan"     to="/scan_viz"/>
+        <param name="target_frame" value="map"/>
+        <param name="transform_tolerance" value="0.25"/>
         <param name="min_height"   value="0.2"/>
         <param name="max_height"   value="0.8"/>
         <param name="angle_min"    value="-3.14159"/>
@@ -150,6 +186,7 @@
             <param name="start_snap_max_dist" value="$(arg start_snap_max_dist)" />
             <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
             <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
+            <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />
             <param name="gps_marker_timeout" value="$(arg gps_marker_timeout)" />
         </node>
 

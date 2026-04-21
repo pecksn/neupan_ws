@@ -3,7 +3,8 @@ import rospy
 import xml.etree.ElementTree as ET
 import math
 import heapq
-from geometry_msgs.msg import PoseStamped, Point, PoseWithCovarianceStamped
+import traceback
+from geometry_msgs.msg import PoseStamped, Point, PoseWithCovarianceStamped, PointStamped
 from nav_msgs.msg import Path, Odometry, OccupancyGrid
 from sensor_msgs.msg import NavSatFix
 from visualization_msgs.msg import Marker
@@ -21,6 +22,7 @@ class OSMVectorPlanner:
         self.initialpose_cov_xy = rospy.get_param('~initialpose_cov_xy', 2.0)
         self.initialpose_cov_yaw = rospy.get_param('~initialpose_cov_yaw', 0.25)
         self.enable_pose_markers = rospy.get_param('~publish_pose_markers', True)
+        self.enable_snap_debug_markers = rospy.get_param('~publish_snap_debug_markers', True)
         self.gps_marker_timeout = max(0.2, float(rospy.get_param('~gps_marker_timeout', 2.0)))
         
         # 严格对齐的原点
@@ -59,6 +61,7 @@ class OSMVectorPlanner:
         rospy.Subscriber('/odometry/global', Odometry, self.odom_callback)
         rospy.Subscriber('/gps/fix', NavSatFix, self.gps_callback)
         rospy.Subscriber('/move_base_simple/goal', PoseStamped, self.goal_callback)
+        rospy.Subscriber('/clicked_point', PointStamped, self.clicked_point_callback)
         
         self.load_graph()
         rospy.Timer(rospy.Duration(0.1), self.timer_callback)
@@ -280,6 +283,157 @@ class OSMVectorPlanner:
             gps_marker.color.a = 0.95 if gps_fresh else 0.35
             self.marker_pub.publish(gps_marker)
 
+        # 持续显示“当前定位最近的道路吸附点”，便于判断黄点为何偏离蓝线
+        self.publish_current_snap_marker()
+
+    def publish_snap_debug_markers(self, raw_start_xy=None, snap_start_xy=None, raw_goal_xy=None, snap_goal_xy=None):
+        if not self.enable_snap_debug_markers:
+            return
+
+        # Snap 起点（青色）
+        start_marker = Marker()
+        start_marker.header.frame_id = "map"
+        start_marker.header.stamp = rospy.Time.now()
+        start_marker.ns = "osm_snap"
+        start_marker.id = 1101
+        start_marker.type = Marker.SPHERE
+        start_marker.action = Marker.ADD if snap_start_xy is not None else Marker.DELETE
+        if snap_start_xy is not None:
+            start_marker.pose.position.x = snap_start_xy[0]
+            start_marker.pose.position.y = snap_start_xy[1]
+            start_marker.pose.position.z = 0.7
+            start_marker.pose.orientation.w = 1.0
+            start_marker.scale.x = 0.9
+            start_marker.scale.y = 0.9
+            start_marker.scale.z = 0.9
+            start_marker.color.r = 0.0
+            start_marker.color.g = 1.0
+            start_marker.color.b = 1.0
+            start_marker.color.a = 0.9
+        self.marker_pub.publish(start_marker)
+
+        # Snap 目标（紫色）
+        goal_marker = Marker()
+        goal_marker.header.frame_id = "map"
+        goal_marker.header.stamp = rospy.Time.now()
+        goal_marker.ns = "osm_snap"
+        goal_marker.id = 1102
+        goal_marker.type = Marker.SPHERE
+        goal_marker.action = Marker.ADD if snap_goal_xy is not None else Marker.DELETE
+        if snap_goal_xy is not None:
+            goal_marker.pose.position.x = snap_goal_xy[0]
+            goal_marker.pose.position.y = snap_goal_xy[1]
+            goal_marker.pose.position.z = 0.7
+            goal_marker.pose.orientation.w = 1.0
+            goal_marker.scale.x = 0.9
+            goal_marker.scale.y = 0.9
+            goal_marker.scale.z = 0.9
+            goal_marker.color.r = 1.0
+            goal_marker.color.g = 0.0
+            goal_marker.color.b = 1.0
+            goal_marker.color.a = 0.9
+        self.marker_pub.publish(goal_marker)
+
+        # 原始点到吸附点的连线（青/紫）
+        start_link = Marker()
+        start_link.header.frame_id = "map"
+        start_link.header.stamp = rospy.Time.now()
+        start_link.ns = "osm_snap"
+        start_link.id = 1103
+        start_link.type = Marker.LINE_LIST
+        start_link.action = Marker.ADD if (raw_start_xy is not None and snap_start_xy is not None) else Marker.DELETE
+        if start_link.action == Marker.ADD:
+            start_link.scale.x = 0.12
+            start_link.color.r = 0.0
+            start_link.color.g = 1.0
+            start_link.color.b = 1.0
+            start_link.color.a = 0.85
+            start_link.points = [
+                Point(x=raw_start_xy[0], y=raw_start_xy[1], z=0.35),
+                Point(x=snap_start_xy[0], y=snap_start_xy[1], z=0.35),
+            ]
+        self.marker_pub.publish(start_link)
+
+        goal_link = Marker()
+        goal_link.header.frame_id = "map"
+        goal_link.header.stamp = rospy.Time.now()
+        goal_link.ns = "osm_snap"
+        goal_link.id = 1104
+        goal_link.type = Marker.LINE_LIST
+        goal_link.action = Marker.ADD if (raw_goal_xy is not None and snap_goal_xy is not None) else Marker.DELETE
+        if goal_link.action == Marker.ADD:
+            goal_link.scale.x = 0.12
+            goal_link.color.r = 1.0
+            goal_link.color.g = 0.0
+            goal_link.color.b = 1.0
+            goal_link.color.a = 0.85
+            goal_link.points = [
+                Point(x=raw_goal_xy[0], y=raw_goal_xy[1], z=0.35),
+                Point(x=snap_goal_xy[0], y=snap_goal_xy[1], z=0.35),
+            ]
+        self.marker_pub.publish(goal_link)
+
+    def publish_current_snap_marker(self):
+        if not self.enable_snap_debug_markers:
+            return
+
+        snap_marker = Marker()
+        snap_marker.header.frame_id = "map"
+        snap_marker.header.stamp = rospy.Time.now()
+        snap_marker.ns = "osm_snap"
+        snap_marker.id = 1105
+        snap_marker.type = Marker.SPHERE
+
+        link_marker = Marker()
+        link_marker.header.frame_id = "map"
+        link_marker.header.stamp = rospy.Time.now()
+        link_marker.ns = "osm_snap"
+        link_marker.id = 1106
+        link_marker.type = Marker.LINE_LIST
+
+        if not self.nodes:
+            snap_marker.action = Marker.DELETE
+            link_marker.action = Marker.DELETE
+            self.marker_pub.publish(snap_marker)
+            self.marker_pub.publish(link_marker)
+            return
+
+        snap_id, _ = self.find_nearest_node(self.robot_x, self.robot_y)
+        if snap_id is None:
+            snap_marker.action = Marker.DELETE
+            link_marker.action = Marker.DELETE
+            self.marker_pub.publish(snap_marker)
+            self.marker_pub.publish(link_marker)
+            return
+
+        sx, sy = self.nodes[snap_id]
+
+        snap_marker.action = Marker.ADD
+        snap_marker.pose.position.x = sx
+        snap_marker.pose.position.y = sy
+        snap_marker.pose.position.z = 0.55
+        snap_marker.pose.orientation.w = 1.0
+        snap_marker.scale.x = 0.7
+        snap_marker.scale.y = 0.7
+        snap_marker.scale.z = 0.7
+        snap_marker.color.r = 1.0
+        snap_marker.color.g = 0.55
+        snap_marker.color.b = 0.0
+        snap_marker.color.a = 0.95
+        self.marker_pub.publish(snap_marker)
+
+        link_marker.action = Marker.ADD
+        link_marker.scale.x = 0.10
+        link_marker.color.r = 1.0
+        link_marker.color.g = 0.55
+        link_marker.color.b = 0.0
+        link_marker.color.a = 0.85
+        link_marker.points = [
+            Point(x=self.robot_x, y=self.robot_y, z=0.30),
+            Point(x=sx, y=sy, z=0.30),
+        ]
+        self.marker_pub.publish(link_marker)
+
     def run_graph_astar(self, start_id, goal_id):
         open_set = [(0.0, start_id)]
         came_from = {}
@@ -312,10 +466,40 @@ class OSMVectorPlanner:
         path_ids.reverse()
         return path_ids
 
+    def clicked_point_callback(self, msg):
+        goal = PoseStamped()
+        goal.header.frame_id = msg.header.frame_id if msg.header.frame_id else "map"
+        goal.header.stamp = rospy.Time.now()
+        goal.pose.position.x = msg.point.x
+        goal.pose.position.y = msg.point.y
+        goal.pose.position.z = 0.0
+        goal.pose.orientation.w = 1.0
+        rospy.loginfo(
+            f"Clicked point received: ({goal.pose.position.x:.2f}, {goal.pose.position.y:.2f}) frame={goal.header.frame_id}"
+        )
+        self.goal_callback(goal)
+
     def goal_callback(self, msg):
-        if not self.has_odom or not self.nodes or not self.has_map:
-            rospy.logwarn_throttle(1.0, "OSM planner waiting for map/odometry/global/OSM graph")
+        if not self.has_odom or not self.nodes:
+            missing = []
+            if not self.has_odom:
+                missing.append("/odometry/global")
+            if not self.nodes:
+                missing.append("OSM road graph")
+            rospy.logwarn_throttle(1.0, "OSM planner waiting for: %s", ", ".join(missing))
             return
+
+        if msg.header.frame_id and msg.header.frame_id != "map":
+            rospy.logwarn(
+                f"Goal frame is '{msg.header.frame_id}', expected 'map'. Coordinates are used as-is."
+            )
+
+        rospy.loginfo(
+            f"Goal accepted: ({msg.pose.position.x:.2f}, {msg.pose.position.y:.2f})"
+        )
+
+        if not self.has_map:
+            rospy.logwarn_throttle(1.0, "No /map yet. OSM graph path can still be generated, but occupancy map checks are unavailable.")
 
         if self.auto_set_initialpose:
             # 每次收到新目标时，用当前融合定位刷新 Hybrid A* 起点
@@ -325,6 +509,19 @@ class OSMVectorPlanner:
         start_id, start_dist = self.find_nearest_node(self.robot_x, self.robot_y)
         goal_id, goal_dist = self.find_nearest_node(gx, gy)
 
+        snap_start_xy = self.nodes[start_id] if start_id is not None else None
+        snap_goal_xy = self.nodes[goal_id] if goal_id is not None else None
+        self.publish_snap_debug_markers(
+            raw_start_xy=(self.robot_x, self.robot_y),
+            snap_start_xy=snap_start_xy,
+            raw_goal_xy=(gx, gy),
+            snap_goal_xy=snap_goal_xy,
+        )
+
+        rospy.loginfo(
+            f"Snap distance: start={start_dist:.2f}m, goal={goal_dist:.2f}m"
+        )
+
         if start_id is None or goal_id is None:
             rospy.logwarn("OSM planner cannot find nearest drivable node")
             return
@@ -333,13 +530,13 @@ class OSMVectorPlanner:
             if start_dist > self.start_snap_max_dist:
                 rospy.logwarn(
                     f"Start is too far from drivable graph ({start_dist:.2f}m > {self.start_snap_max_dist:.2f}m). "
-                    "Check GPS/TF alignment or road graph coverage."
+                    "Check GPS/TF alignment or road graph coverage. Cyan snap marker shows nearest road node."
                 )
                 return
             if goal_dist > self.goal_snap_max_dist:
                 rospy.logwarn(
                     f"Goal is too far from drivable graph ({goal_dist:.2f}m > {self.goal_snap_max_dist:.2f}m). "
-                    "Please click near blue road lines."
+                    "Please click near blue road lines. Magenta snap marker shows nearest road node."
                 )
                 return
 
@@ -424,5 +621,8 @@ class OSMVectorPlanner:
         self.publish_pose_markers(start_xy=self.current_path[0])
 
 if __name__ == '__main__':
-    try: OSMVectorPlanner(); rospy.spin()
-    except: pass
+    try:
+        OSMVectorPlanner()
+        rospy.spin()
+    except Exception:
+        rospy.logerr("osm_vector_planner crashed:\n%s", traceback.format_exc())

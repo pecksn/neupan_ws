@@ -30,6 +30,7 @@
     <arg name="gps_use_odom_stamp" default="true"/>
     <arg name="gps_stamp_max_age_sec" default="0.25"/>
     <arg name="use_global_ekf" default="false" />
+    <arg name="publish_static_map_odom_outdoor" default="true" />
 
     <!-- 1) 底盘驱动：发布 /odom 与 /gps/fix -->
     <include file="$(find robot_base_driver)/launch/driver.launch">
@@ -96,7 +97,9 @@
                 <param name="output_frame" value="map" />
                 <param name="child_frame" value="base_link" />
             </node>
-            <node pkg="tf" type="static_transform_publisher" name="map_to_odom_outdoor" args="0 0 0 0 0 0 map odom 100" />
+            <group if="$(arg publish_static_map_odom_outdoor)">
+                <node pkg="tf" type="static_transform_publisher" name="map_to_odom_outdoor" args="0 0 0 0 0 0 map odom 100" />
+            </group>
         </group>
     </group>
 
