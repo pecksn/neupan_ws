@@ -16,6 +16,8 @@ class MapOdomAlignBridge:
         self.parent_frame = rospy.get_param("~parent_frame", "map")
         self.child_frame = rospy.get_param("~child_frame", "odom")
         self.timeout_sec = float(rospy.get_param("~timeout_sec", 2.0))
+        self.yaw_bias_deg = float(rospy.get_param("~yaw_bias_deg", 0.0))
+        self.yaw_bias_rad = math.radians(self.yaw_bias_deg)
 
         self.last_global = None
         self.last_local = None
@@ -28,11 +30,12 @@ class MapOdomAlignBridge:
         self.timer = rospy.Timer(rospy.Duration(0.02), self._timer_cb)
 
         rospy.loginfo(
-            "map_odom_align_bridge: %s + %s -> TF %s -> %s",
+            "map_odom_align_bridge: %s + %s -> TF %s -> %s (yaw_bias=%.1f deg)",
             self.global_topic,
             self.local_topic,
             self.parent_frame,
             self.child_frame,
+            self.yaw_bias_deg,
         )
 
     @staticmethod
@@ -52,6 +55,10 @@ class MapOdomAlignBridge:
     @staticmethod
     def _is_finite(v):
         return math.isfinite(v)
+
+    @staticmethod
+    def _normalize_angle(a):
+        return math.atan2(math.sin(a), math.cos(a))
 
     def _timer_cb(self, _event):
         if (
@@ -82,7 +89,15 @@ class MapOdomAlignBridge:
         lyaw = self._yaw_from_quat(self.last_local.pose.pose.orientation)
 
         # Compute T_map_odom so that: T_map_odom * T_odom_base(local) ~= T_map_base(global)
-        dyaw = gyaw - lyaw
+        raw_dyaw = gyaw - lyaw
+        dyaw = self._normalize_angle(raw_dyaw + self.yaw_bias_rad)
+        rospy.loginfo_throttle(
+            1.0,
+            "map_odom_align_bridge yaw raw=%.1f deg, bias=%.1f deg, used=%.1f deg",
+            math.degrees(raw_dyaw),
+            self.yaw_bias_deg,
+            math.degrees(dyaw),
+        )
         c = math.cos(dyaw)
         s = math.sin(dyaw)
         tx = gx - (c * lx - s * ly)

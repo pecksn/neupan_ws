@@ -35,6 +35,7 @@
     <arg name="use_global_ekf" default="false" doc="false: 稳定模式直接使用/odometry/gps; true: 使用ekf_global" />
     <arg name="align_map_odom_with_global_local" default="true" doc="用 /odometry/global 与 /odometry/local 对齐 map->odom，便于点云与全局标记一致" />
     <arg name="map_odom_align_timeout" default="2.0" doc="map_odom 动态对齐消息接收超时(秒)" />
+    <arg name="map_odom_align_yaw_bias_deg" default="180.0" doc="map_odom 偏航补偿角(度); 若显示反向可设为 180" />
 
     <!-- 室外 OSM 规划参数 -->
     <arg name="osm_lookahead_dist" default="4.0" />
@@ -46,6 +47,7 @@
     <arg name="publish_snap_debug_markers" default="true" />
     <arg name="gps_marker_timeout" default="2.0" />
     <arg name="enable_gps_goal_bridge" default="true" />
+    <arg name="outdoor_use_hybrid_astar" default="false" doc="室外是否启用 Hybrid A*；false 时 NeuPAN 直接跟踪 OSM A* 路径" />
 
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
@@ -86,6 +88,7 @@
                     <param name="parent_frame" value="map"/>
                     <param name="child_frame" value="odom"/>
                     <param name="timeout_sec" value="$(arg map_odom_align_timeout)"/>
+                    <param name="yaw_bias_deg" value="$(arg map_odom_align_yaw_bias_deg)"/>
                 </node>
             </group>
         </group>
@@ -200,36 +203,78 @@
     </group>
 
     <!-- ==================== 5. 导航规划体系 ==================== -->
-    <!-- 动态决定 Hybrid A* 的目标话题：如果室外，听 C++ 规划器的局部目标；如果室内，直接听 Rviz 的总目标 -->
-    <arg name="hybrid_goal_topic" value="/hybrid_astar_subgoal" if="$(arg outdoor_mode)" />
-    <arg name="hybrid_goal_topic" value="/move_base_simple/goal" unless="$(arg outdoor_mode)" />
+    <!-- 室内：始终使用 Hybrid A*，NeuPAN 监听 /sPath -->
+    <group unless="$(arg outdoor_mode)">
+        <node name="hybrid_astar" pkg="hybrid_astar" type="hybrid_astar" output="screen">
+            <remap from="/map" to="/map" />
+            <remap from="/move_base_simple/goal" to="/move_base_simple/goal" />
+        </node>
+        <node pkg="tf" type="static_transform_publisher" name="map_to_path" args="0 0 0 0 0 0 map path 100" />
 
-    <node name="hybrid_astar" pkg="hybrid_astar" type="hybrid_astar" output="screen">
-        <remap from="/map" to="/map" />
-        <remap from="/move_base_simple/goal" to="$(arg hybrid_goal_topic)" />
-    </node>
-    <!-- 禁用导致 map<->odom 循环冲突的 hybrid_tf_broadcaster，改为发射 map->path 的补充静态tf -->
-    <!-- <node name="hybrid_tf_broadcaster" pkg="hybrid_astar" type="tf_broadcaster" output="screen" /> -->
-    <node pkg="tf" type="static_transform_publisher" name="map_to_path" args="0 0 0 0 0 0 map path 100" />
+        <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
+            <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml"/>
+            <param name="map_frame"   value="map"/>
+            <param name="base_frame"  value="base_link"/>
+            <param name="lidar_frame" value="base_link"/>
+            <param name="scan_downsample" value="1"/>
+            <param name="scan_range" value="0.1 20.0"/>
+            <param name="scan_angle_range" value="-3.14 3.14"/>
+            <param name="marker_size" value="0.05"/>
+            <param name="marker_z" value="0.3"/>
+            <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
+            <param name="refresh_initial_path" value="true"/>
+            <param name="include_initial_path_direction" value="true"/>
+            <remap from="/initial_path" to="/sPath" />
+            <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
+        </node>
+    </group>
 
-    <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
-        <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml"/>
-        <param name="map_frame"   value="map"/>
-        <param name="base_frame"  value="base_link"/>
-        <param name="lidar_frame" value="base_link"/>
-        <param name="scan_downsample" value="1"/>
-        <param name="scan_range" value="0.1 20.0"/>
-        <param name="scan_angle_range" value="-3.14 3.14"/>
-        <param name="marker_size" value="0.05"/>
-        <param name="marker_z" value="0.3"/>
-        <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
-        <param name="refresh_initial_path" value="true"/>
-        <param name="include_initial_path_direction" value="true"/>
-        
-        <!-- 取消 NeuPAN 直接接收 Nav Goal 的权限，强制它只能听从 Hybrid-A* 发出的 sPath。这才是正确的 "全局+局部" 架构 -->
-        <remap from="/initial_path" to="/sPath" />
-        <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
-    </node>
+    <!-- 室外：默认只用 OSM A*，可选启用 Hybrid A* -->
+    <group if="$(arg outdoor_mode)">
+        <group if="$(arg outdoor_use_hybrid_astar)">
+            <node name="hybrid_astar" pkg="hybrid_astar" type="hybrid_astar" output="screen">
+                <remap from="/map" to="/map" />
+                <remap from="/move_base_simple/goal" to="/hybrid_astar_subgoal" />
+            </node>
+            <node pkg="tf" type="static_transform_publisher" name="map_to_path_outdoor" args="0 0 0 0 0 0 map path 100" />
+
+            <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
+                <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml"/>
+                <param name="map_frame"   value="map"/>
+                <param name="base_frame"  value="base_link"/>
+                <param name="lidar_frame" value="base_link"/>
+                <param name="scan_downsample" value="1"/>
+                <param name="scan_range" value="0.1 20.0"/>
+                <param name="scan_angle_range" value="-3.14 3.14"/>
+                <param name="marker_size" value="0.05"/>
+                <param name="marker_z" value="0.3"/>
+                <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
+                <param name="refresh_initial_path" value="true"/>
+                <param name="include_initial_path_direction" value="true"/>
+                <remap from="/initial_path" to="/sPath" />
+                <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
+            </node>
+        </group>
+
+        <group unless="$(arg outdoor_use_hybrid_astar)">
+            <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
+                <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml"/>
+                <param name="map_frame"   value="map"/>
+                <param name="base_frame"  value="base_link"/>
+                <param name="lidar_frame" value="base_link"/>
+                <param name="scan_downsample" value="1"/>
+                <param name="scan_range" value="0.1 20.0"/>
+                <param name="scan_angle_range" value="-3.14 3.14"/>
+                <param name="marker_size" value="0.05"/>
+                <param name="marker_z" value="0.3"/>
+                <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
+                <param name="refresh_initial_path" value="true"/>
+                <param name="include_initial_path_direction" value="true"/>
+                <remap from="/initial_path" to="/osm_global_path" />
+                <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
+            </node>
+        </group>
+    </group>
 
     <!-- ==================== 6. 数据可视化 ==================== -->
     <group if="$(arg enable_rviz)">
