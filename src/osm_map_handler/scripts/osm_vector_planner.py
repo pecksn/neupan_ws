@@ -52,7 +52,7 @@ class OSMVectorPlanner:
         self.last_gps_recv = None
         self.initialpose_sent = False
         
-        self.path_pub = rospy.Publisher('/osm_global_path', Path, queue_size=1)
+        self.path_pub = rospy.Publisher('/osm_global_path', Path, queue_size=1, latch=True)
         self.marker_pub = rospy.Publisher('/osm_vector_map', Marker, queue_size=1, latch=True)
         self.subgoal_pub = rospy.Publisher('/hybrid_astar_subgoal', PoseStamped, queue_size=1)
         self.initialpose_pub = rospy.Publisher('/initialpose', PoseWithCovarianceStamped, queue_size=1, latch=True)

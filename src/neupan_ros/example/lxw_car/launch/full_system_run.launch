@@ -40,14 +40,15 @@
     <!-- 室外 OSM 规划参数 -->
     <arg name="osm_lookahead_dist" default="4.0" />
     <arg name="strict_road_mode" default="true" />
-    <arg name="goal_snap_max_dist" default="8.0" />
-    <arg name="start_snap_max_dist" default="40.0" />
+    <arg name="goal_snap_max_dist" default="50.0" />
+    <arg name="start_snap_max_dist" default="50.0" />
     <arg name="auto_set_initialpose" default="true" />
     <arg name="publish_pose_markers" default="true" />
     <arg name="publish_snap_debug_markers" default="true" />
     <arg name="gps_marker_timeout" default="2.0" />
     <arg name="enable_gps_goal_bridge" default="true" />
     <arg name="outdoor_use_hybrid_astar" default="false" doc="室外是否启用 Hybrid A*；false 时 NeuPAN 直接跟踪 OSM A* 路径" />
+    <arg name="outdoor_initial_path_topic" default="/osm_global_path" doc="室外 NeuPAN 初始路径来源话题；可选 /osm_global_path 或 /sPath" />
 
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
@@ -251,7 +252,7 @@
                 <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
                 <param name="refresh_initial_path" value="true"/>
                 <param name="include_initial_path_direction" value="true"/>
-                <remap from="/initial_path" to="/sPath" />
+                <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
                 <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
             </node>
         </group>
@@ -270,7 +271,7 @@
                 <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
                 <param name="refresh_initial_path" value="true"/>
                 <param name="include_initial_path_direction" value="true"/>
-                <remap from="/initial_path" to="/osm_global_path" />
+                <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
                 <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
             </node>
         </group>
