@@ -295,7 +295,14 @@ class neupan_core:
             return
 
         if not path.poses or len(path.poses) == 0:
-            rospy.logwarn("Received empty path from Hybrid A*, ignoring...")
+            rospy.logwarn("Received empty path from initial path topic, ignoring...")
+            return
+
+        if len(path.poses) < 2:
+            rospy.logwarn(
+                "Received degenerate initial path with %d pose(s); ignoring it to avoid an invalid NeuPAN reference path.",
+                len(path.poses),
+            )
             return
 
         initial_point_list = []

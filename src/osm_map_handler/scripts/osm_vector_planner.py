@@ -41,6 +41,7 @@ class OSMVectorPlanner:
         
         self.nodes = {}
         self.adj = {}
+        self.edges = []
         self.current_path = []
         self.robot_x, self.robot_y = 0.0, 0.0
         self.robot_yaw = 0.0
@@ -64,6 +65,12 @@ class OSMVectorPlanner:
         rospy.Subscriber('/clicked_point', PointStamped, self.clicked_point_callback)
         
         self.load_graph()
+        rospy.loginfo(
+            "OSM planner config: strict_road_mode=%s, start_snap_max_dist=%.2fm, goal_snap_max_dist=%.2fm",
+            self.strict_road_mode,
+            self.start_snap_max_dist,
+            self.goal_snap_max_dist,
+        )
         rospy.Timer(rospy.Duration(0.1), self.timer_callback)
 
     def _yaw_from_quat(self, q):
@@ -135,13 +142,14 @@ class OSMVectorPlanner:
                         dist = math.hypot(temp_nodes[n1][0]-temp_nodes[n2][0], temp_nodes[n1][1]-temp_nodes[n2][1])
                         self.adj[n1].append((n2, dist))
                         self.adj[n2].append((n1, dist))
+                        self.edges.append((n1, n2, dist))
                         
                         marker.points.append(Point(x=temp_nodes[n1][0], y=temp_nodes[n1][1], z=0))
                         marker.points.append(Point(x=temp_nodes[n2][0], y=temp_nodes[n2][1], z=0))
                 way_count += 1
                         
         self.marker_pub.publish(marker)
-        rospy.loginfo(f"Drivable Graph loaded: {way_count} ways, {len(self.nodes)} nodes.")
+        rospy.loginfo(f"Drivable Graph loaded: {way_count} ways, {len(self.nodes)} nodes, {len(self.edges)} edges.")
 
     def odom_callback(self, msg):
         self.robot_x, self.robot_y = msg.pose.pose.position.x, msg.pose.pose.position.y
@@ -169,6 +177,145 @@ class OSMVectorPlanner:
             if d < min_dist:
                 min_dist, closest = d, nid
         return closest, min_dist
+
+    def _project_point_to_segment(self, x, y, ax, ay, bx, by):
+        dx = bx - ax
+        dy = by - ay
+        seg_len_sq = dx * dx + dy * dy
+        if seg_len_sq <= 1e-9:
+            return ax, ay, 0.0
+
+        t = ((x - ax) * dx + (y - ay) * dy) / seg_len_sq
+        t = max(0.0, min(1.0, t))
+        px = ax + t * dx
+        py = ay + t * dy
+        return px, py, t
+
+    def find_nearest_graph_point(self, x, y):
+        best = None
+        min_dist = float('inf')
+
+        for n1, n2, edge_len in self.edges:
+            ax, ay = self.nodes[n1]
+            bx, by = self.nodes[n2]
+            px, py, t = self._project_point_to_segment(x, y, ax, ay, bx, by)
+            dist = math.hypot(px - x, py - y)
+            if dist < min_dist:
+                min_dist = dist
+                best = {
+                    'point': (px, py),
+                    'dist': dist,
+                    'start_id': n1,
+                    'end_id': n2,
+                    't': t,
+                    'edge_len': edge_len,
+                }
+
+        if best is None:
+            closest, node_dist = self.find_nearest_node(x, y)
+            if closest is None:
+                return None
+            px, py = self.nodes[closest]
+            return {
+                'point': (px, py),
+                'dist': node_dist,
+                'start_id': closest,
+                'end_id': closest,
+                't': 0.0,
+                'edge_len': 0.0,
+            }
+
+        return best
+
+    def _reconstruct_node_path(self, came_from, goal_id):
+        path_ids = [goal_id]
+        curr = goal_id
+        while curr in came_from:
+            curr = came_from[curr]
+            path_ids.append(curr)
+        path_ids.reverse()
+        return path_ids
+
+    def shortest_node_path(self, start_id, goal_id):
+        open_set = [(0.0, start_id)]
+        came_from = {}
+        g_score = {start_id: 0.0}
+
+        while open_set:
+            current = heapq.heappop(open_set)[1]
+            if current == goal_id:
+                break
+
+            for neighbor, weight in self.adj.get(current, []):
+                tentative_g = g_score[current] + weight
+                if tentative_g < g_score.get(neighbor, float('inf')):
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g
+                    h = math.hypot(
+                        self.nodes[goal_id][0] - self.nodes[neighbor][0],
+                        self.nodes[goal_id][1] - self.nodes[neighbor][1],
+                    )
+                    heapq.heappush(open_set, (tentative_g + h, neighbor))
+
+        if goal_id != start_id and goal_id not in came_from:
+            return [], float('inf')
+
+        return self._reconstruct_node_path(came_from, goal_id), g_score.get(goal_id, 0.0)
+
+    def _dedupe_path_points(self, path, min_spacing=1e-3):
+        compact = []
+        for px, py in path:
+            if not compact:
+                compact.append((px, py))
+                continue
+            if math.hypot(px - compact[-1][0], py - compact[-1][1]) > min_spacing:
+                compact.append((px, py))
+        return compact
+
+    def build_graph_path(self, start_snap, goal_snap):
+        sx, sy = start_snap['point']
+        gx, gy = goal_snap['point']
+
+        best_path = []
+        best_cost = float('inf')
+
+        if (
+            start_snap['start_id'] == goal_snap['start_id']
+            and start_snap['end_id'] == goal_snap['end_id']
+        ) or (
+            start_snap['start_id'] == goal_snap['end_id']
+            and start_snap['end_id'] == goal_snap['start_id']
+        ):
+            direct_cost = math.hypot(gx - sx, gy - sy)
+            best_path = [(sx, sy), (gx, gy)]
+            best_cost = direct_cost
+
+        start_candidates = [
+            (start_snap['start_id'], start_snap['t'] * start_snap['edge_len']),
+            (start_snap['end_id'], (1.0 - start_snap['t']) * start_snap['edge_len']),
+        ]
+        goal_candidates = [
+            (goal_snap['start_id'], goal_snap['t'] * goal_snap['edge_len']),
+            (goal_snap['end_id'], (1.0 - goal_snap['t']) * goal_snap['edge_len']),
+        ]
+
+        for start_node, start_cost in start_candidates:
+            for goal_node, goal_cost in goal_candidates:
+                node_path, node_cost = self.shortest_node_path(start_node, goal_node)
+                if not node_path:
+                    continue
+
+                total_cost = start_cost + node_cost + goal_cost
+                candidate = [(sx, sy)]
+                candidate.extend(self.nodes[nid] for nid in node_path)
+                candidate.append((gx, gy))
+                candidate = self._dedupe_path_points(candidate)
+
+                if total_cost < best_cost and len(candidate) >= 2:
+                    best_cost = total_cost
+                    best_path = candidate
+
+        return self._dedupe_path_points(best_path)
 
     def publish_initialpose(self):
         init = PoseWithCovarianceStamped()
@@ -398,15 +545,15 @@ class OSMVectorPlanner:
             self.marker_pub.publish(link_marker)
             return
 
-        snap_id, _ = self.find_nearest_node(self.robot_x, self.robot_y)
-        if snap_id is None:
+        snap_info = self.find_nearest_graph_point(self.robot_x, self.robot_y)
+        if snap_info is None:
             snap_marker.action = Marker.DELETE
             link_marker.action = Marker.DELETE
             self.marker_pub.publish(snap_marker)
             self.marker_pub.publish(link_marker)
             return
 
-        sx, sy = self.nodes[snap_id]
+        sx, sy = snap_info['point']
 
         snap_marker.action = Marker.ADD
         snap_marker.pose.position.x = sx
@@ -435,35 +582,7 @@ class OSMVectorPlanner:
         self.marker_pub.publish(link_marker)
 
     def run_graph_astar(self, start_id, goal_id):
-        open_set = [(0.0, start_id)]
-        came_from = {}
-        g_score = {start_id: 0.0}
-
-        while open_set:
-            current = heapq.heappop(open_set)[1]
-            if current == goal_id:
-                break
-
-            for neighbor, weight in self.adj.get(current, []):
-                tentative_g = g_score[current] + weight
-                if tentative_g < g_score.get(neighbor, float('inf')):
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g
-                    h = math.hypot(
-                        self.nodes[goal_id][0] - self.nodes[neighbor][0],
-                        self.nodes[goal_id][1] - self.nodes[neighbor][1],
-                    )
-                    heapq.heappush(open_set, (tentative_g + h, neighbor))
-
-        if goal_id not in came_from and goal_id != start_id:
-            return []
-
-        path_ids = [goal_id]
-        curr = goal_id
-        while curr in came_from:
-            curr = came_from[curr]
-            path_ids.append(curr)
-        path_ids.reverse()
+        path_ids, _ = self.shortest_node_path(start_id, goal_id)
         return path_ids
 
     def clicked_point_callback(self, msg):
@@ -506,11 +625,13 @@ class OSMVectorPlanner:
             self.publish_initialpose()
 
         gx, gy = msg.pose.position.x, msg.pose.position.y
-        start_id, start_dist = self.find_nearest_node(self.robot_x, self.robot_y)
-        goal_id, goal_dist = self.find_nearest_node(gx, gy)
+        start_snap = self.find_nearest_graph_point(self.robot_x, self.robot_y)
+        goal_snap = self.find_nearest_graph_point(gx, gy)
+        start_dist = start_snap['dist'] if start_snap is not None else float('inf')
+        goal_dist = goal_snap['dist'] if goal_snap is not None else float('inf')
 
-        snap_start_xy = self.nodes[start_id] if start_id is not None else None
-        snap_goal_xy = self.nodes[goal_id] if goal_id is not None else None
+        snap_start_xy = start_snap['point'] if start_snap is not None else None
+        snap_goal_xy = goal_snap['point'] if goal_snap is not None else None
         self.publish_snap_debug_markers(
             raw_start_xy=(self.robot_x, self.robot_y),
             snap_start_xy=snap_start_xy,
@@ -522,32 +643,48 @@ class OSMVectorPlanner:
             f"Snap distance: start={start_dist:.2f}m, goal={goal_dist:.2f}m"
         )
 
-        if start_id is None or goal_id is None:
-            rospy.logwarn("OSM planner cannot find nearest drivable node")
+        if start_snap is None or goal_snap is None:
+            rospy.logwarn("OSM planner cannot find nearest drivable graph point")
             return
 
         if self.strict_road_mode:
             if start_dist > self.start_snap_max_dist:
                 rospy.logwarn(
                     f"Start is too far from drivable graph ({start_dist:.2f}m > {self.start_snap_max_dist:.2f}m). "
-                    "Check GPS/TF alignment or road graph coverage. Cyan snap marker shows nearest road node."
+                    "Check GPS/TF alignment or road graph coverage. Cyan snap marker shows nearest road point."
                 )
                 return
             if goal_dist > self.goal_snap_max_dist:
                 rospy.logwarn(
                     f"Goal is too far from drivable graph ({goal_dist:.2f}m > {self.goal_snap_max_dist:.2f}m). "
-                    "Please click near blue road lines. Magenta snap marker shows nearest road node."
+                    "Please click near blue road lines. Magenta snap marker shows nearest road point."
                 )
                 return
 
-        path_ids = self.run_graph_astar(start_id, goal_id)
-        if not path_ids:
+        path = self.build_graph_path(start_snap, goal_snap)
+        if not path:
             rospy.logwarn("OSM graph A* failed to find a drivable path")
             return
 
-        path = [self.nodes[nid] for nid in path_ids]
         if not self.strict_road_mode:
             path.append((gx, gy))
+            path = self._dedupe_path_points(path)
+
+        if len(path) < 2:
+            rospy.logwarn(
+                "OSM graph path degenerated to %d point (start_edge=%s-%s, goal_edge=%s-%s, start_snap=%.2fm, goal_snap=%.2fm, strict=%s). "
+                "Rejecting this request to avoid sending an invalid initial path to NeuPAN. "
+                "Click closer to the blue road graph or reduce snap thresholds.",
+                len(path),
+                str(start_snap['start_id']),
+                str(start_snap['end_id']),
+                str(goal_snap['start_id']),
+                str(goal_snap['end_id']),
+                start_dist,
+                goal_dist,
+                self.strict_road_mode,
+            )
+            return
 
         self.current_path = path
 
