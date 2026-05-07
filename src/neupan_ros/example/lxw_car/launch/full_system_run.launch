@@ -42,6 +42,14 @@
     <arg name="strict_road_mode" default="true" />
     <arg name="goal_snap_max_dist" default="50.0" />
     <arg name="start_snap_max_dist" default="50.0" />
+    <arg name="outdoor_path_straight_spacing" default="2.5" doc="室外 OSM 路径直线段重采样间距(米)" />
+    <arg name="outdoor_path_turn_spacing" default="0.8" doc="室外 OSM 路径转弯处重采样间距(米)" />
+    <arg name="outdoor_path_turn_angle_deg_low" default="8.0" doc="低于该转角视作近似直线(度)" />
+    <arg name="outdoor_path_turn_angle_deg_high" default="35.0" doc="高于该转角使用更密集采样(度)" />
+    <arg name="outdoor_path_turn_dense_before" default="3.0" doc="入弯前额外加密长度(米)" />
+    <arg name="outdoor_path_turn_dense_after" default="2.0" doc="出弯后保持加密的长度(米)" />
+    <arg name="outdoor_path_turn_recover_after" default="6.0" doc="出弯后逐渐恢复为直线间距的长度(米)" />
+    <arg name="outdoor_path_min_points" default="3" doc="室外路径最少下发给 NeuPAN 的点数" />
     <arg name="auto_set_initialpose" default="true" />
     <arg name="publish_pose_markers" default="true" />
     <arg name="publish_snap_debug_markers" default="true" />
@@ -188,6 +196,14 @@
             <param name="strict_road_mode" value="$(arg strict_road_mode)" />
             <param name="goal_snap_max_dist" value="$(arg goal_snap_max_dist)" />
             <param name="start_snap_max_dist" value="$(arg start_snap_max_dist)" />
+            <param name="path_straight_spacing" value="$(arg outdoor_path_straight_spacing)" />
+            <param name="path_turn_spacing" value="$(arg outdoor_path_turn_spacing)" />
+            <param name="path_turn_angle_deg_low" value="$(arg outdoor_path_turn_angle_deg_low)" />
+            <param name="path_turn_angle_deg_high" value="$(arg outdoor_path_turn_angle_deg_high)" />
+            <param name="path_turn_dense_before" value="$(arg outdoor_path_turn_dense_before)" />
+            <param name="path_turn_dense_after" value="$(arg outdoor_path_turn_dense_after)" />
+            <param name="path_turn_recover_after" value="$(arg outdoor_path_turn_recover_after)" />
+            <param name="path_min_points" value="$(arg outdoor_path_min_points)" />
             <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
             <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
             <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />

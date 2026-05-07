@@ -18,6 +18,18 @@ class OSMVectorPlanner:
         self.strict_road_mode = rospy.get_param('~strict_road_mode', True)
         self.goal_snap_max_dist = rospy.get_param('~goal_snap_max_dist', 10.0)
         self.start_snap_max_dist = rospy.get_param('~start_snap_max_dist', 15.0)
+        self.path_straight_spacing = max(0.3, float(rospy.get_param('~path_straight_spacing', 2.5)))
+        self.path_turn_spacing = max(0.2, float(rospy.get_param('~path_turn_spacing', 0.8)))
+        if self.path_turn_spacing > self.path_straight_spacing:
+            self.path_turn_spacing = self.path_straight_spacing
+        self.path_turn_angle_low = math.radians(float(rospy.get_param('~path_turn_angle_deg_low', 8.0)))
+        self.path_turn_angle_high = math.radians(float(rospy.get_param('~path_turn_angle_deg_high', 35.0)))
+        if self.path_turn_angle_high < self.path_turn_angle_low:
+            self.path_turn_angle_high = self.path_turn_angle_low
+        self.path_turn_dense_before = max(0.0, float(rospy.get_param('~path_turn_dense_before', 3.0)))
+        self.path_turn_dense_after = max(0.0, float(rospy.get_param('~path_turn_dense_after', 2.0)))
+        self.path_turn_recover_after = max(0.0, float(rospy.get_param('~path_turn_recover_after', 6.0)))
+        self.path_min_points = max(2, int(rospy.get_param('~path_min_points', 3)))
         self.auto_set_initialpose = rospy.get_param('~auto_set_initialpose', True)
         self.initialpose_cov_xy = rospy.get_param('~initialpose_cov_xy', 2.0)
         self.initialpose_cov_yaw = rospy.get_param('~initialpose_cov_yaw', 0.25)
@@ -66,10 +78,15 @@ class OSMVectorPlanner:
         
         self.load_graph()
         rospy.loginfo(
-            "OSM planner config: strict_road_mode=%s, start_snap_max_dist=%.2fm, goal_snap_max_dist=%.2fm",
+            "OSM planner config: strict_road_mode=%s, start_snap_max_dist=%.2fm, goal_snap_max_dist=%.2fm, path_spacing=%.2f/%.2fm, turn_zone=%.2f/%.2f/%.2fm",
             self.strict_road_mode,
             self.start_snap_max_dist,
             self.goal_snap_max_dist,
+            self.path_straight_spacing,
+            self.path_turn_spacing,
+            self.path_turn_dense_before,
+            self.path_turn_dense_after,
+            self.path_turn_recover_after,
         )
         rospy.Timer(rospy.Duration(0.1), self.timer_callback)
 
@@ -271,6 +288,135 @@ class OSMVectorPlanner:
             if math.hypot(px - compact[-1][0], py - compact[-1][1]) > min_spacing:
                 compact.append((px, py))
         return compact
+
+    def _compute_turn_angle(self, prev_pt, curr_pt, next_pt):
+        v1x = curr_pt[0] - prev_pt[0]
+        v1y = curr_pt[1] - prev_pt[1]
+        v2x = next_pt[0] - curr_pt[0]
+        v2y = next_pt[1] - curr_pt[1]
+        norm1 = math.hypot(v1x, v1y)
+        norm2 = math.hypot(v2x, v2y)
+        if norm1 <= 1e-6 or norm2 <= 1e-6:
+            return 0.0
+        cos_theta = (v1x * v2x + v1y * v2y) / (norm1 * norm2)
+        cos_theta = max(-1.0, min(1.0, cos_theta))
+        return math.acos(cos_theta)
+
+    def _spacing_from_turn_angle(self, angle_rad):
+        if angle_rad <= self.path_turn_angle_low:
+            return self.path_straight_spacing
+        if angle_rad >= self.path_turn_angle_high:
+            return self.path_turn_spacing
+
+        ratio = (
+            (angle_rad - self.path_turn_angle_low)
+            / max(1e-6, self.path_turn_angle_high - self.path_turn_angle_low)
+        )
+        return self.path_straight_spacing + ratio * (
+            self.path_turn_spacing - self.path_straight_spacing
+        )
+
+    def _compute_cumulative_lengths(self, path):
+        cumulative = [0.0]
+        for i in range(1, len(path)):
+            prev = path[i - 1]
+            curr = path[i]
+            cumulative.append(cumulative[-1] + math.hypot(curr[0] - prev[0], curr[1] - prev[1]))
+        return cumulative
+
+    def _interpolate_along_path(self, path, cumulative_lengths, target_s):
+        total_len = cumulative_lengths[-1]
+        if target_s <= 0.0:
+            return path[0]
+        if target_s >= total_len:
+            return path[-1]
+
+        for i in range(1, len(cumulative_lengths)):
+            seg_end_s = cumulative_lengths[i]
+            if target_s <= seg_end_s:
+                seg_start_s = cumulative_lengths[i - 1]
+                seg_len = seg_end_s - seg_start_s
+                if seg_len <= 1e-9:
+                    return path[i]
+                ratio = (target_s - seg_start_s) / seg_len
+                start = path[i - 1]
+                end = path[i]
+                px = start[0] + ratio * (end[0] - start[0])
+                py = start[1] + ratio * (end[1] - start[1])
+                return (px, py)
+        return path[-1]
+
+    def _build_turn_influences(self, path, cumulative_lengths):
+        influences = []
+        for i in range(1, len(path) - 1):
+            angle = self._compute_turn_angle(path[i - 1], path[i], path[i + 1])
+            dense_spacing = self._spacing_from_turn_angle(angle)
+            if dense_spacing >= self.path_straight_spacing - 1e-6:
+                continue
+            influences.append(
+                {
+                    'vertex_s': cumulative_lengths[i],
+                    'dense_spacing': dense_spacing,
+                }
+            )
+        return influences
+
+    def _spacing_at_arclength(self, arc_s, influences):
+        spacing = self.path_straight_spacing
+        for influence in influences:
+            vertex_s = influence['vertex_s']
+            dense_spacing = influence['dense_spacing']
+
+            dense_start_s = vertex_s - self.path_turn_dense_before
+            dense_end_s = vertex_s + self.path_turn_dense_after
+            recover_end_s = dense_end_s + self.path_turn_recover_after
+
+            local_spacing = self.path_straight_spacing
+            if dense_start_s <= arc_s <= dense_end_s:
+                local_spacing = dense_spacing
+            elif dense_end_s < arc_s < recover_end_s and self.path_turn_recover_after > 1e-6:
+                ratio = (arc_s - dense_end_s) / self.path_turn_recover_after
+                local_spacing = dense_spacing + ratio * (self.path_straight_spacing - dense_spacing)
+
+            spacing = min(spacing, local_spacing)
+        return max(self.path_turn_spacing, min(self.path_straight_spacing, spacing))
+
+    def resample_path_for_tracking(self, path):
+        path = self._dedupe_path_points(path)
+        if len(path) < 2:
+            return path
+
+        cumulative_lengths = self._compute_cumulative_lengths(path)
+        total_len = cumulative_lengths[-1]
+        if total_len <= 1e-6:
+            return path
+
+        influences = self._build_turn_influences(path, cumulative_lengths)
+        resampled = [path[0]]
+        arc_s = 0.0
+
+        while arc_s < total_len:
+            step = self._spacing_at_arclength(arc_s, influences)
+            next_s = min(total_len, arc_s + max(step, 1e-3))
+            if next_s <= arc_s + 1e-6:
+                break
+            resampled.append(self._interpolate_along_path(path, cumulative_lengths, next_s))
+            arc_s = next_s
+
+        resampled = self._dedupe_path_points(resampled, min_spacing=0.05)
+
+        if len(resampled) < self.path_min_points and len(resampled) >= 2:
+            start = resampled[0]
+            end = resampled[-1]
+            final_points = []
+            for i in range(self.path_min_points):
+                t = 0.0 if self.path_min_points == 1 else float(i) / float(self.path_min_points - 1)
+                px = start[0] + (end[0] - start[0]) * t
+                py = start[1] + (end[1] - start[1]) * t
+                final_points.append((px, py))
+            resampled = final_points
+
+        return resampled
 
     def build_graph_path(self, start_snap, goal_snap):
         sx, sy = start_snap['point']
@@ -661,14 +807,16 @@ class OSMVectorPlanner:
                 )
                 return
 
-        path = self.build_graph_path(start_snap, goal_snap)
-        if not path:
+        raw_path = self.build_graph_path(start_snap, goal_snap)
+        if not raw_path:
             rospy.logwarn("OSM graph A* failed to find a drivable path")
             return
 
         if not self.strict_road_mode:
-            path.append((gx, gy))
-            path = self._dedupe_path_points(path)
+            raw_path.append((gx, gy))
+            raw_path = self._dedupe_path_points(raw_path)
+
+        path = self.resample_path_for_tracking(raw_path)
 
         if len(path) < 2:
             rospy.logwarn(
@@ -708,7 +856,7 @@ class OSMVectorPlanner:
 
         self.publish_pose_markers(start_xy=self.current_path[0])
         rospy.loginfo(
-            f"Road path planned: {len(self.current_path)} points, start snap {start_dist:.2f}m, goal snap {goal_dist:.2f}m"
+            f"Road path planned: raw={len(raw_path)} points, resampled={len(self.current_path)} points, start snap {start_dist:.2f}m, goal snap {goal_dist:.2f}m"
         )
 
     def timer_callback(self, event):
