@@ -528,6 +528,61 @@ class OSMVectorPlanner:
             start_del.action = Marker.DELETE
             self.marker_pub.publish(start_del)
 
+            path_points_del = Marker()
+            path_points_del.header.frame_id = "map"
+            path_points_del.header.stamp = rospy.Time.now()
+            path_points_del.ns = "osm_path"
+            path_points_del.id = 1004
+            path_points_del.action = Marker.DELETE
+            self.marker_pub.publish(path_points_del)
+
+            path_line_del = Marker()
+            path_line_del.header.frame_id = "map"
+            path_line_del.header.stamp = rospy.Time.now()
+            path_line_del.ns = "osm_path"
+            path_line_del.id = 1005
+            path_line_del.action = Marker.DELETE
+            self.marker_pub.publish(path_line_del)
+
+        if self.current_path:
+            path_points_marker = Marker()
+            path_points_marker.header.frame_id = "map"
+            path_points_marker.header.stamp = rospy.Time.now()
+            path_points_marker.ns = "osm_path"
+            path_points_marker.id = 1004
+            path_points_marker.type = Marker.SPHERE_LIST
+            path_points_marker.action = Marker.ADD
+            path_points_marker.pose.orientation.w = 1.0
+            path_points_marker.scale.x = 0.45
+            path_points_marker.scale.y = 0.45
+            path_points_marker.scale.z = 0.45
+            path_points_marker.color.r = 1.0
+            path_points_marker.color.g = 0.55
+            path_points_marker.color.b = 0.05
+            path_points_marker.color.a = 0.92
+            path_points_marker.points = [
+                Point(x=px, y=py, z=0.22) for px, py in self.current_path
+            ]
+            self.marker_pub.publish(path_points_marker)
+
+            path_line_marker = Marker()
+            path_line_marker.header.frame_id = "map"
+            path_line_marker.header.stamp = rospy.Time.now()
+            path_line_marker.ns = "osm_path"
+            path_line_marker.id = 1005
+            path_line_marker.type = Marker.LINE_STRIP
+            path_line_marker.action = Marker.ADD
+            path_line_marker.pose.orientation.w = 1.0
+            path_line_marker.scale.x = 0.18
+            path_line_marker.color.r = 1.0
+            path_line_marker.color.g = 0.35
+            path_line_marker.color.b = 0.10
+            path_line_marker.color.a = 0.90
+            path_line_marker.points = [
+                Point(x=px, y=py, z=0.18) for px, py in self.current_path
+            ]
+            self.marker_pub.publish(path_line_marker)
+
         current_marker = Marker()
         current_marker.header.frame_id = "map"
         current_marker.header.stamp = rospy.Time.now()
