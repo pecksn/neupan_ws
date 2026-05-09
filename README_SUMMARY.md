@@ -130,45 +130,15 @@
 
 ### src/global_astar_node.cpp
 
-- **`Node` / `CompareNode`**: A* 开放列表节点与优先队列比较器.
-- **类 `GlobalAStarPlanner`**
-  - `mapCallback`: 缓存 `/map` 栅格地图.
-  - `odomCallback`: 缓存 `/odometry/global` 位姿.
-  - `goalCallback`: 将起点/目标投影到栅格索引, 执行 A* 得到路径, 发布 `/global_astar_path`.
-  - `runAStar`: 栅格 A* 搜索 (8 邻域, 代价加权).
-  - `updateLocalGoal`: 从全局路径选取前瞻点, 发布 `/hybrid_astar_subgoal`.
+- **类 `OSMGraphAStarPlanner`**
+  - 解析 OSM, 构建可通行道路图, 执行图 A* 搜索与路径重采样.
+  - 发布 `/osm_vector_map` 蓝色道路线、GPS/吸附调试 Marker、`/osm_global_path` 路径和 `/hybrid_astar_subgoal`.
+  - 兼容旧版室外 OSM 规划器的功能链路.
 
 ### scripts/static_osm_map_server.py
 
 - 将 OSM 瓦片拼接为大图, 转灰度并映射成 `OccupancyGrid` 发布 `/map`.
 - 另存彩色纹理, 并发布用于 RViz 可视化的 Marker.
-
-### scripts/osm_vector_planner.py
-
-- 解析 OSM, 构建可通行道路图, 进行图搜索与路径重采样, 发布全局路径和子目标.
-
-**关键函数**
-
-- `latlon_to_xy`: 经纬度转换到局部平面.
-- `load_graph`: 读取 OSM, 过滤道路类型, 构图并发布道路线段 Marker.
-- `find_nearest_node` / `find_nearest_graph_point`: 找到最近道路节点或道路边投影点.
-- `shortest_node_path`: 图上 A* 搜索节点路径.
-- `resample_path_for_tracking`: 根据转角动态调整采样间距, 生成平滑路径点序列.
-- `build_graph_path`: 结合起终点投影点与图路径拼接最终路径.
-- `publish_initialpose`: 发布 `initialpose` 供定位对齐.
-- `publish_pose_markers`: 发布当前位姿/路径/起点/GP S点等 Marker.
-- `publish_snap_debug_markers`: 发布吸附起终点及连线.
-- `publish_current_snap_marker`: 持续显示当前位置吸附到道路的点.
-- `goal_callback`: 接收目标, 执行吸附 + A* + 重采样, 发布 `/osm_global_path`.
-- `timer_callback`: 按前瞻距离发布 `/hybrid_astar_subgoal`.
-
-### scripts/osm_vector_display.py
-
-- 解析 OSM 路网并发布可视化 Marker (仅用于 RViz 显示).
-
-### scripts/osm_tile_stitcher.py
-
-- 将指定 zoom 的瓦片拼接为局部网格地图, 发布 `/map` 给 Hybrid A* 使用.
 
 ### scripts/gps_goal_bridge.py
 
@@ -571,4 +541,3 @@
 ### sdk_core/params_check.h / sdk_core/params_check.cpp
 
 - 配置合法性检查: IP 冲突检测、多播 IP 合法性、Mid360 端口强制校验.
-

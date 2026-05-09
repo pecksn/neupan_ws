@@ -31,7 +31,7 @@ def wait_one(topic, msg_type, timeout):
         return None
 
 
-def wait_gps_marker(topic, timeout):
+def wait_marker(topic, marker_id, timeout):
     deadline = rospy.Time.now() + rospy.Duration(timeout)
     while rospy.Time.now() < deadline and not rospy.is_shutdown():
         remain = (deadline - rospy.Time.now()).to_sec()
@@ -39,7 +39,7 @@ def wait_gps_marker(topic, timeout):
             msg = rospy.wait_for_message(topic, Marker, timeout=max(0.05, min(0.5, remain)))
         except Exception:
             continue
-        if msg.id == 1003:
+        if msg.id == marker_id:
             return msg
     return None
 
@@ -66,7 +66,8 @@ def main():
     odom_global = wait_one("/odometry/global", Odometry, args.timeout)
     odom_local = wait_one("/odometry/local", Odometry, args.timeout)
     scan = wait_one("/scan", LaserScan, args.timeout)
-    gps_marker = wait_gps_marker("/osm_vector_map", args.timeout)
+    gps_marker = wait_marker("/osm_vector_map", 1003, args.timeout)
+    path_points_marker = wait_marker("/osm_vector_map", 1004, args.timeout)
 
     now = rospy.Time.now()
 
@@ -77,6 +78,7 @@ def main():
     print(f"/odometry/local: {fmt_bool(odom_local is not None)}")
     print(f"/scan: {fmt_bool(scan is not None)}")
     print(f"/osm_vector_map gps_marker(id=1003): {fmt_bool(gps_marker is not None)}")
+    print(f"/osm_vector_map path_points(id=1004): {fmt_bool(path_points_marker is not None)}")
 
     if gps is not None:
         gps_age = (now - gps.header.stamp).to_sec() if gps.header.stamp.to_sec() > 0 else float("inf")
@@ -172,8 +174,8 @@ def main():
         )
         if d_gg > args.align_warn_m:
             print("- 根因优先级5: /odometry/gps 与 /odometry/global 偏差过大，EKF可能拒收或权重过低")
-    if gps_marker is None:
-        print("- 根因优先级6: /osm_vector_map 未收到 id=1003 的GPS marker（检查osm_vector_planner是否为最新代码）")
+    if gps_marker is None and path_points_marker is None:
+        print("- 根因优先级6: /osm_vector_map 未收到关键 marker（检查 RViz 订阅话题、室外 A* 节点是否在运行）")
 
     print("\nDone.")
     return 0

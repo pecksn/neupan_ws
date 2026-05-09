@@ -188,8 +188,8 @@
             <param name="default_lon" value="$(arg map_origin_lon)" />
         </node>
         
-        <!-- 启动 OSM 矢量网格全功能 A* 规划器 -->
-        <node pkg="osm_map_handler" type="osm_vector_planner.py" name="osm_vector_planner" output="screen">
+        <!-- 启动室外 C++ A* 规划器 -->
+        <node pkg="osm_map_handler" type="global_astar_node" name="outdoor_global_astar" output="screen">
             <param name="default_lat" value="$(arg map_origin_lat)" />
             <param name="default_lon" value="$(arg map_origin_lon)" />
             <param name="lookahead_dist" value="$(arg osm_lookahead_dist)" />
