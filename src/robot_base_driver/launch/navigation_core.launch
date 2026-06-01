@@ -16,53 +16,49 @@
     <arg name="base_frame" default="base_link"/>
     <arg name="odom_frame" default="odom"/>
     <arg name="wheelbase" default="0.67"/>
+    <arg name="wheel_radius" default="0.1275"/>
     <arg name="gps_frame" default="gps_link"/>
-    <arg name="gps_cov_xy" default="9.0"/>
-    <arg name="gps_cov_z" default="25.0"/>
-    <arg name="gps_jump_reject_m" default="30.0"/>
-    <arg name="gps_max_speed_mps" default="20.0"/>
-    <arg name="gps_filter_window" default="5"/>
-    <arg name="gps_stationary_speed_mps" default="0.15"/>
-    <arg name="gps_stationary_jump_m" default="4.0"/>
-    <arg name="gps_cov_stationary_scale" default="2.5"/>
-    <arg name="gps_ema_alpha" default="0.35"/>
-    <arg name="gps_warmup_samples" default="8"/>
-    <arg name="gps_use_odom_stamp" default="true"/>
-    <arg name="gps_stamp_max_age_sec" default="0.25"/>
+    <arg name="gps_port" default="/dev/wheeltec_gnss" />
+    <arg name="gps_baud" default="115200" />
+    <arg name="gps_time_ref_source" default="gps" />
+    <arg name="gps_use_rmc" default="false" />
+    <arg name="gps_rotation" default="90.0" />
+    <arg name="gps_use_gnss_time" default="false" />
     <arg name="use_global_ekf" default="false" />
     <arg name="publish_static_map_odom_outdoor" default="true" />
 
-    <!-- 1) 底盘驱动：发布 /odom 与 /gps/fix -->
+    <!-- 1) 底盘驱动：仅发布 /odom -->
     <include file="$(find robot_base_driver)/launch/driver.launch">
         <arg name="port" value="$(arg port)"/>
         <arg name="baudrate" value="$(arg baudrate)"/>
         <arg name="base_frame" value="$(arg base_frame)"/>
         <arg name="odom_frame" value="$(arg odom_frame)"/>
         <arg name="wheelbase" value="$(arg wheelbase)"/>
+        <arg name="wheel_radius" value="$(arg wheel_radius)"/>
         <arg name="publish_tf" value="false" />
-        <arg name="gps_frame" value="$(arg gps_frame)"/>
-        <arg name="gps_cov_xy" value="$(arg gps_cov_xy)"/>
-        <arg name="gps_cov_z" value="$(arg gps_cov_z)"/>
-        <arg name="gps_jump_reject_m" value="$(arg gps_jump_reject_m)"/>
-        <arg name="gps_max_speed_mps" value="$(arg gps_max_speed_mps)"/>
-        <arg name="gps_filter_window" value="$(arg gps_filter_window)"/>
-        <arg name="gps_stationary_speed_mps" value="$(arg gps_stationary_speed_mps)"/>
-        <arg name="gps_stationary_jump_m" value="$(arg gps_stationary_jump_m)"/>
-        <arg name="gps_cov_stationary_scale" value="$(arg gps_cov_stationary_scale)"/>
-        <arg name="gps_ema_alpha" value="$(arg gps_ema_alpha)"/>
-        <arg name="gps_warmup_samples" value="$(arg gps_warmup_samples)"/>
-        <arg name="gps_use_odom_stamp" value="$(arg gps_use_odom_stamp)"/>
-        <arg name="gps_stamp_max_age_sec" value="$(arg gps_stamp_max_age_sec)"/>
     </include>
 
-    <!-- 2) 本地EKF：融合 /odom + /Odometry，产出 /odometry/local -->
+    <!-- 2) 室外时启用上位机 G90 NMEA，发布 /gps/fix -->
+    <group if="$(arg outdoor_mode)">
+        <include file="$(find robot_base_driver)/launch/g90_nmea.launch">
+            <arg name="gps_port" value="$(arg gps_port)" />
+            <arg name="gps_baud" value="$(arg gps_baud)" />
+            <arg name="gps_frame" value="$(arg gps_frame)" />
+            <arg name="time_ref_source" value="$(arg gps_time_ref_source)" />
+            <arg name="use_rmc" value="$(arg gps_use_rmc)" />
+            <arg name="gps_rotation" value="$(arg gps_rotation)" />
+            <arg name="use_gnss_time" value="$(arg gps_use_gnss_time)" />
+        </include>
+    </group>
+
+    <!-- 3) 本地EKF：融合 /odom + /Odometry，产出 /odometry/local -->
     <node pkg="robot_localization" type="ekf_localization_node" name="ekf_local" clear_params="true" output="screen">
         <rosparam command="load" file="$(find robot_base_driver)/config/ekf_local.yaml" />
         <param if="$(arg outdoor_mode)" name="transform_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
         <remap from="odometry/filtered" to="/odometry/local" />
     </node>
 
-    <!-- 3) 室外：GPS转里程计 + 全局EKF -->
+    <!-- 4) 室外：GPS转里程计 + 全局EKF -->
     <group if="$(arg outdoor_mode)">
         <node pkg="robot_localization" type="navsat_transform_node" name="navsat_transform" clear_params="true" output="screen">
             <remap from="gps/fix" to="/gps/fix" />
@@ -103,7 +99,7 @@
         </group>
     </group>
 
-    <!-- 4) 室内：给 map->odom 固定变换，方便全局规划使用 map 坐标 -->
+    <!-- 5) 室内：给 map->odom 固定变换，方便全局规划使用 map 坐标 -->
     <arg name="publish_static_map_odom" default="true" />
     <group unless="$(arg outdoor_mode)">
         <group if="$(arg publish_static_map_odom)">

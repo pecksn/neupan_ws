@@ -1,0 +1,19 @@
+<launch>
+    <arg name="gps_port" default="/dev/wheeltec_gnss" />
+    <arg name="gps_baud" default="115200" />
+    <arg name="gps_frame" default="gps_link" />
+    <arg name="time_ref_source" default="gps" />
+    <arg name="use_rmc" default="false" />
+    <arg name="gps_rotation" default="90.0" />
+    <arg name="use_gnss_time" default="false" />
+
+    <include file="$(find wheeltec_gps_driver)/launch/wheeltec_dual_rtk_driver_nmea.launch">
+        <arg name="port" value="$(arg gps_port)" />
+        <arg name="baud" value="$(arg gps_baud)" />
+        <arg name="frame_id" value="$(arg gps_frame)" />
+        <arg name="time_ref_source" value="$(arg time_ref_source)" />
+        <arg name="useRMC" value="$(arg use_rmc)" />
+        <arg name="use_GNSS_time" value="$(arg use_gnss_time)" />
+        <arg name="rotation" value="$(arg gps_rotation)" />
+    </include>
+</launch>

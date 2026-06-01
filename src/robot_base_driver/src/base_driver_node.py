@@ -1,10 +1,8 @@
 #!/usr/bin/env python
 import rospy
 import tf
-from collections import deque
 from geometry_msgs.msg import Twist, Quaternion
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import NavSatFix
 import serial # 需要安装 pyserial
 import math
 
@@ -17,23 +15,6 @@ class RobotBaseDriver:
         self.baudrate = rospy.get_param('~baudrate', 115200)
         self.base_frame = rospy.get_param('~base_frame', 'base_link')
         self.odom_frame = rospy.get_param('~odom_frame', 'odom')
-        self.gps_frame = rospy.get_param('~gps_frame', 'gps_link')
-        self.gps_cov_xy = rospy.get_param('~gps_cov_xy', 9.0)
-        self.gps_cov_z = rospy.get_param('~gps_cov_z', 25.0)
-        self.gps_jump_reject_m = rospy.get_param('~gps_jump_reject_m', 30.0)
-        self.gps_max_speed_mps = rospy.get_param('~gps_max_speed_mps', 20.0)
-        self.gps_filter_window = max(1, int(rospy.get_param('~gps_filter_window', 5)))
-        self.gps_stationary_speed_mps = max(0.01, float(rospy.get_param('~gps_stationary_speed_mps', 0.15)))
-        self.gps_stationary_jump_m = max(0.2, float(rospy.get_param('~gps_stationary_jump_m', 4.0)))
-        self.gps_cov_stationary_scale = max(1.0, float(rospy.get_param('~gps_cov_stationary_scale', 2.5)))
-        self.gps_ema_alpha = float(rospy.get_param('~gps_ema_alpha', 0.35))
-        self.gps_ema_alpha = min(max(self.gps_ema_alpha, 0.01), 1.0)
-        self.gps_warmup_samples = max(
-            3,
-            int(rospy.get_param('~gps_warmup_samples', max(8, self.gps_filter_window)))
-        )
-        self.gps_use_odom_stamp = bool(rospy.get_param('~gps_use_odom_stamp', True))
-        self.gps_stamp_max_age_sec = max(0.02, float(rospy.get_param('~gps_stamp_max_age_sec', 0.25)))
         
         # 机器人运动学参数 (Ackermann)
         self.wheelbase = rospy.get_param('~wheelbase', 0.67) # 轴距 (m)
@@ -50,9 +31,8 @@ class RobotBaseDriver:
         # 订阅上层规划器的速度指令
         rospy.Subscriber('/neupan_cmd_vel', Twist, self.cmd_vel_callback)
         
-        # 发布里程计和GPS
+        # 发布里程计
         self.odom_pub = rospy.Publisher('/odom', Odometry, queue_size=10)
-        self.gps_pub = rospy.Publisher('/gps/fix', NavSatFix, queue_size=10)
         self.tf_broadcaster = tf.TransformBroadcaster()
         
         # 机器人状态
@@ -67,94 +47,10 @@ class RobotBaseDriver:
         self.offset_y = 0.0
         self.offset_th = 0.0
 
-        self.last_gps_lat = None
-        self.last_gps_lon = None
-        self.last_gps_stamp = None
-        self.last_pub_gps_lat = None
-        self.last_pub_gps_lon = None
-        self.gps_filter_buf = deque(maxlen=self.gps_filter_window)
         self.last_odom_x = None
         self.last_odom_y = None
         self.last_odom_stamp = None
         self.odom_speed_mps = 0.0
-        self.gps_valid_count = 0
-
-    def _parse_gps_lat_lon(self, parts):
-        """
-        支持两种常见格式：
-        1) GPS,<lat>,<lon>[, ...]
-        2) GPS,<lat>,N/S,<lon>,E/W[, ...]
-        """
-        if len(parts) < 3:
-            raise ValueError('GPS fields not enough')
-
-        # 格式2: GPS,39.9,N,116.4,E
-        if len(parts) >= 5 and parts[2].upper() in ('N', 'S') and parts[4].upper() in ('E', 'W'):
-            lat = float(parts[1])
-            lon = float(parts[3])
-
-            if parts[2].upper() == 'S':
-                lat = -abs(lat)
-            else:
-                lat = abs(lat)
-
-            if parts[4].upper() == 'W':
-                lon = -abs(lon)
-            else:
-                lon = abs(lon)
-        else:
-            # 格式1: GPS,39.9,116.4 (后续附加字段忽略)
-            lat = float(parts[1])
-            lon = float(parts[2])
-
-        # 一些下位机会输出 ddmm.mmmm（度分）格式，这里自动兜底转换
-        if abs(lat) > 90.0 or abs(lon) > 180.0:
-            lat = self._convert_dm_to_decimal(lat)
-            lon = self._convert_dm_to_decimal(lon)
-
-        if abs(lat) > 90.0 or abs(lon) > 180.0:
-            raise ValueError(f'GPS lat/lon out of range: lat={lat}, lon={lon}')
-
-        return lat, lon
-
-    def _convert_dm_to_decimal(self, value):
-        sign = -1.0 if value < 0.0 else 1.0
-        value_abs = abs(value)
-
-        deg = int(value_abs / 100.0)
-        minute = value_abs - (deg * 100.0)
-        if minute >= 60.0:
-            return value
-
-        return sign * (deg + minute / 60.0)
-
-    def _haversine_distance_m(self, lat1, lon1, lat2, lon2):
-        r = 6378137.0
-        p1 = math.radians(lat1)
-        p2 = math.radians(lat2)
-        dlat = p2 - p1
-        dlon = math.radians(lon2 - lon1)
-        a = math.sin(dlat / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dlon / 2.0) ** 2)
-        c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-        return r * c
-
-    def _smooth_lat_lon(self, lat, lon):
-        self.gps_filter_buf.append((lat, lon))
-        if len(self.gps_filter_buf) <= 1:
-            return lat, lon
-
-        lat_mean = sum(p[0] for p in self.gps_filter_buf) / float(len(self.gps_filter_buf))
-        lon_mean = sum(p[1] for p in self.gps_filter_buf) / float(len(self.gps_filter_buf))
-        return lat_mean, lon_mean
-
-    def _ema_lat_lon(self, lat, lon):
-        if self.last_pub_gps_lat is None or self.last_pub_gps_lon is None:
-            return lat, lon
-
-        alpha = self.gps_ema_alpha
-        lat_ema = alpha * lat + (1.0 - alpha) * self.last_pub_gps_lat
-        lon_ema = alpha * lon + (1.0 - alpha) * self.last_pub_gps_lon
-        return lat_ema, lon_ema
 
     def cmd_vel_callback(self, msg):
         """
@@ -304,91 +200,6 @@ class RobotBaseDriver:
                         except ValueError:
                             rospy.logwarn(f"Invalid data format from MCU: {line}")
                             
-                # 【新增】解析下位机发上来的 GPS 数据
-                elif line.startswith("GPS"):
-                    parts = line.replace(',', ' ').split()
-                    if len(parts) >= 3:
-                        try:
-                            lat, lon = self._parse_gps_lat_lon(parts)
-                            now = rospy.Time.now()
-                            gps_stamp = now
-                            if self.gps_use_odom_stamp and self.last_odom_stamp is not None:
-                                if (now - self.last_odom_stamp).to_sec() <= self.gps_stamp_max_age_sec:
-                                    gps_stamp = self.last_odom_stamp
-
-                            # 抑制明显不合理的 GPS 突跳，避免 map 系抖动
-                            if self.last_gps_lat is not None and self.last_gps_stamp is not None:
-                                dt = (gps_stamp - self.last_gps_stamp).to_sec()
-                                if dt > 1e-3:
-                                    jump_m = self._haversine_distance_m(self.last_gps_lat, self.last_gps_lon, lat, lon)
-                                    speed_mps = jump_m / dt
-                                    reject_hard_jump = jump_m > (2.0 * self.gps_jump_reject_m)
-                                    reject_jump_with_speed = jump_m > self.gps_jump_reject_m and speed_mps > self.gps_max_speed_mps
-                                    if reject_hard_jump or reject_jump_with_speed:
-                                        rospy.logwarn_throttle(
-                                            1.0,
-                                            f"Reject GPS jump ({jump_m:.1f}m, {speed_mps:.1f}m/s): {line}"
-                                        )
-                                        return
-
-                            # 车辆近似静止时，拒绝大幅GPS漂移，避免 map->odom 被持续拉扯
-                            warmup_done = self.gps_valid_count >= self.gps_warmup_samples
-                            is_stationary = self.odom_speed_mps < self.gps_stationary_speed_mps
-
-                            if warmup_done and self.last_pub_gps_lat is not None and is_stationary:
-                                drift_m = self._haversine_distance_m(
-                                    self.last_pub_gps_lat,
-                                    self.last_pub_gps_lon,
-                                    lat,
-                                    lon,
-                                )
-                                if drift_m > self.gps_stationary_jump_m:
-                                    rospy.logwarn_throttle(
-                                        1.0,
-                                        (
-                                            f"Reject stationary GPS drift ({drift_m:.2f}m > "
-                                            f"{self.gps_stationary_jump_m:.2f}m), odom speed={self.odom_speed_mps:.2f}m/s"
-                                        ),
-                                    )
-                                    return
-
-                            lat_s, lon_s = self._smooth_lat_lon(lat, lon)
-                            lat_s, lon_s = self._ema_lat_lon(lat_s, lon_s)
-
-                            # 静止时增大协方差，降低GPS在全局融合里的拉扯力度
-                            cov_scale = self.gps_cov_stationary_scale if (warmup_done and is_stationary) else 1.0
-                            cov_xy = self.gps_cov_xy * cov_scale
-                            cov_z = self.gps_cov_z * cov_scale
-
-                            gps_msg = NavSatFix()
-                            gps_msg.header.stamp = gps_stamp
-                            gps_msg.header.frame_id = self.gps_frame
-
-                            gps_msg.latitude = lat_s
-                            gps_msg.longitude = lon_s
-                            gps_msg.altitude = 0.0  # 如果有高度也可以解析
-                            
-                            # 设置正常状态
-                            gps_msg.status.status = 0
-                            gps_msg.status.service = 1
-                            
-                            # GPS 协方差可参数化，便于室外调小/调大融合强度
-                            gps_msg.position_covariance = [
-                                cov_xy, 0.0, 0.0,
-                                0.0, cov_xy, 0.0,
-                                0.0, 0.0, cov_z
-                            ]
-                            gps_msg.position_covariance_type = 1 # 1: COVARIANCE_TYPE_APPROXIMATED
-                            
-                            self.gps_pub.publish(gps_msg)
-                            self.last_gps_lat = lat
-                            self.last_gps_lon = lon
-                            self.last_gps_stamp = gps_stamp
-                            self.last_pub_gps_lat = lat_s
-                            self.last_pub_gps_lon = lon_s
-                            self.gps_valid_count += 1
-                        except ValueError:
-                            rospy.logwarn(f"Invalid GPS data from MCU: {line}")
                 else:
                     # 忽略其他非 ODO 开头的数据，避免刷屏警告
                     pass
