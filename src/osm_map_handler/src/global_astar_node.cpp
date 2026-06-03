@@ -946,14 +946,20 @@ private:
         nav_msgs::Path nav_path;
         nav_path.header.frame_id = "map";
         nav_path.header.stamp = ros::Time::now();
+        double last_yaw = 0.0;
+        bool has_last_yaw = false;
         for (size_t i = 0; i < path.size(); ++i) {
             geometry_msgs::PoseStamped pose;
             pose.header = nav_path.header;
             pose.pose.position = toRosPoint(path[i]);
             pose.pose.orientation.w = 1.0;
             if (i + 1 < path.size()) {
-                const double yaw = std::atan2(path[i + 1].y - path[i].y, path[i + 1].x - path[i].x);
-                pose.pose.orientation = quaternionFromYaw(yaw);
+                last_yaw = std::atan2(path[i + 1].y - path[i].y, path[i + 1].x - path[i].x);
+                has_last_yaw = true;
+                pose.pose.orientation = quaternionFromYaw(last_yaw);
+            } else if (has_last_yaw) {
+                // Keep the terminal heading aligned with the final path segment.
+                pose.pose.orientation = quaternionFromYaw(last_yaw);
             }
             nav_path.poses.push_back(pose);
         }
