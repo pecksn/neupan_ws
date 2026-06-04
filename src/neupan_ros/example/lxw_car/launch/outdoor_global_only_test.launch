@@ -15,6 +15,7 @@
     <arg name="direct_tracker_lookahead" default="2.5" />
     <arg name="direct_tracker_goal_tolerance" default="1.2" />
     <arg name="direct_tracker_goal_stop_tolerance" default="2.0" />
+    <arg name="direct_tracker_clicked_goal_stop_tolerance" default="2.0" />
     <arg name="direct_tracker_goal_approach_radius" default="4.0" />
     <arg name="direct_tracker_goal_overshoot_margin" default="0.5" />
     <arg name="direct_tracker_end_path_point_window" default="3" />
@@ -48,7 +49,7 @@
     <arg name="map_odom_align_yaw_bias_deg" default="180.0" />
 
     <arg name="osm_lookahead_dist" default="4.0" />
-    <arg name="strict_road_mode" default="true" />
+    <arg name="strict_road_mode" default="false" />
     <arg name="goal_snap_max_dist" default="50.0" />
     <arg name="start_snap_max_dist" default="50.0" />
     <arg name="outdoor_path_straight_spacing" default="2.5" />
@@ -195,12 +196,14 @@
             <param name="path_topic" value="/osm_global_path" />
             <param name="odom_topic" value="/odometry/global" />
             <param name="cmd_topic" value="/neupan_cmd_vel" />
+            <param name="goal_topic" value="/move_base_simple/goal" />
             <param name="wheelbase" value="0.67" />
             <param name="cruise_speed" value="$(arg direct_tracker_speed)" />
             <param name="min_speed" value="$(arg direct_tracker_min_speed)" />
             <param name="lookahead_dist" value="$(arg direct_tracker_lookahead)" />
             <param name="goal_tolerance" value="$(arg direct_tracker_goal_tolerance)" />
             <param name="goal_stop_tolerance" value="$(arg direct_tracker_goal_stop_tolerance)" />
+            <param name="clicked_goal_stop_tolerance" value="$(arg direct_tracker_clicked_goal_stop_tolerance)" />
             <param name="goal_approach_radius" value="$(arg direct_tracker_goal_approach_radius)" />
             <param name="goal_overshoot_margin" value="$(arg direct_tracker_goal_overshoot_margin)" />
             <param name="end_path_point_window" value="$(arg direct_tracker_end_path_point_window)" />

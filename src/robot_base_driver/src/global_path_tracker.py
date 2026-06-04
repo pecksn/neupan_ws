@@ -2,7 +2,7 @@
 import math
 
 import rospy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from tf.transformations import euler_from_quaternion
 
@@ -26,11 +26,13 @@ class GlobalPathTracker(object):
         self.path_topic = rospy.get_param("~path_topic", "/osm_global_path")
         self.odom_topic = rospy.get_param("~odom_topic", "/odometry/global")
         self.cmd_topic = rospy.get_param("~cmd_topic", "/neupan_cmd_vel")
+        self.goal_topic = rospy.get_param("~goal_topic", "/move_base_simple/goal")
 
         self.control_rate = rospy.get_param("~control_rate", 10.0)
         self.lookahead_dist = rospy.get_param("~lookahead_dist", 2.5)
         self.goal_tolerance = rospy.get_param("~goal_tolerance", 1.2)
         self.goal_stop_tolerance = rospy.get_param("~goal_stop_tolerance", self.goal_tolerance)
+        self.clicked_goal_stop_tolerance = rospy.get_param("~clicked_goal_stop_tolerance", 2.0)
         self.goal_approach_radius = rospy.get_param("~goal_approach_radius", 4.0)
         self.goal_overshoot_margin = rospy.get_param("~goal_overshoot_margin", 0.5)
         self.end_path_point_window = int(rospy.get_param("~end_path_point_window", 3))
@@ -50,13 +52,17 @@ class GlobalPathTracker(object):
         self.path_points = []
         self.robot_pose = None
         self.goal_active = False
+        self.current_goal = None
         self.last_path_stamp = None
         self.closest_goal_dist_seen = None
         self.goal_entered_approach_zone = False
+        self.closest_clicked_goal_dist_seen = None
+        self.clicked_goal_entered_approach_zone = False
 
         self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=10)
         rospy.Subscriber(self.path_topic, Path, self.path_callback, queue_size=1)
         rospy.Subscriber(self.odom_topic, Odometry, self.odom_callback, queue_size=10)
+        rospy.Subscriber(self.goal_topic, PoseStamped, self.goal_callback, queue_size=1)
 
         rospy.loginfo(
             "global_path_tracker: path=%s odom=%s cmd=%s",
@@ -71,6 +77,8 @@ class GlobalPathTracker(object):
         self.goal_active = len(self.path_points) >= 2
         self.closest_goal_dist_seen = None
         self.goal_entered_approach_zone = False
+        self.closest_clicked_goal_dist_seen = None
+        self.clicked_goal_entered_approach_zone = False
 
     def odom_callback(self, msg):
         q = msg.pose.pose.orientation
@@ -81,6 +89,12 @@ class GlobalPathTracker(object):
             msg.pose.pose.position.y,
             yaw,
         )
+
+    def goal_callback(self, msg):
+        self.current_goal = (msg.pose.position.x, msg.pose.position.y)
+        self.goal_active = True
+        self.closest_clicked_goal_dist_seen = None
+        self.clicked_goal_entered_approach_zone = False
 
     def publish_stop(self):
         cmd = Twist()
@@ -108,6 +122,27 @@ class GlobalPathTracker(object):
         return closest_idx, closest_dist, self.path_points[target_idx]
 
     def should_stop_at_goal(self, x, y):
+        if self.current_goal is not None:
+            clicked_goal_x, clicked_goal_y = self.current_goal
+            clicked_goal_dist = math.hypot(clicked_goal_x - x, clicked_goal_y - y)
+            if self.closest_clicked_goal_dist_seen is None:
+                self.closest_clicked_goal_dist_seen = clicked_goal_dist
+            else:
+                self.closest_clicked_goal_dist_seen = min(self.closest_clicked_goal_dist_seen, clicked_goal_dist)
+
+            if clicked_goal_dist <= self.goal_approach_radius:
+                self.clicked_goal_entered_approach_zone = True
+
+            if clicked_goal_dist <= self.clicked_goal_stop_tolerance:
+                return True, "clicked_goal_distance"
+
+            if (
+                self.clicked_goal_entered_approach_zone
+                and self.closest_clicked_goal_dist_seen is not None
+                and clicked_goal_dist > self.closest_clicked_goal_dist_seen + self.goal_overshoot_margin
+            ):
+                return True, "clicked_goal_distance_rebound"
+
         if not self.path_points:
             return False, "no_path"
 
