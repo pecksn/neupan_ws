@@ -106,6 +106,22 @@
         </include>
     </group>
 
+    <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan" output="screen">
+        <remap from="cloud_in" to="/cloud_registered_body" />
+        <remap from="scan" to="/scan" />
+        <param name="target_frame" value="base_link" />
+        <param name="transform_tolerance" value="0.01" />
+        <param name="min_height" value="0.2" />
+        <param name="max_height" value="0.8" />
+        <param name="angle_min" value="-3.14159" />
+        <param name="angle_max" value="3.14159" />
+        <param name="angle_increment" value="0.0087" />
+        <param name="scan_time" value="0.1" />
+        <param name="range_max" value="30.0" />
+        <param name="range_min" value="0.4" />
+        <param name="use_inf" value="true" />
+    </node>
+
     <!-- Visualization-only 2D scan generated from FAST-LIO cloud -->
     <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan_viz" output="screen">
         <remap from="cloud_in" to="/cloud_registered_body" />
