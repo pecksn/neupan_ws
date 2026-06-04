@@ -1,0 +1,143 @@
+#!/usr/bin/env python
+import math
+
+import rospy
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry, Path
+from tf.transformations import euler_from_quaternion
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def wrap_to_pi(angle):
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
+
+
+class GlobalPathTracker(object):
+    def __init__(self):
+        rospy.init_node("global_path_tracker")
+
+        self.path_topic = rospy.get_param("~path_topic", "/osm_global_path")
+        self.odom_topic = rospy.get_param("~odom_topic", "/odometry/global")
+        self.cmd_topic = rospy.get_param("~cmd_topic", "/neupan_cmd_vel")
+
+        self.control_rate = rospy.get_param("~control_rate", 10.0)
+        self.lookahead_dist = rospy.get_param("~lookahead_dist", 2.5)
+        self.goal_tolerance = rospy.get_param("~goal_tolerance", 1.2)
+        self.slowdown_radius = rospy.get_param("~slowdown_radius", 4.0)
+        self.wheelbase = rospy.get_param("~wheelbase", 0.67)
+        self.cruise_speed = rospy.get_param("~cruise_speed", 0.8)
+        self.min_speed = rospy.get_param("~min_speed", 0.25)
+        self.max_steering = rospy.get_param("~max_steering", 0.43)
+        self.max_heading_error_for_drive = rospy.get_param("~max_heading_error_for_drive", 1.2)
+        self.stop_on_missing_path = rospy.get_param("~stop_on_missing_path", True)
+
+        self.path_points = []
+        self.robot_pose = None
+        self.last_path_stamp = None
+
+        self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=10)
+        rospy.Subscriber(self.path_topic, Path, self.path_callback, queue_size=1)
+        rospy.Subscriber(self.odom_topic, Odometry, self.odom_callback, queue_size=10)
+
+        rospy.loginfo(
+            "global_path_tracker: path=%s odom=%s cmd=%s",
+            self.path_topic,
+            self.odom_topic,
+            self.cmd_topic,
+        )
+
+    def path_callback(self, msg):
+        self.path_points = [(pose.pose.position.x, pose.pose.position.y) for pose in msg.poses]
+        self.last_path_stamp = rospy.Time.now()
+
+    def odom_callback(self, msg):
+        q = msg.pose.pose.orientation
+        _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+        self.robot_pose = (
+            msg.pose.pose.position.x,
+            msg.pose.pose.position.y,
+            yaw,
+        )
+
+    def publish_stop(self):
+        cmd = Twist()
+        self.cmd_pub.publish(cmd)
+
+    def find_target_point(self, x, y):
+        if not self.path_points:
+            return None, None
+
+        closest_idx = 0
+        closest_dist = float("inf")
+        for i, (px, py) in enumerate(self.path_points):
+            d = math.hypot(px - x, py - y)
+            if d < closest_dist:
+                closest_dist = d
+                closest_idx = i
+
+        target_idx = len(self.path_points) - 1
+        for i in range(closest_idx, len(self.path_points)):
+            px, py = self.path_points[i]
+            if math.hypot(px - x, py - y) >= self.lookahead_dist:
+                target_idx = i
+                break
+
+        return target_idx, self.path_points[target_idx]
+
+    def compute_command(self):
+        if self.robot_pose is None:
+            return None
+        if not self.path_points:
+            return Twist() if self.stop_on_missing_path else None
+
+        x, y, yaw = self.robot_pose
+        goal_x, goal_y = self.path_points[-1]
+        goal_dist = math.hypot(goal_x - x, goal_y - y)
+
+        if goal_dist <= self.goal_tolerance:
+            return Twist()
+
+        _, target = self.find_target_point(x, y)
+        if target is None:
+            return Twist()
+
+        tx, ty = target
+        alpha = wrap_to_pi(math.atan2(ty - y, tx - x) - yaw)
+
+        if abs(alpha) > self.max_heading_error_for_drive:
+            speed = 0.0
+        else:
+            speed_scale = clamp(goal_dist / max(self.slowdown_radius, 1e-3), 0.0, 1.0)
+            speed = max(self.min_speed, self.cruise_speed * speed_scale)
+            speed = min(speed, self.cruise_speed)
+
+        ld = max(math.hypot(tx - x, ty - y), 0.3)
+        steering = math.atan2(2.0 * self.wheelbase * math.sin(alpha), ld)
+        steering = clamp(steering, -self.max_steering, self.max_steering)
+
+        cmd = Twist()
+        cmd.linear.x = speed
+        cmd.angular.z = steering
+        return cmd
+
+    def run(self):
+        rate = rospy.Rate(self.control_rate)
+        while not rospy.is_shutdown():
+            cmd = self.compute_command()
+            if cmd is not None:
+                self.cmd_pub.publish(cmd)
+            rate.sleep()
+
+
+if __name__ == "__main__":
+    try:
+        GlobalPathTracker().run()
+    except rospy.ROSInterruptException:
+        pass

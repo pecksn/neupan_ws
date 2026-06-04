@@ -7,6 +7,14 @@
     <arg name="enable_rviz" default="true" />
     <arg name="rviz_config" default="$(find hybrid_astar)/launch/config.rviz" />
     <arg name="imu_topic" default="/imu/data" />
+    <arg name="enable_neupan_tracking" default="false" doc="Legacy option: track path with NeuPAN" />
+    <arg name="enable_direct_astar_tracking" default="true" doc="Track /osm_global_path directly without NeuPAN" />
+    <arg name="outdoor_initial_path_topic" default="/osm_global_path" />
+    <arg name="direct_tracker_speed" default="0.8" />
+    <arg name="direct_tracker_min_speed" default="0.25" />
+    <arg name="direct_tracker_lookahead" default="2.5" />
+    <arg name="direct_tracker_goal_tolerance" default="1.2" />
+    <arg name="direct_tracker_max_steering" default="0.43" />
 
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
@@ -173,6 +181,38 @@
         <param name="input_topic" value="/gps_goal_ll" />
         <param name="output_topic" value="/move_base_simple/goal" />
     </node>
+
+    <group if="$(arg enable_direct_astar_tracking)">
+        <node pkg="robot_base_driver" type="global_path_tracker.py" name="global_path_tracker" output="screen">
+            <param name="path_topic" value="/osm_global_path" />
+            <param name="odom_topic" value="/odometry/global" />
+            <param name="cmd_topic" value="/neupan_cmd_vel" />
+            <param name="wheelbase" value="0.67" />
+            <param name="cruise_speed" value="$(arg direct_tracker_speed)" />
+            <param name="min_speed" value="$(arg direct_tracker_min_speed)" />
+            <param name="lookahead_dist" value="$(arg direct_tracker_lookahead)" />
+            <param name="goal_tolerance" value="$(arg direct_tracker_goal_tolerance)" />
+            <param name="max_steering" value="$(arg direct_tracker_max_steering)" />
+        </node>
+    </group>
+
+    <group if="$(arg enable_neupan_tracking)">
+        <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
+            <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml" />
+            <param name="map_frame" value="map" />
+            <param name="base_frame" value="base_link" />
+            <param name="lidar_frame" value="base_link" />
+            <param name="scan_downsample" value="1" />
+            <param name="scan_range" value="0.1 20.0" />
+            <param name="scan_angle_range" value="-3.14 3.14" />
+            <param name="marker_size" value="0.05" />
+            <param name="marker_z" value="0.3" />
+            <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth" />
+            <param name="refresh_initial_path" value="true" />
+            <param name="include_initial_path_direction" value="true" />
+            <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
+        </node>
+    </group>
 
     <group if="$(arg enable_rviz)">
         <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
