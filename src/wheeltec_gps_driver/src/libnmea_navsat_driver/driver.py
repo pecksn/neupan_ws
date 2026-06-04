@@ -405,7 +405,7 @@ class RosNMEADriver(object):
             self.alt_std_dev = data['alt_std_dev']
         elif 'HDT' in parsed_sentence:
             data = parsed_sentence['HDT']
-            print(data)
+            # print(data)
             if data['heading']:
                 current_heading = QuaternionStamped()
                 current_heading.header.stamp = current_time
