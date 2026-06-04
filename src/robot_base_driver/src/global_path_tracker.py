@@ -30,12 +30,14 @@ class GlobalPathTracker(object):
         self.control_rate = rospy.get_param("~control_rate", 10.0)
         self.lookahead_dist = rospy.get_param("~lookahead_dist", 2.5)
         self.goal_tolerance = rospy.get_param("~goal_tolerance", 1.2)
+        self.goal_stop_tolerance = rospy.get_param("~goal_stop_tolerance", self.goal_tolerance)
         self.slowdown_radius = rospy.get_param("~slowdown_radius", 4.0)
         self.wheelbase = rospy.get_param("~wheelbase", 0.67)
         self.cruise_speed = rospy.get_param("~cruise_speed", 0.8)
         self.min_speed = rospy.get_param("~min_speed", 0.25)
         self.max_steering = rospy.get_param("~max_steering", 0.43)
         self.max_heading_error_for_drive = rospy.get_param("~max_heading_error_for_drive", 1.2)
+        self.final_segment_lateral_tolerance = rospy.get_param("~final_segment_lateral_tolerance", 1.5)
         self.stop_on_missing_path = rospy.get_param("~stop_on_missing_path", True)
         self.debug_log = rospy.get_param("~debug_log", True)
         self.yaw_offset_deg = rospy.get_param("~yaw_offset_deg", 0.0)
@@ -95,6 +97,40 @@ class GlobalPathTracker(object):
 
         return target_idx, self.path_points[target_idx]
 
+    def should_stop_at_goal(self, x, y):
+        if not self.path_points:
+            return False, "no_path"
+
+        goal_x, goal_y = self.path_points[-1]
+        goal_dist = math.hypot(goal_x - x, goal_y - y)
+        if goal_dist <= self.goal_stop_tolerance:
+            return True, "goal_distance"
+
+        if len(self.path_points) < 2:
+            return False, "single_point_path"
+
+        p0x, p0y = self.path_points[-2]
+        p1x, p1y = self.path_points[-1]
+        seg_x = p1x - p0x
+        seg_y = p1y - p0y
+        seg_len = math.hypot(seg_x, seg_y)
+        if seg_len < 1e-6:
+            return False, "degenerate_final_segment"
+
+        ux = seg_x / seg_len
+        uy = seg_y / seg_len
+        rel_x = x - p0x
+        rel_y = y - p0y
+        along = rel_x * ux + rel_y * uy
+        lateral = abs(rel_x * (-uy) + rel_y * ux)
+
+        # Stop if the robot has reached or passed the terminal path segment
+        # while remaining close to the lane centerline.
+        if along >= seg_len and lateral <= self.final_segment_lateral_tolerance:
+            return True, "passed_final_segment"
+
+        return False, "not_at_goal"
+
     def compute_command(self):
         if self.robot_pose is None:
             if self.debug_log:
@@ -109,13 +145,15 @@ class GlobalPathTracker(object):
         goal_x, goal_y = self.path_points[-1]
         goal_dist = math.hypot(goal_x - x, goal_y - y)
 
-        if goal_dist <= self.goal_tolerance:
+        should_stop, stop_reason = self.should_stop_at_goal(x, y)
+        if should_stop:
             if self.debug_log:
                 rospy.loginfo_throttle(
                     1.0,
-                    "global_path_tracker stop: within goal tolerance, goal_dist=%.2f tol=%.2f",
+                    "global_path_tracker stop: reason=%s goal_dist=%.2f stop_tol=%.2f",
+                    stop_reason,
                     goal_dist,
-                    self.goal_tolerance,
+                    self.goal_stop_tolerance,
                 )
             return Twist()
 
