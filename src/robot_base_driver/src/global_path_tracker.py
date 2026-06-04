@@ -37,6 +37,7 @@ class GlobalPathTracker(object):
         self.goal_overshoot_margin = rospy.get_param("~goal_overshoot_margin", 0.5)
         self.end_path_point_window = int(rospy.get_param("~end_path_point_window", 3))
         self.end_path_point_tolerance = rospy.get_param("~end_path_point_tolerance", 1.5)
+        self.terminal_index_overshoot_margin = rospy.get_param("~terminal_index_overshoot_margin", 0.3)
         self.slowdown_radius = rospy.get_param("~slowdown_radius", 4.0)
         self.wheelbase = rospy.get_param("~wheelbase", 0.67)
         self.cruise_speed = rospy.get_param("~cruise_speed", 0.8)
@@ -58,6 +59,7 @@ class GlobalPathTracker(object):
         self.goal_entered_approach_zone = False
         self.closest_clicked_goal_dist_seen = None
         self.clicked_goal_entered_approach_zone = False
+        self.closest_terminal_dist_seen = None
 
         self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=10)
         rospy.Subscriber(self.path_topic, Path, self.path_callback, queue_size=1)
@@ -79,6 +81,7 @@ class GlobalPathTracker(object):
         self.goal_entered_approach_zone = False
         self.closest_clicked_goal_dist_seen = None
         self.clicked_goal_entered_approach_zone = False
+        self.closest_terminal_dist_seen = None
 
     def odom_callback(self, msg):
         q = msg.pose.pose.orientation
@@ -121,7 +124,7 @@ class GlobalPathTracker(object):
 
         return closest_idx, closest_dist, self.path_points[target_idx]
 
-    def should_stop_at_goal(self, x, y):
+    def should_stop_at_goal(self, x, y, closest_idx=None, closest_dist=None):
         if self.current_goal is not None:
             clicked_goal_x, clicked_goal_y = self.current_goal
             clicked_goal_dist = math.hypot(clicked_goal_x - x, clicked_goal_y - y)
@@ -169,17 +172,31 @@ class GlobalPathTracker(object):
         if len(self.path_points) < 2:
             return False, "single_point_path"
 
-        closest_idx = 0
-        closest_dist = float("inf")
-        for i, (px, py) in enumerate(self.path_points):
-            d = math.hypot(px - x, py - y)
-            if d < closest_dist:
-                closest_dist = d
-                closest_idx = i
+        if closest_idx is None or closest_dist is None:
+            closest_idx = 0
+            closest_dist = float("inf")
+            for i, (px, py) in enumerate(self.path_points):
+                d = math.hypot(px - x, py - y)
+                if d < closest_dist:
+                    closest_dist = d
+                    closest_idx = i
 
         terminal_start_idx = max(0, len(self.path_points) - max(1, self.end_path_point_window))
         if closest_idx >= terminal_start_idx and closest_dist <= self.end_path_point_tolerance:
             return True, "near_terminal_path_points"
+
+        terminal_idx = len(self.path_points) - 1
+        if closest_idx == terminal_idx:
+            if self.closest_terminal_dist_seen is None:
+                self.closest_terminal_dist_seen = closest_dist
+            else:
+                self.closest_terminal_dist_seen = min(self.closest_terminal_dist_seen, closest_dist)
+
+            if (
+                self.closest_terminal_dist_seen is not None
+                and closest_dist > self.closest_terminal_dist_seen + self.terminal_index_overshoot_margin
+            ):
+                return True, "terminal_index_distance_rebound"
 
         p0x, p0y = self.path_points[-2]
         p1x, p1y = self.path_points[-1]
@@ -220,8 +237,9 @@ class GlobalPathTracker(object):
         x, y, yaw = self.robot_pose
         goal_x, goal_y = self.path_points[-1]
         goal_dist = math.hypot(goal_x - x, goal_y - y)
+        closest_idx, closest_dist, target = self.find_target_point(x, y)
 
-        should_stop, stop_reason = self.should_stop_at_goal(x, y)
+        should_stop, stop_reason = self.should_stop_at_goal(x, y, closest_idx, closest_dist)
         if should_stop:
             self.goal_active = False
             if self.debug_log:
@@ -234,7 +252,6 @@ class GlobalPathTracker(object):
                 )
             return Twist()
 
-        closest_idx, closest_dist, target = self.find_target_point(x, y)
         if target is None:
             return Twist()
 

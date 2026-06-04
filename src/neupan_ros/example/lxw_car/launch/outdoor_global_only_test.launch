@@ -20,6 +20,7 @@
     <arg name="direct_tracker_goal_overshoot_margin" default="0.5" />
     <arg name="direct_tracker_end_path_point_window" default="3" />
     <arg name="direct_tracker_end_path_point_tolerance" default="1.5" />
+    <arg name="direct_tracker_terminal_index_overshoot_margin" default="0.3" />
     <arg name="direct_tracker_max_steering" default="0.43" />
     <arg name="direct_tracker_max_heading_error" default="3.14" />
     <arg name="direct_tracker_yaw_offset_deg" default="0.0" />
@@ -208,6 +209,7 @@
             <param name="goal_overshoot_margin" value="$(arg direct_tracker_goal_overshoot_margin)" />
             <param name="end_path_point_window" value="$(arg direct_tracker_end_path_point_window)" />
             <param name="end_path_point_tolerance" value="$(arg direct_tracker_end_path_point_tolerance)" />
+            <param name="terminal_index_overshoot_margin" value="$(arg direct_tracker_terminal_index_overshoot_margin)" />
             <param name="max_steering" value="$(arg direct_tracker_max_steering)" />
             <param name="max_heading_error_for_drive" value="$(arg direct_tracker_max_heading_error)" />
             <param name="yaw_offset_deg" value="$(arg direct_tracker_yaw_offset_deg)" />
