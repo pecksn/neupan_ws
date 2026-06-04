@@ -3,7 +3,9 @@
          Keeps localization + OSM global planner, excludes NeuPAN/local planner. -->
 
     <arg name="run_fast_lio_slam" default="true" doc="Whether to run FAST-LIO for /odometry/local support" />
+    <arg name="enable_livox_driver" default="true" doc="Whether to run Livox MID360 driver" />
     <arg name="enable_rviz" default="true" />
+    <arg name="rviz_config" default="$(find hybrid_astar)/launch/config.rviz" />
     <arg name="imu_topic" default="/imu/data" />
 
     <arg name="map_origin_lat" default="23.0398" />
@@ -90,11 +92,36 @@
     <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="0.0 0.0 0.25 0 0 0 base_link gps_link 100" />
     <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100" />
 
+    <group if="$(arg enable_livox_driver)">
+        <include file="$(find livox_ros_driver2)/launch_ROS1/rviz_MID360.launch">
+            <arg name="rviz_enable" value="false" />
+            <arg name="msg_frame_id" value="livox_frame" />
+            <arg name="xfer_format" value="1" />
+        </include>
+    </group>
+
     <group if="$(arg run_fast_lio_slam)">
         <include file="$(find fast_lio)/launch/mapping_mid360.launch">
             <arg name="rviz" value="false" />
         </include>
     </group>
+
+    <!-- Visualization-only 2D scan generated from FAST-LIO cloud -->
+    <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan_viz" output="screen">
+        <remap from="cloud_in" to="/cloud_registered_body" />
+        <remap from="scan" to="/scan_viz" />
+        <param name="target_frame" value="map" />
+        <param name="transform_tolerance" value="0.25" />
+        <param name="min_height" value="0.2" />
+        <param name="max_height" value="0.8" />
+        <param name="angle_min" value="-3.14159" />
+        <param name="angle_max" value="3.14159" />
+        <param name="angle_increment" value="0.0087" />
+        <param name="scan_time" value="0.1" />
+        <param name="range_max" value="30.0" />
+        <param name="range_min" value="0.4" />
+        <param name="use_inf" value="true" />
+    </node>
 
     <!-- Outdoor OSM map + global planner -->
     <node pkg="osm_map_handler" type="static_osm_map_server.py" name="osm_road_map" output="screen">
@@ -132,6 +159,6 @@
     </node>
 
     <group if="$(arg enable_rviz)">
-        <node name="rviz" pkg="rviz" type="rviz" args="-d $(find hybrid_astar)/launch/config.rviz" />
+        <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
     </group>
 </launch>
