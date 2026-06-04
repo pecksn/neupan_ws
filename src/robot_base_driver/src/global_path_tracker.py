@@ -33,6 +33,8 @@ class GlobalPathTracker(object):
         self.goal_stop_tolerance = rospy.get_param("~goal_stop_tolerance", self.goal_tolerance)
         self.goal_approach_radius = rospy.get_param("~goal_approach_radius", 4.0)
         self.goal_overshoot_margin = rospy.get_param("~goal_overshoot_margin", 0.5)
+        self.end_path_point_window = int(rospy.get_param("~end_path_point_window", 3))
+        self.end_path_point_tolerance = rospy.get_param("~end_path_point_tolerance", 1.5)
         self.slowdown_radius = rospy.get_param("~slowdown_radius", 4.0)
         self.wheelbase = rospy.get_param("~wheelbase", 0.67)
         self.cruise_speed = rospy.get_param("~cruise_speed", 0.8)
@@ -86,7 +88,7 @@ class GlobalPathTracker(object):
 
     def find_target_point(self, x, y):
         if not self.path_points:
-            return None, None
+            return None, None, None
 
         closest_idx = 0
         closest_dist = float("inf")
@@ -103,7 +105,7 @@ class GlobalPathTracker(object):
                 target_idx = i
                 break
 
-        return target_idx, self.path_points[target_idx]
+        return closest_idx, closest_dist, self.path_points[target_idx]
 
     def should_stop_at_goal(self, x, y):
         if not self.path_points:
@@ -131,6 +133,18 @@ class GlobalPathTracker(object):
 
         if len(self.path_points) < 2:
             return False, "single_point_path"
+
+        closest_idx = 0
+        closest_dist = float("inf")
+        for i, (px, py) in enumerate(self.path_points):
+            d = math.hypot(px - x, py - y)
+            if d < closest_dist:
+                closest_dist = d
+                closest_idx = i
+
+        terminal_start_idx = max(0, len(self.path_points) - max(1, self.end_path_point_window))
+        if closest_idx >= terminal_start_idx and closest_dist <= self.end_path_point_tolerance:
+            return True, "near_terminal_path_points"
 
         p0x, p0y = self.path_points[-2]
         p1x, p1y = self.path_points[-1]
@@ -185,7 +199,7 @@ class GlobalPathTracker(object):
                 )
             return Twist()
 
-        _, target = self.find_target_point(x, y)
+        closest_idx, closest_dist, target = self.find_target_point(x, y)
         if target is None:
             return Twist()
 
@@ -222,6 +236,15 @@ class GlobalPathTracker(object):
                 cmd.linear.x,
                 math.degrees(cmd.angular.z),
                 speed_reason,
+            )
+            rospy.loginfo_throttle(
+                1.0,
+                "global_path_tracker progress: closest_idx=%d/%d closest_dist=%.2f end_window=%d end_tol=%.2f",
+                closest_idx if closest_idx is not None else -1,
+                max(0, len(self.path_points) - 1),
+                closest_dist if closest_dist is not None else -1.0,
+                self.end_path_point_window,
+                self.end_path_point_tolerance,
             )
         return cmd
 
