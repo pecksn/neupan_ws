@@ -31,6 +31,8 @@ class GlobalPathTracker(object):
         self.lookahead_dist = rospy.get_param("~lookahead_dist", 2.5)
         self.goal_tolerance = rospy.get_param("~goal_tolerance", 1.2)
         self.goal_stop_tolerance = rospy.get_param("~goal_stop_tolerance", self.goal_tolerance)
+        self.goal_approach_radius = rospy.get_param("~goal_approach_radius", 4.0)
+        self.goal_overshoot_margin = rospy.get_param("~goal_overshoot_margin", 0.5)
         self.slowdown_radius = rospy.get_param("~slowdown_radius", 4.0)
         self.wheelbase = rospy.get_param("~wheelbase", 0.67)
         self.cruise_speed = rospy.get_param("~cruise_speed", 0.8)
@@ -47,6 +49,8 @@ class GlobalPathTracker(object):
         self.robot_pose = None
         self.goal_active = False
         self.last_path_stamp = None
+        self.closest_goal_dist_seen = None
+        self.goal_entered_approach_zone = False
 
         self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=10)
         rospy.Subscriber(self.path_topic, Path, self.path_callback, queue_size=1)
@@ -63,6 +67,8 @@ class GlobalPathTracker(object):
         self.path_points = [(pose.pose.position.x, pose.pose.position.y) for pose in msg.poses]
         self.last_path_stamp = rospy.Time.now()
         self.goal_active = len(self.path_points) >= 2
+        self.closest_goal_dist_seen = None
+        self.goal_entered_approach_zone = False
 
     def odom_callback(self, msg):
         q = msg.pose.pose.orientation
@@ -105,8 +111,23 @@ class GlobalPathTracker(object):
 
         goal_x, goal_y = self.path_points[-1]
         goal_dist = math.hypot(goal_x - x, goal_y - y)
+        if self.closest_goal_dist_seen is None:
+            self.closest_goal_dist_seen = goal_dist
+        else:
+            self.closest_goal_dist_seen = min(self.closest_goal_dist_seen, goal_dist)
+
+        if goal_dist <= self.goal_approach_radius:
+            self.goal_entered_approach_zone = True
+
         if goal_dist <= self.goal_stop_tolerance:
             return True, "goal_distance"
+
+        if (
+            self.goal_entered_approach_zone
+            and self.closest_goal_dist_seen is not None
+            and goal_dist > self.closest_goal_dist_seen + self.goal_overshoot_margin
+        ):
+            return True, "goal_distance_rebound"
 
         if len(self.path_points) < 2:
             return False, "single_point_path"
