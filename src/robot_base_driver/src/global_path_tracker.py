@@ -37,6 +37,7 @@ class GlobalPathTracker(object):
         self.max_steering = rospy.get_param("~max_steering", 0.43)
         self.max_heading_error_for_drive = rospy.get_param("~max_heading_error_for_drive", 1.2)
         self.stop_on_missing_path = rospy.get_param("~stop_on_missing_path", True)
+        self.debug_log = rospy.get_param("~debug_log", True)
 
         self.path_points = []
         self.robot_pose = None
@@ -93,8 +94,12 @@ class GlobalPathTracker(object):
 
     def compute_command(self):
         if self.robot_pose is None:
+            if self.debug_log:
+                rospy.logwarn_throttle(1.0, "global_path_tracker waiting for robot pose from %s", self.odom_topic)
             return None
         if not self.path_points:
+            if self.debug_log:
+                rospy.logwarn_throttle(1.0, "global_path_tracker waiting for path from %s", self.path_topic)
             return Twist() if self.stop_on_missing_path else None
 
         x, y, yaw = self.robot_pose
@@ -102,6 +107,13 @@ class GlobalPathTracker(object):
         goal_dist = math.hypot(goal_x - x, goal_y - y)
 
         if goal_dist <= self.goal_tolerance:
+            if self.debug_log:
+                rospy.loginfo_throttle(
+                    1.0,
+                    "global_path_tracker stop: within goal tolerance, goal_dist=%.2f tol=%.2f",
+                    goal_dist,
+                    self.goal_tolerance,
+                )
             return Twist()
 
         _, target = self.find_target_point(x, y)
@@ -110,9 +122,11 @@ class GlobalPathTracker(object):
 
         tx, ty = target
         alpha = wrap_to_pi(math.atan2(ty - y, tx - x) - yaw)
+        speed_reason = "tracking"
 
         if abs(alpha) > self.max_heading_error_for_drive:
             speed = 0.0
+            speed_reason = "heading_error_too_large"
         else:
             speed_scale = clamp(goal_dist / max(self.slowdown_radius, 1e-3), 0.0, 1.0)
             speed = max(self.min_speed, self.cruise_speed * speed_scale)
@@ -125,6 +139,21 @@ class GlobalPathTracker(object):
         cmd = Twist()
         cmd.linear.x = speed
         cmd.angular.z = steering
+        if self.debug_log:
+            rospy.loginfo_throttle(
+                1.0,
+                "global_path_tracker: pose=(%.2f, %.2f, %.1fdeg) target=(%.2f, %.2f) goal_dist=%.2f alpha=%.1fdeg cmd_v=%.2f cmd_steer=%.1fdeg reason=%s",
+                x,
+                y,
+                math.degrees(yaw),
+                tx,
+                ty,
+                goal_dist,
+                math.degrees(alpha),
+                cmd.linear.x,
+                math.degrees(cmd.angular.z),
+                speed_reason,
+            )
         return cmd
 
     def run(self):

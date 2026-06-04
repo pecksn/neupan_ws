@@ -15,6 +15,7 @@
     <arg name="direct_tracker_lookahead" default="2.5" />
     <arg name="direct_tracker_goal_tolerance" default="1.2" />
     <arg name="direct_tracker_max_steering" default="0.43" />
+    <arg name="direct_tracker_max_heading_error" default="3.14" />
 
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
@@ -193,6 +194,8 @@
             <param name="lookahead_dist" value="$(arg direct_tracker_lookahead)" />
             <param name="goal_tolerance" value="$(arg direct_tracker_goal_tolerance)" />
             <param name="max_steering" value="$(arg direct_tracker_max_steering)" />
+            <param name="max_heading_error_for_drive" value="$(arg direct_tracker_max_heading_error)" />
+            <param name="debug_log" value="true" />
         </node>
     </group>
 
