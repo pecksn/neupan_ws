@@ -2,7 +2,7 @@
 import math
 
 import rospy
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry, Path
 from tf.transformations import euler_from_quaternion
 
@@ -26,7 +26,6 @@ class GlobalPathTracker(object):
         self.path_topic = rospy.get_param("~path_topic", "/osm_global_path")
         self.odom_topic = rospy.get_param("~odom_topic", "/odometry/global")
         self.cmd_topic = rospy.get_param("~cmd_topic", "/neupan_cmd_vel")
-        self.goal_topic = rospy.get_param("~goal_topic", "/move_base_simple/goal")
 
         self.control_rate = rospy.get_param("~control_rate", 10.0)
         self.lookahead_dist = rospy.get_param("~lookahead_dist", 2.5)
@@ -46,14 +45,12 @@ class GlobalPathTracker(object):
 
         self.path_points = []
         self.robot_pose = None
-        self.current_goal = None
         self.goal_active = False
         self.last_path_stamp = None
 
         self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=10)
         rospy.Subscriber(self.path_topic, Path, self.path_callback, queue_size=1)
         rospy.Subscriber(self.odom_topic, Odometry, self.odom_callback, queue_size=10)
-        rospy.Subscriber(self.goal_topic, PoseStamped, self.goal_callback, queue_size=1)
 
         rospy.loginfo(
             "global_path_tracker: path=%s odom=%s cmd=%s",
@@ -76,10 +73,6 @@ class GlobalPathTracker(object):
             msg.pose.pose.position.y,
             yaw,
         )
-
-    def goal_callback(self, msg):
-        self.current_goal = (msg.pose.position.x, msg.pose.position.y)
-        self.goal_active = True
 
     def publish_stop(self):
         cmd = Twist()
@@ -107,12 +100,6 @@ class GlobalPathTracker(object):
         return target_idx, self.path_points[target_idx]
 
     def should_stop_at_goal(self, x, y):
-        if self.current_goal is not None:
-            goal_x, goal_y = self.current_goal
-            clicked_goal_dist = math.hypot(goal_x - x, goal_y - y)
-            if clicked_goal_dist <= self.goal_stop_tolerance:
-                return True, "clicked_goal_distance"
-
         if not self.path_points:
             return False, "no_path"
 
