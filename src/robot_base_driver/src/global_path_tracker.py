@@ -38,6 +38,8 @@ class GlobalPathTracker(object):
         self.max_heading_error_for_drive = rospy.get_param("~max_heading_error_for_drive", 1.2)
         self.stop_on_missing_path = rospy.get_param("~stop_on_missing_path", True)
         self.debug_log = rospy.get_param("~debug_log", True)
+        self.yaw_offset_deg = rospy.get_param("~yaw_offset_deg", 0.0)
+        self.yaw_offset_rad = math.radians(self.yaw_offset_deg)
 
         self.path_points = []
         self.robot_pose = None
@@ -61,6 +63,7 @@ class GlobalPathTracker(object):
     def odom_callback(self, msg):
         q = msg.pose.pose.orientation
         _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+        yaw = wrap_to_pi(yaw + self.yaw_offset_rad)
         self.robot_pose = (
             msg.pose.pose.position.x,
             msg.pose.pose.position.y,
