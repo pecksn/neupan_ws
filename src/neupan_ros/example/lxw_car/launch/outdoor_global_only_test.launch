@@ -16,6 +16,7 @@
     <arg name="direct_tracker_goal_tolerance" default="1.2" />
     <arg name="direct_tracker_goal_stop_tolerance" default="2.0" />
     <arg name="direct_tracker_clicked_goal_stop_tolerance" default="2.0" />
+    <arg name="direct_tracker_projected_goal_stop_tolerance" default="1.5" />
     <arg name="direct_tracker_goal_approach_radius" default="4.0" />
     <arg name="direct_tracker_goal_overshoot_margin" default="0.5" />
     <arg name="direct_tracker_end_path_point_window" default="3" />
@@ -205,6 +206,7 @@
             <param name="goal_tolerance" value="$(arg direct_tracker_goal_tolerance)" />
             <param name="goal_stop_tolerance" value="$(arg direct_tracker_goal_stop_tolerance)" />
             <param name="clicked_goal_stop_tolerance" value="$(arg direct_tracker_clicked_goal_stop_tolerance)" />
+            <param name="projected_goal_stop_tolerance" value="$(arg direct_tracker_projected_goal_stop_tolerance)" />
             <param name="goal_approach_radius" value="$(arg direct_tracker_goal_approach_radius)" />
             <param name="goal_overshoot_margin" value="$(arg direct_tracker_goal_overshoot_margin)" />
             <param name="end_path_point_window" value="$(arg direct_tracker_end_path_point_window)" />

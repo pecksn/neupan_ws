@@ -33,6 +33,7 @@ class GlobalPathTracker(object):
         self.goal_tolerance = rospy.get_param("~goal_tolerance", 1.2)
         self.goal_stop_tolerance = rospy.get_param("~goal_stop_tolerance", self.goal_tolerance)
         self.clicked_goal_stop_tolerance = rospy.get_param("~clicked_goal_stop_tolerance", 2.0)
+        self.projected_goal_stop_tolerance = rospy.get_param("~projected_goal_stop_tolerance", 1.5)
         self.goal_approach_radius = rospy.get_param("~goal_approach_radius", 4.0)
         self.goal_overshoot_margin = rospy.get_param("~goal_overshoot_margin", 0.5)
         self.end_path_point_window = int(rospy.get_param("~end_path_point_window", 3))
@@ -60,6 +61,7 @@ class GlobalPathTracker(object):
         self.closest_clicked_goal_dist_seen = None
         self.clicked_goal_entered_approach_zone = False
         self.closest_terminal_dist_seen = None
+        self.path_cumulative = []
 
         self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=10)
         rospy.Subscriber(self.path_topic, Path, self.path_callback, queue_size=1)
@@ -75,6 +77,7 @@ class GlobalPathTracker(object):
 
     def path_callback(self, msg):
         self.path_points = [(pose.pose.position.x, pose.pose.position.y) for pose in msg.poses]
+        self.path_cumulative = self.compute_cumulative_lengths(self.path_points)
         self.last_path_stamp = rospy.Time.now()
         self.goal_active = len(self.path_points) >= 2
         self.closest_goal_dist_seen = None
@@ -102,6 +105,54 @@ class GlobalPathTracker(object):
     def publish_stop(self):
         cmd = Twist()
         self.cmd_pub.publish(cmd)
+
+    @staticmethod
+    def compute_cumulative_lengths(points):
+        cumulative = [0.0]
+        for i in range(1, len(points)):
+            px0, py0 = points[i - 1]
+            px1, py1 = points[i]
+            cumulative.append(cumulative[-1] + math.hypot(px1 - px0, py1 - py0))
+        return cumulative
+
+    def project_onto_path(self, x, y):
+        if len(self.path_points) < 2:
+            return None
+
+        best = None
+        best_lateral = float("inf")
+
+        for i in range(len(self.path_points) - 1):
+            x0, y0 = self.path_points[i]
+            x1, y1 = self.path_points[i + 1]
+            dx = x1 - x0
+            dy = y1 - y0
+            seg_len = math.hypot(dx, dy)
+            if seg_len < 1e-6:
+                continue
+
+            ux = dx / seg_len
+            uy = dy / seg_len
+            rel_x = x - x0
+            rel_y = y - y0
+            t = clamp((rel_x * ux + rel_y * uy) / seg_len, 0.0, 1.0)
+            proj_x = x0 + t * dx
+            proj_y = y0 + t * dy
+            lateral = math.hypot(x - proj_x, y - proj_y)
+            s = self.path_cumulative[i] + t * seg_len
+
+            if lateral < best_lateral:
+                best_lateral = lateral
+                best = {
+                    "segment_idx": i,
+                    "proj_x": proj_x,
+                    "proj_y": proj_y,
+                    "lateral": lateral,
+                    "s": s,
+                    "remaining": self.path_cumulative[-1] - s,
+                }
+
+        return best
 
     def find_target_point(self, x, y):
         if not self.path_points:
@@ -148,6 +199,11 @@ class GlobalPathTracker(object):
 
         if not self.path_points:
             return False, "no_path"
+
+        projection = self.project_onto_path(x, y)
+        if projection is not None:
+            if projection["remaining"] <= self.projected_goal_stop_tolerance:
+                return True, "projected_path_remaining"
 
         goal_x, goal_y = self.path_points[-1]
         goal_dist = math.hypot(goal_x - x, goal_y - y)
@@ -275,6 +331,7 @@ class GlobalPathTracker(object):
         cmd.linear.x = speed
         cmd.angular.z = steering
         if self.debug_log:
+            projection = self.project_onto_path(x, y)
             rospy.loginfo_throttle(
                 1.0,
                 "global_path_tracker: pose=(%.2f, %.2f, %.1fdeg) target=(%.2f, %.2f) goal_dist=%.2f alpha=%.1fdeg cmd_v=%.2f cmd_steer=%.1fdeg reason=%s",
@@ -298,6 +355,17 @@ class GlobalPathTracker(object):
                 self.end_path_point_window,
                 self.end_path_point_tolerance,
             )
+            if projection is not None:
+                rospy.loginfo_throttle(
+                    1.0,
+                    "global_path_tracker projection: s=%.2f remaining=%.2f lateral=%.2f seg=%d proj=(%.2f, %.2f)",
+                    projection["s"],
+                    projection["remaining"],
+                    projection["lateral"],
+                    projection["segment_idx"],
+                    projection["proj_x"],
+                    projection["proj_y"],
+                )
         return cmd
 
     def run(self):
