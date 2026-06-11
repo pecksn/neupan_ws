@@ -20,5 +20,8 @@ catkin_install_python(PROGRAMS
   src/global_odom_bridge.py
   src/global_path_tracker.py
   src/map_odom_align_bridge.py
+  src/odom_yaw_monitor.py
+  src/quaternion_yaw_monitor.py
+  src/yaw_compare_monitor.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

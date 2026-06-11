@@ -26,6 +26,11 @@
     <arg name="direct_tracker_max_heading_error" default="3.14" />
     <arg name="direct_tracker_yaw_offset_deg" default="0.0" />
     <arg name="direct_tracker_final_segment_lateral_tolerance" default="1.5" />
+    <arg name="direct_tracker_road_half_width" default="4.5" />
+    <arg name="direct_tracker_lateral_deadband" default="4.5" />
+    <arg name="direct_tracker_straight_segment_angle_deg" default="10.0" />
+    <arg name="direct_tracker_straight_heading_deadband_deg" default="8.0" />
+    <arg name="enable_yaw_monitor" default="true" />
 
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
@@ -197,6 +202,9 @@
         <node pkg="robot_base_driver" type="global_path_tracker.py" name="global_path_tracker" output="screen">
             <param name="path_topic" value="/osm_global_path" />
             <param name="odom_topic" value="/odometry/global" />
+            <param name="use_tf_pose" value="true" />
+            <param name="tf_map_frame" value="map" />
+            <param name="tf_base_frame" value="base_link" />
             <param name="cmd_topic" value="/neupan_cmd_vel" />
             <param name="goal_topic" value="/move_base_simple/goal" />
             <param name="wheelbase" value="0.67" />
@@ -216,7 +224,35 @@
             <param name="max_heading_error_for_drive" value="$(arg direct_tracker_max_heading_error)" />
             <param name="yaw_offset_deg" value="$(arg direct_tracker_yaw_offset_deg)" />
             <param name="final_segment_lateral_tolerance" value="$(arg direct_tracker_final_segment_lateral_tolerance)" />
+            <param name="road_half_width" value="$(arg direct_tracker_road_half_width)" />
+            <param name="lateral_deadband" value="$(arg direct_tracker_lateral_deadband)" />
+            <param name="straight_segment_angle_deg" value="$(arg direct_tracker_straight_segment_angle_deg)" />
+            <param name="straight_heading_deadband_deg" value="$(arg direct_tracker_straight_heading_deadband_deg)" />
             <param name="debug_log" value="true" />
+        </node>
+    </group>
+
+    <group if="$(arg enable_yaw_monitor)">
+        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_local" output="screen">
+            <param name="topic" value="/odometry/local" />
+            <param name="label" value="odom_local" />
+        </node>
+        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_gps" output="screen">
+            <param name="topic" value="/odometry/gps" />
+            <param name="label" value="odom_gps" />
+        </node>
+        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_global" output="screen">
+            <param name="topic" value="/odometry/global" />
+            <param name="label" value="odom_global" />
+        </node>
+        <node pkg="robot_base_driver" type="quaternion_yaw_monitor.py" name="gps_heading_monitor" output="screen">
+            <param name="topic" value="/heading" />
+            <param name="label" value="g90_heading" />
+        </node>
+        <node pkg="robot_base_driver" type="yaw_compare_monitor.py" name="yaw_compare_monitor" output="screen">
+            <param name="odom_topic" value="/odometry/global" />
+            <param name="heading_topic" value="/heading" />
+            <param name="label" value="odom_vs_g90" />
         </node>
     </group>
 

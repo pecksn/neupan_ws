@@ -406,12 +406,13 @@ class RosNMEADriver(object):
         elif 'HDT' in parsed_sentence:
             data = parsed_sentence['HDT']
             # print(data)
-            if data['heading']:
+            heading_value = data.get('heading', None)
+            if heading_value is not None and not math.isnan(heading_value):
                 current_heading = QuaternionStamped()
                 current_heading.header.stamp = current_time
                 current_heading.header.frame_id = frame_id
 
-                heading_data=data['heading']+self.rotation_data
+                heading_data=heading_value+self.rotation_data
                 if(heading_data>360):
                     heading_data=heading_data-360
                 yaw=math.radians(heading_data)

@@ -26,7 +26,7 @@ from geometry_msgs.msg import Twist, PoseStamped, Quaternion, PoseWithCovariance
 from nav_msgs.msg import Odometry, Path
 from visualization_msgs.msg import MarkerArray, Marker
 from sensor_msgs.msg import LaserScan, PointCloud2
-from math import sin, cos, atan2
+from math import sin, cos, atan2, degrees
 import numpy as np
 from neupan.util import get_transform
 import tf
@@ -186,6 +186,23 @@ class neupan_core:
 
             self.stop = info["stop"]
             self.arrive = info["arrive"]
+
+            ref_state = None
+            if info.get("ref_state_list") is not None and len(info["ref_state_list"]) > 0:
+                ref_state = info["ref_state_list"][0]
+            if ref_state is not None:
+                robot_yaw = self.robot_state[2, 0]
+                ref_yaw = ref_state[2, 0]
+                yaw_error = atan2(sin(ref_yaw - robot_yaw), cos(ref_yaw - robot_yaw))
+                rospy.loginfo_throttle(
+                    1.0,
+                    "neupan yaw debug: robot=%.1fdeg ref=%.1fdeg err=%.1fdeg cmd_v=%.2f cmd_steer=%.1fdeg",
+                    degrees(robot_yaw),
+                    degrees(ref_yaw),
+                    degrees(yaw_error),
+                    action[0, 0],
+                    degrees(action[1, 0]),
+                )
 
             if info["arrive"]:
                 # print(action)

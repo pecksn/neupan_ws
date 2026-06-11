@@ -30,7 +30,7 @@
     <arg name="use_global_ekf" default="false" doc="false: 稳定模式直接使用/odometry/gps; true: 使用ekf_global" />
     <arg name="align_map_odom_with_global_local" default="true" doc="用 /odometry/global 与 /odometry/local 对齐 map->odom，便于点云与全局标记一致" />
     <arg name="map_odom_align_timeout" default="2.0" doc="map_odom 动态对齐消息接收超时(秒)" />
-    <arg name="map_odom_align_yaw_bias_deg" default="180.0" doc="map_odom 偏航补偿角(度); 若显示反向可设为 180" />
+    <arg name="map_odom_align_yaw_bias_deg" default="-180.0" doc="map_odom 偏航补偿角(度); 若显示反向可设为 180" />
 
     <!-- 室外 OSM 规划参数 -->
     <arg name="osm_lookahead_dist" default="4.0" />
