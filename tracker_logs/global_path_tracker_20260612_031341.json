@@ -1,0 +1,1030 @@
+{
+  "created_at": "20260612_031341",
+  "final_state": {
+    "current_goal": null,
+    "goal_active": false,
+    "path_points": 0,
+    "pose_source": null,
+    "robot_pose": null
+  },
+  "history": [
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234007.6410167
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234007.737801
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234007.8380506
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234007.9378788
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.0377266
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.1377807
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.2377903
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.337764
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.4377418
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.537761
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.6392562
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.739371
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.83792
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234008.9379866
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.0378284
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.1377823
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.2378395
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.3377721
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.437814
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.5378063
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.6377873
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.7403998
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.8377187
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234009.9378374
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.0377564
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.137942
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.2378795
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.3388069
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.4389732
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.538155
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.6380458
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.7411304
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.8380766
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234010.9380188
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.0381575
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.138245
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.2381175
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.3380723
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.4381306
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.5381293
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.637992
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.7380278
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.8435698
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234011.938356
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.0382109
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.1383061
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.238199
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.338147
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.4380915
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.5381749
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.6381068
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.7383552
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.838076
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234012.9436543
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.03815
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.1382706
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.2381508
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.3382652
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.4383144
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.5381799
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.6383033
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.7384584
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.838442
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234013.9379518
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.0454867
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.138013
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.2378592
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.3378127
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.437766
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.537829
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.637818
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.7378168
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.8378236
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234014.937839
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.0397365
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.139476
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.2378082
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.3378386
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.4378176
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.5378087
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.637781
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.7378845
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.8379862
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234015.9379086
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.0378191
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.1405244
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.2377436
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.33779
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.4377372
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.5378335
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.6377645
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.7377791
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.8377674
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234016.9378426
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.0378344
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.1411757
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.2378013
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.3377826
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.437825
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.5378342
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.6377752
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.7378368
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.8378098
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234017.9378376
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.037801
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.1422787
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.2377815
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.3378165
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.4377203
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.5379002
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.6377618
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.737726
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.8377702
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234018.9378548
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.0378585
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.1377544
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.2402835
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.3377805
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.4378023
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.537784
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.6377447
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.7377658
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.8377526
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234019.9378824
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.03774
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.1378996
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.23915
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.3391588
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.4377766
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.5377786
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.637797
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.7380683
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.8379636
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234020.9380255
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234021.0378458
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234021.137817
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234021.2397757
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234021.341249
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234021.4379957
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234021.5380287
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234021.6378121
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234021.7378445
+    },
+    {
+      "event": "waiting_robot_pose",
+      "goal_active": false,
+      "path_points": 0,
+      "pose_source": null,
+      "stamp": 1781234021.8378236
+    }
+  ],
+  "params": {
+    "cmd_topic": "/neupan_cmd_vel",
+    "cruise_speed": 0.8,
+    "goal_tolerance": 1.2,
+    "goal_topic": "/move_base_simple/goal",
+    "lookahead_dist": 2.5,
+    "max_steering": 0.43,
+    "min_speed": 0.25,
+    "odom_topic": "/odometry/global",
+    "path_topic": "/osm_global_path",
+    "projected_goal_stop_tolerance": 1.0,
+    "tf_base_frame": "base_link",
+    "tf_map_frame": "map",
+    "use_tf_pose": true,
+    "wheelbase": 0.67,
+    "yaw_offset_deg": 0
+  }
+}

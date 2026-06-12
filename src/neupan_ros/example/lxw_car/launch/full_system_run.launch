@@ -88,6 +88,7 @@
                     <param name="child_frame" value="odom"/>
                     <param name="timeout_sec" value="$(arg map_odom_align_timeout)"/>
                     <param name="yaw_bias_deg" value="$(arg map_odom_align_yaw_bias_deg)"/>
+                    <param name="align_yaw_with_global" value="false"/>
                 </node>
             </group>
         </group>

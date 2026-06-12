@@ -18,6 +18,7 @@ class MapOdomAlignBridge:
         self.timeout_sec = float(rospy.get_param("~timeout_sec", 2.0))
         self.yaw_bias_deg = float(rospy.get_param("~yaw_bias_deg", 0.0))
         self.yaw_bias_rad = math.radians(self.yaw_bias_deg)
+        self.align_yaw_with_global = bool(rospy.get_param("~align_yaw_with_global", False))
 
         self.last_global = None
         self.last_local = None
@@ -30,12 +31,13 @@ class MapOdomAlignBridge:
         self.timer = rospy.Timer(rospy.Duration(0.02), self._timer_cb)
 
         rospy.loginfo(
-            "map_odom_align_bridge: %s + %s -> TF %s -> %s (yaw_bias=%.1f deg)",
+            "map_odom_align_bridge: %s + %s -> TF %s -> %s (yaw_bias=%.1f deg, align_yaw_with_global=%s)",
             self.global_topic,
             self.local_topic,
             self.parent_frame,
             self.child_frame,
             self.yaw_bias_deg,
+            self.align_yaw_with_global,
         )
 
     @staticmethod
@@ -88,15 +90,24 @@ class MapOdomAlignBridge:
         gyaw = self._yaw_from_quat(self.last_global.pose.pose.orientation)
         lyaw = self._yaw_from_quat(self.last_local.pose.pose.orientation)
 
-        # Compute T_map_odom so that: T_map_odom * T_odom_base(local) ~= T_map_base(global)
+        # GPS odometry heading is often invalid/default in stable mode, so keep
+        # map->odom yaw fixed unless explicitly asked to align to global yaw.
         raw_dyaw = gyaw - lyaw
-        dyaw = self._normalize_angle(raw_dyaw + self.yaw_bias_rad)
+        if self.align_yaw_with_global:
+            dyaw = self._normalize_angle(raw_dyaw + self.yaw_bias_rad)
+            yaw_mode = "global"
+        else:
+            dyaw = self._normalize_angle(self.yaw_bias_rad)
+            yaw_mode = "local"
         rospy.loginfo_throttle(
             1.0,
-            "map_odom_align_bridge yaw raw=%.1f deg, bias=%.1f deg, used=%.1f deg",
+            "map_odom_align_bridge yaw raw=%.1f deg, bias=%.1f deg, used=%.1f deg mode=%s global=%.1f local=%.1f",
             math.degrees(raw_dyaw),
             self.yaw_bias_deg,
             math.degrees(dyaw),
+            yaw_mode,
+            math.degrees(gyaw),
+            math.degrees(lyaw),
         )
         c = math.cos(dyaw)
         s = math.sin(dyaw)
