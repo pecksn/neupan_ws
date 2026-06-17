@@ -254,6 +254,8 @@
             <param name="odom_topic" value="/odometry/global" />
             <param name="heading_topic" value="/heading" />
             <param name="label" value="odom_vs_g90" />
+            <param name="log_to_file" value="true" />
+            <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
         </node>
     </group>
 

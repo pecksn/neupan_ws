@@ -26,6 +26,9 @@
     <arg name="gps_use_gnss_time" default="false" />
     <arg name="use_global_ekf" default="false" />
     <arg name="publish_static_map_odom_outdoor" default="true" />
+    <arg name="global_odom_use_heading" default="true" />
+    <arg name="global_odom_heading_topic" default="/heading" />
+    <arg name="global_odom_heading_timeout" default="0.5" />
 
     <!-- 1) 底盘驱动：仅发布 /odom -->
     <include file="$(find robot_base_driver)/launch/driver.launch">
@@ -92,6 +95,9 @@
                 <param name="output_topic" value="/odometry/global" />
                 <param name="output_frame" value="map" />
                 <param name="child_frame" value="base_link" />
+                <param name="use_heading_orientation" value="$(arg global_odom_use_heading)" />
+                <param name="heading_topic" value="$(arg global_odom_heading_topic)" />
+                <param name="heading_timeout_sec" value="$(arg global_odom_heading_timeout)" />
             </node>
             <group if="$(arg publish_static_map_odom_outdoor)">
                 <node pkg="tf" type="static_transform_publisher" name="map_to_odom_outdoor" args="0 0 0 0 0 0 map odom 100" />
