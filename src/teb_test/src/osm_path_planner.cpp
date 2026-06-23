@@ -1,5 +1,6 @@
 #include <cmath>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -27,10 +28,11 @@ public:
 
         ros::NodeHandle private_nh("~/" + name);
         private_nh.param<std::string>("path_topic", path_topic_, "/osm_global_path");
-        private_nh.param<std::string>("goal_topic", goal_topic_, "/move_base_simple/goal");
+        private_nh.param<std::string>("goal_topic", goal_topic_, "/teb_test/osm_goal");
         private_nh.param<std::string>("expected_frame", expected_frame_, "map");
         private_nh.param("plan_wait_timeout", plan_wait_timeout_, 2.0);
         private_nh.param("goal_match_tolerance", goal_match_tolerance_, 8.0);
+        private_nh.param("debug_log", debug_log_, true);
 
         ros::NodeHandle nh;
         path_sub_ = nh.subscribe(path_topic_, 1, &OSMPathPlanner::pathCallback, this);
@@ -66,6 +68,16 @@ public:
         }
 
         const ros::Time request_time = ros::Time::now();
+        if (debug_log_) {
+            ROS_INFO(
+                "OSMPathPlanner makePlan: start=(%.2f, %.2f) goal=(%.2f, %.2f) frame=%s via=%s",
+                start.pose.position.x,
+                start.pose.position.y,
+                goal.pose.position.x,
+                goal.pose.position.y,
+                goal.header.frame_id.c_str(),
+                goal_topic_.c_str());
+        }
         goal_pub_.publish(goal);
 
         ros::Rate rate(20.0);
@@ -81,20 +93,42 @@ public:
 
             if (isUsablePlan(candidate, path_stamp, request_time, start, goal)) {
                 plan = candidate;
-                ROS_INFO(
-                    "OSMPathPlanner forwarded /osm_global_path with %zu points for goal (%.2f, %.2f)",
-                    plan.size(),
-                    goal.pose.position.x,
-                    goal.pose.position.y);
+                if (debug_log_) {
+                    const double start_err = std::hypot(
+                        candidate.front().pose.position.x - start.pose.position.x,
+                        candidate.front().pose.position.y - start.pose.position.y);
+                    const double goal_err = std::hypot(
+                        candidate.back().pose.position.x - goal.pose.position.x,
+                        candidate.back().pose.position.y - goal.pose.position.y);
+                    ROS_INFO(
+                        "OSMPathPlanner accepted plan: points=%zu start_err=%.2f goal_err=%.2f",
+                        plan.size(),
+                        start_err,
+                        goal_err);
+                }
                 return true;
             }
 
             rate.sleep();
         }
 
-        ROS_WARN(
-            "OSMPathPlanner timed out waiting %.2fs for a matching /osm_global_path",
-            plan_wait_timeout_);
+        if (debug_log_) {
+            std::ostringstream oss;
+            oss << "OSMPathPlanner timeout after " << plan_wait_timeout_ << "s waiting for matching /osm_global_path";
+            std::lock_guard<std::mutex> lock(path_mutex_);
+            oss << " latest_points=" << latest_plan_.size();
+            if (!latest_plan_.empty()) {
+                const auto& s = latest_plan_.front().pose.position;
+                const auto& g = latest_plan_.back().pose.position;
+                oss << " latest_start=(" << s.x << "," << s.y << ")";
+                oss << " latest_goal=(" << g.x << "," << g.y << ")";
+            }
+            ROS_WARN("%s", oss.str().c_str());
+        } else {
+            ROS_WARN(
+                "OSMPathPlanner timed out waiting %.2fs for a matching /osm_global_path",
+                plan_wait_timeout_);
+        }
         return false;
     }
 
@@ -136,6 +170,7 @@ private:
     std::string expected_frame_;
     double plan_wait_timeout_{2.0};
     double goal_match_tolerance_{8.0};
+    bool debug_log_{true};
 
     ros::Subscriber path_sub_;
     ros::Publisher goal_pub_;

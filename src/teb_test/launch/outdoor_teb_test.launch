@@ -1,10 +1,14 @@
 <launch>
+    <arg name="run_fast_lio_slam" default="true" />
+    <arg name="enable_livox_driver" default="true" />
     <arg name="enable_rviz" default="true" />
-    <arg name="rviz_config" default="$(find hybrid_astar)/launch/config.rviz" />
+    <arg name="rviz_config" default="$(find teb_test)/rviz/teb_outdoor.rviz" />
+    <arg name="imu_topic" default="/imu/data" />
 
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
-    <arg name="outdoor_mode" default="true" />
+    <arg name="osm_map_dir" default="/home/nuc/lxw/ros_maps/19" />
+
     <arg name="use_fixed_datum" default="true" />
     <arg name="datum_yaw" default="0.0" />
     <arg name="navsat_delay" default="0.60" />
@@ -19,13 +23,34 @@
     <arg name="gps_rotation" default="90.0" />
     <arg name="gps_use_gnss_time" default="false" />
     <arg name="use_global_ekf" default="false" />
+
     <arg name="align_map_odom_with_global_local" default="true" />
     <arg name="map_odom_align_timeout" default="2.0" />
     <arg name="map_odom_align_yaw_bias_deg" default="-180.0" />
 
+    <arg name="osm_lookahead_dist" default="4.0" />
+    <arg name="strict_road_mode" default="true" />
+    <arg name="goal_snap_max_dist" default="50.0" />
+    <arg name="start_snap_max_dist" default="50.0" />
+    <arg name="outdoor_path_straight_spacing" default="2.5" />
+    <arg name="outdoor_path_turn_spacing" default="0.8" />
+    <arg name="outdoor_path_turn_angle_deg_low" default="8.0" />
+    <arg name="outdoor_path_turn_angle_deg_high" default="35.0" />
+    <arg name="outdoor_path_turn_dense_before" default="3.0" />
+    <arg name="outdoor_path_turn_dense_after" default="2.0" />
+    <arg name="outdoor_path_turn_recover_after" default="6.0" />
+    <arg name="outdoor_path_min_points" default="3" />
+    <arg name="auto_set_initialpose" default="true" />
+    <arg name="publish_pose_markers" default="true" />
+    <arg name="publish_snap_debug_markers" default="true" />
+    <arg name="gps_marker_timeout" default="2.0" />
+    <arg name="enable_gps_goal_bridge" default="true" />
+    <arg name="enable_yaw_monitor" default="true" />
+    <arg name="enable_costmap_monitor" default="true" />
+
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
-        <arg name="outdoor_mode" value="$(arg outdoor_mode)" />
-        <arg name="imu_topic" value="/imu/data" />
+        <arg name="outdoor_mode" value="true" />
+        <arg name="imu_topic" value="$(arg imu_topic)" />
         <arg name="use_fixed_datum" value="$(arg use_fixed_datum)" />
         <arg name="datum_lat" value="$(arg map_origin_lat)" />
         <arg name="datum_lon" value="$(arg map_origin_lon)" />
@@ -60,32 +85,123 @@
         </group>
     </group>
 
-    <group>
-        <node pkg="osm_map_handler" type="static_osm_map_server.py" name="osm_road_map" output="screen">
-            <param name="map_dir" value="/home/nuc/lxw/ros_maps/19" />
-            <param name="default_lat" value="$(arg map_origin_lat)" />
-            <param name="default_lon" value="$(arg map_origin_lon)" />
-        </node>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100" />
+    <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 base_link body 100" />
+    <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="0.0 0.0 0.25 0 0 0 base_link gps_link 100" />
+    <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100" />
 
-        <node pkg="osm_map_handler" type="global_astar_node" name="outdoor_global_astar" output="screen">
-            <param name="default_lat" value="$(arg map_origin_lat)" />
-            <param name="default_lon" value="$(arg map_origin_lon)" />
-            <param name="lookahead_dist" value="4.0" />
-            <param name="strict_road_mode" value="true" />
-            <param name="goal_snap_max_dist" value="50.0" />
-            <param name="start_snap_max_dist" value="50.0" />
-            <param name="path_straight_spacing" value="2.5" />
-            <param name="path_turn_spacing" value="0.8" />
-            <param name="path_turn_angle_deg_low" value="8.0" />
-            <param name="path_turn_angle_deg_high" value="35.0" />
-            <param name="path_turn_dense_before" value="3.0" />
-            <param name="path_turn_dense_after" value="2.0" />
-            <param name="path_turn_recover_after" value="6.0" />
-            <param name="path_min_points" value="3" />
-            <param name="auto_set_initialpose" value="true" />
-            <param name="publish_pose_markers" value="true" />
-            <param name="publish_snap_debug_markers" value="true" />
-            <param name="gps_marker_timeout" value="2.0" />
+    <group if="$(arg enable_livox_driver)">
+        <include file="$(find livox_ros_driver2)/launch_ROS1/rviz_MID360.launch">
+            <arg name="rviz_enable" value="false" />
+            <arg name="msg_frame_id" value="livox_frame" />
+            <arg name="xfer_format" value="1" />
+        </include>
+    </group>
+
+    <group if="$(arg run_fast_lio_slam)">
+        <include file="$(find fast_lio)/launch/mapping_mid360.launch">
+            <arg name="rviz" value="false" />
+        </include>
+    </group>
+
+    <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan" output="screen">
+        <remap from="cloud_in" to="/cloud_registered_body" />
+        <remap from="scan" to="/scan" />
+        <param name="target_frame" value="base_link" />
+        <param name="transform_tolerance" value="0.01" />
+        <param name="min_height" value="0.2" />
+        <param name="max_height" value="0.8" />
+        <param name="angle_min" value="-3.14159" />
+        <param name="angle_max" value="3.14159" />
+        <param name="angle_increment" value="0.0087" />
+        <param name="scan_time" value="0.1" />
+        <param name="range_max" value="30.0" />
+        <param name="range_min" value="0.4" />
+        <param name="use_inf" value="true" />
+    </node>
+
+    <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan_viz" output="screen">
+        <remap from="cloud_in" to="/cloud_registered_body" />
+        <remap from="scan" to="/scan_viz" />
+        <param name="target_frame" value="map" />
+        <param name="transform_tolerance" value="0.25" />
+        <param name="min_height" value="0.2" />
+        <param name="max_height" value="0.8" />
+        <param name="angle_min" value="-3.14159" />
+        <param name="angle_max" value="3.14159" />
+        <param name="angle_increment" value="0.0087" />
+        <param name="scan_time" value="0.1" />
+        <param name="range_max" value="30.0" />
+        <param name="range_min" value="0.4" />
+        <param name="use_inf" value="true" />
+    </node>
+
+    <node pkg="osm_map_handler" type="static_osm_map_server.py" name="osm_road_map" output="screen">
+        <param name="map_dir" value="$(arg osm_map_dir)" />
+        <param name="default_lat" value="$(arg map_origin_lat)" />
+        <param name="default_lon" value="$(arg map_origin_lon)" />
+    </node>
+
+    <node pkg="osm_map_handler" type="global_astar_node" name="outdoor_global_astar" output="screen">
+        <param name="default_lat" value="$(arg map_origin_lat)" />
+        <param name="default_lon" value="$(arg map_origin_lon)" />
+        <param name="lookahead_dist" value="$(arg osm_lookahead_dist)" />
+        <param name="strict_road_mode" value="$(arg strict_road_mode)" />
+        <param name="goal_snap_max_dist" value="$(arg goal_snap_max_dist)" />
+        <param name="start_snap_max_dist" value="$(arg start_snap_max_dist)" />
+        <param name="path_straight_spacing" value="$(arg outdoor_path_straight_spacing)" />
+        <param name="path_turn_spacing" value="$(arg outdoor_path_turn_spacing)" />
+        <param name="path_turn_angle_deg_low" value="$(arg outdoor_path_turn_angle_deg_low)" />
+        <param name="path_turn_angle_deg_high" value="$(arg outdoor_path_turn_angle_deg_high)" />
+        <param name="path_turn_dense_before" value="$(arg outdoor_path_turn_dense_before)" />
+        <param name="path_turn_dense_after" value="$(arg outdoor_path_turn_dense_after)" />
+        <param name="path_turn_recover_after" value="$(arg outdoor_path_turn_recover_after)" />
+        <param name="path_min_points" value="$(arg outdoor_path_min_points)" />
+        <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
+        <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
+        <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />
+        <param name="gps_marker_timeout" value="$(arg gps_marker_timeout)" />
+    </node>
+
+    <node if="$(arg enable_gps_goal_bridge)" pkg="osm_map_handler" type="gps_goal_bridge.py" name="gps_goal_bridge" output="screen">
+        <param name="default_lat" value="$(arg map_origin_lat)" />
+        <param name="default_lon" value="$(arg map_origin_lon)" />
+        <param name="input_topic" value="/gps_goal_ll" />
+        <param name="output_topic" value="/move_base_simple/goal" />
+    </node>
+
+    <group if="$(arg enable_yaw_monitor)">
+        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_local" output="screen">
+            <param name="topic" value="/odometry/local" />
+            <param name="label" value="odom_local" />
+        </node>
+        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_gps" output="screen">
+            <param name="topic" value="/odometry/gps" />
+            <param name="label" value="odom_gps" />
+        </node>
+        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_global" output="screen">
+            <param name="topic" value="/odometry/global" />
+            <param name="label" value="odom_global" />
+        </node>
+        <node pkg="robot_base_driver" type="quaternion_yaw_monitor.py" name="gps_heading_monitor" output="screen">
+            <param name="topic" value="/heading" />
+            <param name="label" value="g90_heading" />
+        </node>
+        <node pkg="robot_base_driver" type="yaw_compare_monitor.py" name="yaw_compare_monitor" output="screen">
+            <param name="odom_topic" value="/odometry/global" />
+            <param name="heading_topic" value="/heading" />
+            <param name="label" value="odom_vs_g90_teb" />
+            <param name="log_to_file" value="true" />
+            <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
+        </node>
+    </group>
+
+    <group if="$(arg enable_costmap_monitor)">
+        <node pkg="robot_base_driver" type="costmap_monitor.py" name="costmap_monitor" output="screen">
+            <param name="scan_topic" value="/scan" />
+            <param name="local_costmap_topic" value="/move_base/local_costmap/costmap" />
+            <param name="global_costmap_topic" value="/move_base/global_costmap/costmap" />
+            <param name="label" value="teb_costmap" />
         </node>
     </group>
 

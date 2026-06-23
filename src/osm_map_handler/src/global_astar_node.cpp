@@ -91,6 +91,7 @@ public:
         odom_sub_ = nh_.subscribe("/odometry/global", 1, &OSMGraphAStarPlanner::odomCallback, this);
         gps_sub_ = nh_.subscribe("/gps/fix", 1, &OSMGraphAStarPlanner::gpsCallback, this);
         goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &OSMGraphAStarPlanner::goalCallback, this);
+        internal_goal_sub_ = nh_.subscribe("/teb_test/osm_goal", 1, &OSMGraphAStarPlanner::goalCallback, this);
         clicked_point_sub_ = nh_.subscribe("/clicked_point", 1, &OSMGraphAStarPlanner::clickedPointCallback, this);
 
         loadGraph();
@@ -116,6 +117,7 @@ private:
     ros::Subscriber odom_sub_;
     ros::Subscriber gps_sub_;
     ros::Subscriber goal_sub_;
+    ros::Subscriber internal_goal_sub_;
     ros::Subscriber clicked_point_sub_;
     ros::Timer timer_;
 

@@ -12,7 +12,8 @@ clearing_rotation_allowed: false
 
 OSMPathPlanner:
   path_topic: /osm_global_path
-  goal_topic: /move_base_simple/goal
+  goal_topic: /teb_test/osm_goal
   expected_frame: map
   plan_wait_timeout: 2.0
   goal_match_tolerance: 8.0
+  debug_log: true
