@@ -10,6 +10,7 @@
     <arg name="enable_neupan_tracking" default="false" doc="Legacy option: track path with NeuPAN" />
     <arg name="enable_direct_astar_tracking" default="true" doc="Track /osm_global_path directly without NeuPAN" />
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" />
+    <arg name="neupan_config_outdoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_outdoor.yaml" />
     <arg name="direct_tracker_speed" default="0.8" />
     <arg name="direct_tracker_min_speed" default="0.25" />
     <arg name="direct_tracker_lookahead" default="2.5" />
@@ -261,7 +262,7 @@
 
     <group if="$(arg enable_neupan_tracking)">
         <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
-            <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml" />
+            <param name="config_file" value="$(arg neupan_config_outdoor)" />
             <param name="map_frame" value="map" />
             <param name="base_frame" value="base_link" />
             <param name="lidar_frame" value="base_link" />

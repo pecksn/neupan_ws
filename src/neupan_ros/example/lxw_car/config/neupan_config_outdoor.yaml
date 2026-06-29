@@ -1,0 +1,43 @@
+# mpc
+receding: 26 # 再收一点预瞄，减少看太远带来的左右来回修正。
+step_time: 0.1
+ref_speed: 0.65 # 稍降一点，给 CPU 推理和转向稳定性留余量。
+device: 'cpu'
+time_print: False
+collision_threshold: 0.001
+
+# robot
+robot:
+  kinematics: 'acker'
+  wheelbase: 0.67
+  max_speed: [1.1, 0.35] # 室外仍保留比室内更高的速度，但不过分激进。
+  max_acce: [0.8, 0.22]  # 再压一点纵向和转向变化率，减轻一顿一顿的修正。
+  length: 0.95
+  width: 0.60
+
+# initial path
+ipath:
+  interval: 0.14 # 进一步降低对细碎折线的过度跟随。
+  waypoints: []
+  curve_style: 'reeds'
+  min_radius: 2.10 # 再抑制一点激进小半径修正，优先保证顺滑。
+  loop: False
+  arrive_threshold: 0.7
+  close_threshold: 0.30
+  arrive_index_threshold: 2
+
+# proximal alternating minimization network
+pan:
+  iter_num: 2
+  dune_max_num: 100
+  nrmp_max_num: 10
+  dune_checkpoint: None
+  iter_threshold: 0.1
+
+# adjust parameters
+adjust:
+  q_s: 3.5   # 比之前略拉回贴线能力，避免太松后在路径两侧来回飘。
+  p_u: 32.0  # 更强地惩罚控制突变，优先消掉 S 形和方向抖动。
+  eta: 1.2   # 室外弱化避障势场，减少远处点云对直线跟踪的干扰。
+  d_max: 0.5
+  d_min: 0.2

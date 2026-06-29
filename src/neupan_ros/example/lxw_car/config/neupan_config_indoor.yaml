@@ -1,0 +1,43 @@
+# mpc
+receding: 55 # 预测步数/视野深度。数值越大，小车看路径看越远，转弯越早。对应距离 = receding * ipath.interval
+step_time: 0.1 # 模拟步长(秒)。MPC 内部计算模型的时间间隔。
+ref_speed: 0.3 # 参考线速度 (m/s)。小车巡航的期望速度。
+device: 'cpu' # 计算设备。作者确认只能用 CPU。
+time_print: False # 是否打印每一步的计算耗时。
+collision_threshold: 0.001 # 碰撞阈值。离障碍物多近认为会发生碰撞（单位：米）。
+
+# robot
+robot:
+  kinematics: 'acker'   # 运动学模型。'acker' 表示阿克曼转向（如小车）；'diff' 表示差速驱动。
+  wheelbase: 0.67       # 前后轮轴距 (单位: 米)。影响转弯半径计算的核心物理参数。
+  max_speed: [1.0, 0.35] # [最大线速度(m/s), 最大前轮转角(rad)]。0.35 rad 约 20.3 度。
+  max_acce: [1.0, 0.35]  # [最大加速度(m/s^2), 最大前轮转角角速度(rad/s)]。限制动作的突变程度。
+  length: 0.95          #车体长度 (单位: 米)。用于碰撞检测。
+  width: 0.60           # 车体宽度 (单位: 米)。用于碰撞检测。
+
+# initial path
+ipath:
+  interval: 0.09 # 路径点间隔 (单位: 米)。控制给出的绿色路径点之间的物理距离。
+  waypoints: [] # 初始路径点坐标库。通常留空，由规划器实时发送。[[0,0,0], [1,0,0], ...] 格式为 [[x,y,theta], ...]。
+  curve_style: 'reeds'   # 曲线类型。'dubins' 只能前进；'reeds' 支持倒车（Reeds-Shepp 曲线）。
+  min_radius: 1.85        # 模型最小转弯半径 (单位: 米)。必须大于等于物理极限 L/tan(max_steer)。
+  loop: False # 路径是否循环。
+  arrive_threshold: 0.5  #到达终点的距离阈值。
+  close_threshold: 0.15 # 距离路径多近认为已经跟上了路径。
+  arrive_index_threshold: 2 # 距离终点还有多少个点时认为到达。
+
+# proximal alternating minimization network
+pan:
+  iter_num: 2 # 神经网络计算的内部迭代次数。
+  dune_max_num: 100 # 优化求解的最大样本数。
+  nrmp_max_num: 10 # 局部规划的最大搜索步数。
+  dune_checkpoint: None # 预训练模型路径。
+  iter_threshold: 0.1 # 迭代停止的误差阈值。
+
+# adjust parameters
+adjust:
+  q_s: 3.5    # 位置误差权重。值越大，小车越想紧贴路径，但容易导致震荡；值越小，走位越顺滑。
+  p_u: 15.0   # 控制量变化惩罚（平滑系数）。值越大，小车转向越慢、动作越稳，减少“过弯犹豫”和“震荡”。
+  eta: 3.0    # 势场避障强度。值越大，离障碍物越远。
+  d_max: 1.0   # 避障起作用的最大距离。
+  d_min: 0.2   # 避障必须生效的最小距离。

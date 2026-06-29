@@ -61,6 +61,17 @@ class neupan_core:
         self.refresh_initial_path = rospy.get_param("~refresh_initial_path", False)
         self.flip_angle = rospy.get_param("~flip_angle", False)
         self.include_initial_path_direction = rospy.get_param("~include_initial_path_direction", False)
+        self.enable_adaptive_adjust = rospy.get_param("~enable_adaptive_adjust", True)
+        self.adaptive_far_distance = float(rospy.get_param("~adaptive_far_distance", "4.0"))
+        self.adaptive_near_distance = float(rospy.get_param("~adaptive_near_distance", "1.8"))
+        self.clear_adjust_profile = self.parse_adjust_profile(
+            rospy.get_param("~clear_adjust_profile", "1.6 36.0 0.15 0.25 0.2"),
+            [1.6, 36.0, 0.15, 0.25, 0.2],
+        )
+        self.avoid_adjust_profile = self.parse_adjust_profile(
+            rospy.get_param("~avoid_adjust_profile", "2.8 18.0 2.6 1.2 0.2"),
+            [2.8, 18.0, 2.6, 1.2, 0.2],
+        )
         
         if self.planner_config_file is None:
             raise ValueError(
@@ -77,6 +88,8 @@ class neupan_core:
         self.obstacle_points = None  # (2, n)  n number of points
         self.robot_state = None  # (3, 1) [x, y, theta]
         self.stop = False
+        self.current_adjust_profile_name = "init"
+        self.current_adjust_values = None
 
         # publisher
         self.vel_pub = rospy.Publisher("/neupan_cmd_vel", Twist, queue_size=10)
@@ -169,6 +182,8 @@ class neupan_core:
                     1, "No obstacle points, only path tracking task will be performed"
                 )
 
+            self.update_adaptive_adjust_parameters()
+
             t2 = rospy.Time.now()
             action, info = self.neupan_planner(self.robot_state, self.obstacle_points)
             t3 = rospy.Time.now()
@@ -233,6 +248,84 @@ class neupan_core:
                 )
 
             r.sleep()
+
+    def parse_adjust_profile(self, profile_param, fallback):
+        profile = np.fromstring(str(profile_param).replace(",", " "), dtype=np.float32, sep=" ")
+        if profile.size != 5:
+            rospy.logwarn(
+                "Invalid adaptive adjust profile '%s', expected 5 values: q_s p_u eta d_max d_min. Falling back to %s",
+                profile_param,
+                fallback,
+            )
+            profile = np.array(fallback, dtype=np.float32)
+        return profile
+
+    def compute_min_obstacle_distance(self):
+        if self.robot_state is None or self.obstacle_points is None or self.obstacle_points.size == 0:
+            return None
+
+        robot_xy = self.robot_state[:2, 0:1]
+        distances = np.linalg.norm(self.obstacle_points - robot_xy, axis=0)
+        if distances.size == 0:
+            return None
+        return float(np.min(distances))
+
+    def update_adaptive_adjust_parameters(self):
+        if not self.enable_adaptive_adjust:
+            return
+
+        min_distance = self.compute_min_obstacle_distance()
+
+        if min_distance is None:
+            alpha = 0.0
+            profile_name = "clear_no_scan"
+        elif min_distance <= self.adaptive_near_distance:
+            alpha = 1.0
+            profile_name = "avoid"
+        elif min_distance >= self.adaptive_far_distance:
+            alpha = 0.0
+            profile_name = "clear"
+        else:
+            alpha = (
+                self.adaptive_far_distance - min_distance
+            ) / max(self.adaptive_far_distance - self.adaptive_near_distance, 1e-6)
+            profile_name = "blend"
+
+        adjust_values = (1.0 - alpha) * self.clear_adjust_profile + alpha * self.avoid_adjust_profile
+        q_s, p_u, eta, d_max, d_min = [float(v) for v in adjust_values]
+        d_max = max(d_max, d_min + 1e-3)
+
+        self.neupan_planner.update_adjust_parameters(
+            q_s=q_s,
+            p_u=p_u,
+            eta=eta,
+            d_max=d_max,
+            d_min=d_min,
+        )
+
+        self.current_adjust_profile_name = profile_name
+        self.current_adjust_values = {
+            "q_s": q_s,
+            "p_u": p_u,
+            "eta": eta,
+            "d_max": d_max,
+            "d_min": d_min,
+            "alpha": float(alpha),
+            "min_distance": min_distance,
+        }
+
+        rospy.loginfo_throttle(
+            1.0,
+            "neupan adaptive adjust: mode=%s alpha=%.2f min_obs=%s q_s=%.2f p_u=%.2f eta=%.2f d_max=%.2f d_min=%.2f",
+            profile_name,
+            alpha,
+            "none" if min_distance is None else f"{min_distance:.2f}m",
+            q_s,
+            p_u,
+            eta,
+            d_max,
+            d_min,
+        )
 
     # scan callback
     def scan_callback(self, scan_msg):

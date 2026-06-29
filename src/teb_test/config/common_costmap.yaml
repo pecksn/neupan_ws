@@ -1,11 +1,11 @@
 footprint: [[0.475, 0.30], [0.475, -0.30], [-0.475, -0.30], [-0.475, 0.30]]
-footprint_padding: 0.05
+footprint_padding: 0.02
 transform_tolerance: 0.5
 
 obstacle_layer:
   observation_sources: scan
-  obstacle_range: 12.0
-  raytrace_range: 14.0
+  obstacle_range: 8.0
+  raytrace_range: 10.0
   scan:
     sensor_frame: base_link
     data_type: LaserScan
@@ -15,5 +15,5 @@ obstacle_layer:
     inf_is_valid: true
 
 inflation_layer:
-  inflation_radius: 0.8
-  cost_scaling_factor: 3.0
+  inflation_radius: 0.45
+  cost_scaling_factor: 5.0

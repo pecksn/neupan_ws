@@ -53,6 +53,13 @@
     <arg name="enable_yaw_monitor" default="true" />
     <arg name="outdoor_use_hybrid_astar" default="false" doc="室外是否启用 Hybrid A*；false 时 NeuPAN 直接跟踪 OSM A* 路径" />
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" doc="室外 NeuPAN 初始路径来源话题；可选 /osm_global_path 或 /sPath" />
+    <arg name="neupan_config_indoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_indoor.yaml" />
+    <arg name="neupan_config_outdoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_outdoor.yaml" />
+    <arg name="enable_adaptive_adjust" default="true" doc="是否根据最近障碍物距离动态调整 NeuPAN 权重" />
+    <arg name="adaptive_far_distance" default="2.0" doc="超过该距离使用空旷模式权重" />
+    <arg name="adaptive_near_distance" default="1.0" doc="小于该距离使用避障模式权重" />
+    <arg name="clear_adjust_profile" default="1.6 36.0 0.15 0.25 0.2" doc="空旷模式 q_s p_u eta d_max d_min" />
+    <arg name="avoid_adjust_profile" default="2.8 18.0 2.6 1.2 0.2" doc="避障模式 q_s p_u eta d_max d_min" />
 
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
@@ -231,7 +238,7 @@
         <node pkg="tf" type="static_transform_publisher" name="map_to_path" args="0 0 0 0 0 0 map path 100" />
 
         <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
-            <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml"/>
+            <param name="config_file" value="$(arg neupan_config_indoor)"/>
             <param name="map_frame"   value="map"/>
             <param name="base_frame"  value="base_link"/>
             <param name="lidar_frame" value="base_link"/>
@@ -243,6 +250,11 @@
             <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
             <param name="refresh_initial_path" value="true"/>
             <param name="include_initial_path_direction" value="true"/>
+            <param name="enable_adaptive_adjust" value="$(arg enable_adaptive_adjust)"/>
+            <param name="adaptive_far_distance" value="$(arg adaptive_far_distance)"/>
+            <param name="adaptive_near_distance" value="$(arg adaptive_near_distance)"/>
+            <param name="clear_adjust_profile" value="$(arg clear_adjust_profile)"/>
+            <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
             <remap from="/initial_path" to="/sPath" />
             <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
         </node>
@@ -258,7 +270,7 @@
             <node pkg="tf" type="static_transform_publisher" name="map_to_path_outdoor" args="0 0 0 0 0 0 map path 100" />
 
             <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
-                <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml"/>
+                <param name="config_file" value="$(arg neupan_config_outdoor)"/>
                 <param name="map_frame"   value="map"/>
                 <param name="base_frame"  value="base_link"/>
                 <param name="lidar_frame" value="base_link"/>
@@ -270,6 +282,11 @@
                 <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
                 <param name="refresh_initial_path" value="true"/>
                 <param name="include_initial_path_direction" value="true"/>
+                <param name="enable_adaptive_adjust" value="$(arg enable_adaptive_adjust)"/>
+                <param name="adaptive_far_distance" value="$(arg adaptive_far_distance)"/>
+                <param name="adaptive_near_distance" value="$(arg adaptive_near_distance)"/>
+                <param name="clear_adjust_profile" value="$(arg clear_adjust_profile)"/>
+                <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
                 <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
                 <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
             </node>
@@ -277,7 +294,7 @@
 
         <group unless="$(arg outdoor_use_hybrid_astar)">
             <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
-                <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config.yaml"/>
+                <param name="config_file" value="$(arg neupan_config_outdoor)"/>
                 <param name="map_frame"   value="map"/>
                 <param name="base_frame"  value="base_link"/>
                 <param name="lidar_frame" value="base_link"/>
@@ -289,6 +306,11 @@
                 <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
                 <param name="refresh_initial_path" value="true"/>
                 <param name="include_initial_path_direction" value="true"/>
+                <param name="enable_adaptive_adjust" value="$(arg enable_adaptive_adjust)"/>
+                <param name="adaptive_far_distance" value="$(arg adaptive_far_distance)"/>
+                <param name="adaptive_near_distance" value="$(arg adaptive_near_distance)"/>
+                <param name="clear_adjust_profile" value="$(arg clear_adjust_profile)"/>
+                <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
                 <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
                 <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
             </node>

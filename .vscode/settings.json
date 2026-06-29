@@ -2,5 +2,6 @@
     "chat.tools.terminal.autoApprove": {
         "cat": true,
         "ls": true
-    }
+    },
+    "cmake.sourceDirectory": "/home/nuc/lxw/neupan_ws/src/FAST_LIO"
 }

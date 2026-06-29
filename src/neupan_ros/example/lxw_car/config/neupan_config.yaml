@@ -1,3 +1,7 @@
+# 兼容旧 launch 的默认入口。
+# 当前内容与 neupan_config_indoor.yaml 保持一致，避免已有命令失效。
+# 室外调参请使用 neupan_config_outdoor.yaml。
+
 # mpc
 receding: 55 # 预测步数/视野深度。数值越大，小车看路径看越远，转弯越早。对应距离 = receding * ipath.interval
 step_time: 0.1 # 模拟步长(秒)。MPC 内部计算模型的时间间隔。
