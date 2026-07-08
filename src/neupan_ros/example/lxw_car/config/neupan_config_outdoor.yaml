@@ -1,43 +1,43 @@
 # mpc
-receding: 26 # 再收一点预瞄，减少看太远带来的左右来回修正。
-step_time: 0.1
-ref_speed: 0.65 # 稍降一点，给 CPU 推理和转向稳定性留余量。
-device: 'cpu'
-time_print: False
-collision_threshold: 0.001
+receding: 30 # 空旷直线不要看太远，避免被远处轻微误差带着左右修正。
+step_time: 0.1 # 模拟步长(秒)。MPC 内部计算模型的时间间隔。
+ref_speed: 0.5 # 先保守保持 0.5m/s，把直线稳定性调顺后再提速。
+device: 'cpu' # 计算设备。作者确认只能用 CPU。
+time_print: False # 是否打印每一步的计算耗时。
+collision_threshold: 0.001 # 碰撞阈值。离障碍物多近认为会发生碰撞（单位：米）。
 
 # robot
 robot:
-  kinematics: 'acker'
-  wheelbase: 0.67
-  max_speed: [1.1, 0.35] # 室外仍保留比室内更高的速度，但不过分激进。
-  max_acce: [0.8, 0.22]  # 再压一点纵向和转向变化率，减轻一顿一顿的修正。
-  length: 0.95
-  width: 0.60
+  kinematics: 'acker'   # 运动学模型。'acker' 表示阿克曼转向（如小车）；'diff' 表示差速驱动。
+  wheelbase: 0.67       # 前后轮轴距 (单位: 米)。影响转弯半径计算的核心物理参数。
+  max_speed: [1.5, 0.35] # 直线调试阶段不要给过大的速度上限，避免修正过冲。
+  max_acce: [0.8, 0.20]  # 压低纵向和转向变化率，减少一左一右的摆动。
+  length: 0.95          #车体长度 (单位: 米)。用于碰撞检测。
+  width: 0.60           # 车体宽度 (单位: 米)。用于碰撞检测。
 
 # initial path
 ipath:
-  interval: 0.14 # 进一步降低对细碎折线的过度跟随。
-  waypoints: []
-  curve_style: 'reeds'
-  min_radius: 2.10 # 再抑制一点激进小半径修正，优先保证顺滑。
-  loop: False
-  arrive_threshold: 0.7
-  close_threshold: 0.30
-  arrive_index_threshold: 2
+  interval: 0.09 # 路径点适当拉疏，减少对细碎点位抖动的过度跟随。
+  waypoints: [] # 初始路径点坐标库。通常留空，由规划器实时发送。[[0,0,0], [1,0,0], ...] 格式为 [[x,y,theta], ...]。
+  curve_style: 'reeds'   # 曲线类型。'dubins' 只能前进；'reeds' 支持倒车（Reeds-Shepp 曲线）。
+  min_radius: 1.85        # 空旷道路优先走顺，不要允许过于激进的小半径修正。
+  loop: False # 路径是否循环。
+  arrive_threshold: 0.5  #到达终点的距离阈值。
+  close_threshold: 0.30 # 放宽“已跟上路径”的判定，别为了几厘米误差频繁左右修。
+  arrive_index_threshold: 2 # 距离终点还有多少个点时认为到达。
 
 # proximal alternating minimization network
 pan:
-  iter_num: 2
-  dune_max_num: 100
-  nrmp_max_num: 10
-  dune_checkpoint: None
-  iter_threshold: 0.1
+  iter_num: 2 # 神经网络计算的内部迭代次数。
+  dune_max_num: 100 # 优化求解的最大样本数。
+  nrmp_max_num: 10 # 局部规划的最大搜索步数。
+  dune_checkpoint: None # 预训练模型路径。
+  iter_threshold: 0.1 # 迭代停止的误差阈值。
 
 # adjust parameters
 adjust:
-  q_s: 3.5   # 比之前略拉回贴线能力，避免太松后在路径两侧来回飘。
-  p_u: 32.0  # 更强地惩罚控制突变，优先消掉 S 形和方向抖动。
-  eta: 1.2   # 室外弱化避障势场，减少远处点云对直线跟踪的干扰。
-  d_max: 0.5
-  d_min: 0.2
+  q_s: 1.2    # 太小会让车对中心线“无所谓”，容易先漂再慢慢拉回形成 S。
+  p_u: 21.0   # 太大容易转向反应过慢，纠偏滞后后再反向补偿形成摆动。
+  eta: 0.05   # 空旷大马路先尽量弱化避障势场，减少路边点云对直线的干扰。
+  d_max: 0.3 # 只让很近的障碍点参与避障，远处侧边点不再持续拉偏。
+  d_min: 0.2   # 避障必须生效的最小距离。

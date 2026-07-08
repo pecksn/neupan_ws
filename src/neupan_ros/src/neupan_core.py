@@ -26,7 +26,7 @@ from geometry_msgs.msg import Twist, PoseStamped, Quaternion, PoseWithCovariance
 from nav_msgs.msg import Odometry, Path
 from visualization_msgs.msg import MarkerArray, Marker
 from sensor_msgs.msg import LaserScan, PointCloud2
-from math import sin, cos, atan2, degrees
+from math import sin, cos, atan2, degrees, radians
 import numpy as np
 from neupan.util import get_transform
 import tf
@@ -64,6 +64,7 @@ class neupan_core:
         self.enable_adaptive_adjust = rospy.get_param("~enable_adaptive_adjust", True)
         self.adaptive_far_distance = float(rospy.get_param("~adaptive_far_distance", "4.0"))
         self.adaptive_near_distance = float(rospy.get_param("~adaptive_near_distance", "1.8"))
+        self.adaptive_front_half_angle_deg = float(rospy.get_param("~adaptive_front_half_angle_deg", "60.0"))
         self.clear_adjust_profile = self.parse_adjust_profile(
             rospy.get_param("~clear_adjust_profile", "1.6 36.0 0.15 0.25 0.2"),
             [1.6, 36.0, 0.15, 0.25, 0.2],
@@ -265,10 +266,24 @@ class neupan_core:
             return None
 
         robot_xy = self.robot_state[:2, 0:1]
-        distances = np.linalg.norm(self.obstacle_points - robot_xy, axis=0)
+        robot_yaw = float(self.robot_state[2, 0])
+        rel_points = self.obstacle_points - robot_xy
+        distances = np.linalg.norm(rel_points, axis=0)
         if distances.size == 0:
             return None
-        return float(np.min(distances))
+
+        bearings = np.arctan2(rel_points[1, :], rel_points[0, :]) - robot_yaw
+        bearings = np.arctan2(np.sin(bearings), np.cos(bearings))
+        front_half_angle_rad = radians(self.adaptive_front_half_angle_deg)
+        front_mask = np.abs(bearings) <= front_half_angle_rad
+
+        if not np.any(front_mask):
+            return None
+
+        front_distances = distances[front_mask]
+        if front_distances.size == 0:
+            return None
+        return float(np.min(front_distances))
 
     def update_adaptive_adjust_parameters(self):
         if not self.enable_adaptive_adjust:

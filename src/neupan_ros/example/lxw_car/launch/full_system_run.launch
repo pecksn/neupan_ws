@@ -55,9 +55,10 @@
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" doc="室外 NeuPAN 初始路径来源话题；可选 /osm_global_path 或 /sPath" />
     <arg name="neupan_config_indoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_indoor.yaml" />
     <arg name="neupan_config_outdoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_outdoor.yaml" />
-    <arg name="enable_adaptive_adjust" default="true" doc="是否根据最近障碍物距离动态调整 NeuPAN 权重" />
+    <arg name="enable_adaptive_adjust" default="false" doc="是否根据最近障碍物距离动态调整 NeuPAN 权重" />
     <arg name="adaptive_far_distance" default="2.0" doc="超过该距离使用空旷模式权重" />
     <arg name="adaptive_near_distance" default="1.0" doc="小于该距离使用避障模式权重" />
+    <arg name="adaptive_front_half_angle_deg" default="60.0" doc="只统计车头前方 +/- 该角度范围内的障碍点" />
     <arg name="clear_adjust_profile" default="1.6 36.0 0.15 0.25 0.2" doc="空旷模式 q_s p_u eta d_max d_min" />
     <arg name="avoid_adjust_profile" default="2.8 18.0 2.6 1.2 0.2" doc="避障模式 q_s p_u eta d_max d_min" />
 
@@ -253,6 +254,7 @@
             <param name="enable_adaptive_adjust" value="$(arg enable_adaptive_adjust)"/>
             <param name="adaptive_far_distance" value="$(arg adaptive_far_distance)"/>
             <param name="adaptive_near_distance" value="$(arg adaptive_near_distance)"/>
+            <param name="adaptive_front_half_angle_deg" value="$(arg adaptive_front_half_angle_deg)"/>
             <param name="clear_adjust_profile" value="$(arg clear_adjust_profile)"/>
             <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
             <remap from="/initial_path" to="/sPath" />
@@ -285,6 +287,7 @@
                 <param name="enable_adaptive_adjust" value="$(arg enable_adaptive_adjust)"/>
                 <param name="adaptive_far_distance" value="$(arg adaptive_far_distance)"/>
                 <param name="adaptive_near_distance" value="$(arg adaptive_near_distance)"/>
+                <param name="adaptive_front_half_angle_deg" value="$(arg adaptive_front_half_angle_deg)"/>
                 <param name="clear_adjust_profile" value="$(arg clear_adjust_profile)"/>
                 <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
                 <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
@@ -309,6 +312,7 @@
                 <param name="enable_adaptive_adjust" value="$(arg enable_adaptive_adjust)"/>
                 <param name="adaptive_far_distance" value="$(arg adaptive_far_distance)"/>
                 <param name="adaptive_near_distance" value="$(arg adaptive_near_distance)"/>
+                <param name="adaptive_front_half_angle_deg" value="$(arg adaptive_front_half_angle_deg)"/>
                 <param name="clear_adjust_profile" value="$(arg clear_adjust_profile)"/>
                 <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
                 <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
