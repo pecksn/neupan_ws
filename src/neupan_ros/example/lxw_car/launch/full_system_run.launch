@@ -31,6 +31,7 @@
     <arg name="align_map_odom_with_global_local" default="true" doc="用 /odometry/global 与 /odometry/local 对齐 map->odom，便于点云与全局标记一致" />
     <arg name="map_odom_align_timeout" default="2.0" doc="map_odom 动态对齐消息接收超时(秒)" />
     <arg name="map_odom_align_yaw_bias_deg" default="-180.0" doc="map_odom 偏航补偿角(度); 若显示反向可设为 180" />
+    <arg name="map_odom_align_use_global_yaw" default="true" doc="true: 用 /odometry/global 与 /odometry/local 的 yaw 实时对齐 map->odom" />
 
     <!-- 室外 OSM 规划参数 -->
     <arg name="osm_lookahead_dist" default="4.0" />
@@ -59,8 +60,8 @@
     <arg name="adaptive_far_distance" default="2.0" doc="超过该距离使用空旷模式权重" />
     <arg name="adaptive_near_distance" default="1.0" doc="小于该距离使用避障模式权重" />
     <arg name="adaptive_front_half_angle_deg" default="60.0" doc="只统计车头前方 +/- 该角度范围内的障碍点" />
-    <arg name="clear_adjust_profile" default="1.6 36.0 0.15 0.25 0.2" doc="空旷模式 q_s p_u eta d_max d_min" />
-    <arg name="avoid_adjust_profile" default="2.8 18.0 2.6 1.2 0.2" doc="避障模式 q_s p_u eta d_max d_min" />
+    <arg name="clear_adjust_profile" default="1.2 21.0 0.05 0.3 0.2" doc="空旷模式 q_s p_u eta d_max d_min" />
+    <arg name="avoid_adjust_profile" default="2.8 18.0 1.5 1.0 0.2" doc="避障模式 q_s p_u eta d_max d_min" />
 
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
@@ -97,7 +98,7 @@
                     <param name="child_frame" value="odom"/>
                     <param name="timeout_sec" value="$(arg map_odom_align_timeout)"/>
                     <param name="yaw_bias_deg" value="$(arg map_odom_align_yaw_bias_deg)"/>
-                    <param name="align_yaw_with_global" value="false"/>
+                    <param name="align_yaw_with_global" value="$(arg map_odom_align_use_global_yaw)"/>
                 </node>
             </group>
         </group>
