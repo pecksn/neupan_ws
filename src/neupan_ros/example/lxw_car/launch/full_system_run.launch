@@ -26,11 +26,12 @@
     <arg name="gps_time_ref_source" default="gps" doc="TimeReference.source 字段" />
     <arg name="gps_use_rmc" default="false" doc="true 时使用 RMC，false 时使用 GGA/VTG" />
     <arg name="gps_rotation" default="90.0" doc="沿用 wheeltec_gps_driver 的航向旋转参数" />
+    <arg name="gps_heading_source_is_north_cw" default="true" doc="true: G90 HDT 航向按北为0、顺时针为正进行转换" />
     <arg name="gps_use_gnss_time" default="false" doc="是否使用 GNSS 自身时间戳" />
     <arg name="use_global_ekf" default="false" doc="false: 稳定模式直接使用/odometry/gps; true: 使用ekf_global" />
     <arg name="align_map_odom_with_global_local" default="true" doc="用 /odometry/global 与 /odometry/local 对齐 map->odom，便于点云与全局标记一致" />
     <arg name="map_odom_align_timeout" default="2.0" doc="map_odom 动态对齐消息接收超时(秒)" />
-    <arg name="map_odom_align_yaw_bias_deg" default="-180.0" doc="map_odom 偏航补偿角(度); 若显示反向可设为 180" />
+    <arg name="map_odom_align_yaw_bias_deg" default="0.0" doc="map_odom 偏航补偿角(度); 默认0，只有确认 local odom 与 global yaw 固定差角时再手动设置" />
     <arg name="map_odom_align_use_global_yaw" default="true" doc="true: 用 /odometry/global 与 /odometry/local 的 yaw 实时对齐 map->odom" />
 
     <!-- 室外 OSM 规划参数 -->
@@ -80,6 +81,7 @@
         <arg name="gps_time_ref_source" value="$(arg gps_time_ref_source)" />
         <arg name="gps_use_rmc" value="$(arg gps_use_rmc)" />
         <arg name="gps_rotation" value="$(arg gps_rotation)" />
+        <arg name="gps_heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         <arg name="gps_use_gnss_time" value="$(arg gps_use_gnss_time)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
         <arg name="publish_static_map_odom_outdoor" value="false" if="$(arg align_map_odom_with_global_local)" />
@@ -227,6 +229,16 @@
             <param name="label" value="odom_vs_g90_full" />
             <param name="log_to_file" value="true" />
             <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
+        </node>
+        <node pkg="robot_base_driver" type="g90_health_monitor.py" name="g90_health_monitor" output="screen">
+            <param name="fix_topic" value="/gps/fix" />
+            <param name="heading_topic" value="/heading" />
+            <param name="odom_topic" value="/odometry/global" />
+            <param name="label" value="g90_health_full" />
+            <param name="log_to_file" value="true" />
+            <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
+            <param name="heading_jump_warn_deg" value="8.0" />
+            <param name="pos_cov_warn_m2" value="0.25" />
         </node>
     </group>
 

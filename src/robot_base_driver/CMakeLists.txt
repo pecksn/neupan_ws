@@ -20,6 +20,7 @@ catkin_install_python(PROGRAMS
   src/costmap_monitor.py
   src/global_odom_bridge.py
   src/global_path_tracker.py
+  src/g90_health_monitor.py
   src/map_odom_align_bridge.py
   src/odom_yaw_monitor.py
   src/quaternion_yaw_monitor.py

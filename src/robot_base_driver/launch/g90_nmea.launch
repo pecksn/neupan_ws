@@ -6,6 +6,7 @@
     <arg name="use_rmc" default="false" />
     <arg name="gps_rotation" default="90.0" />
     <arg name="use_gnss_time" default="false" />
+    <arg name="heading_source_is_north_cw" default="true" />
 
     <include file="$(find wheeltec_gps_driver)/launch/wheeltec_dual_rtk_driver_nmea.launch">
         <arg name="port" value="$(arg gps_port)" />
@@ -15,5 +16,6 @@
         <arg name="useRMC" value="$(arg use_rmc)" />
         <arg name="use_GNSS_time" value="$(arg use_gnss_time)" />
         <arg name="rotation" value="$(arg gps_rotation)" />
+        <arg name="heading_source_is_north_cw" value="$(arg heading_source_is_north_cw)" />
     </include>
 </launch>

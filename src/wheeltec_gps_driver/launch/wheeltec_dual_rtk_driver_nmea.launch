@@ -6,6 +6,7 @@
   <arg name="time_ref_source" default="gps" />
   <arg name="useRMC" default="False" />
   <arg name="use_GNSS_time" default="False" />
+  <arg name="heading_source_is_north_cw" default="true" />
   <!-- 天线前后安装时 -->
   <!-- <arg name="rotation" default="0.0" /> -->
   <!-- 天线左右安装时 -->
@@ -19,6 +20,7 @@
     <param name="useRMC" value="$(arg useRMC)" />
     <param name="use_GNSS_time" value="$(arg use_GNSS_time)" />
     <param name="rotation" value="$(arg rotation)" />
+    <param name="heading_source_is_north_cw" value="$(arg heading_source_is_north_cw)" />
 
   </node>
 </launch>

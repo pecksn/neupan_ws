@@ -52,6 +52,15 @@ from geometry_msgs.msg import TwistWithCovarianceStamped
 class RosNMEADriver(object):
     """ROS driver for NMEA GNSS devices."""
 
+    @staticmethod
+    def _normalize_deg(angle_deg):
+        """Normalize an angle to [-180, 180)."""
+        wrapped = (angle_deg + 180.0) % 360.0 - 180.0
+        # Keep 180 represented as 180 instead of -180 for easier human reading.
+        if wrapped == -180.0 and angle_deg > 0.0:
+            return 180.0
+        return wrapped
+
     def __init__(self):
         """Initialize the ROS NMEA driver.
 
@@ -99,6 +108,7 @@ class RosNMEADriver(object):
         self.use_RMC = rospy.get_param('~useRMC', False)
 
         self.rotation_data = rospy.get_param('~rotation', 90.0)
+        self.heading_source_is_north_cw = rospy.get_param('~heading_source_is_north_cw', True)
         print('rotation_data is:')
         print(self.rotation_data)
  
@@ -405,17 +415,22 @@ class RosNMEADriver(object):
             self.alt_std_dev = data['alt_std_dev']
         elif 'HDT' in parsed_sentence:
             data = parsed_sentence['HDT']
-            # print(data)
             heading_value = data.get('heading', None)
             if heading_value is not None and not math.isnan(heading_value):
                 current_heading = QuaternionStamped()
                 current_heading.header.stamp = current_time
                 current_heading.header.frame_id = frame_id
 
-                heading_data=heading_value+self.rotation_data
-                if(heading_data>360):
-                    heading_data=heading_data-360
-                yaw=math.radians(heading_data)
+                # G90 HDT heading is true heading in degrees, typically
+                # 0 deg = North and positive clockwise. ROS yaw uses ENU:
+                # 0 deg = +X(East) and positive counter-clockwise.
+                heading_north_cw_deg = heading_value + self.rotation_data
+                if self.heading_source_is_north_cw:
+                    yaw_deg = self._normalize_deg(90.0 - heading_north_cw_deg)
+                else:
+                    yaw_deg = self._normalize_deg(heading_north_cw_deg)
+
+                yaw = math.radians(yaw_deg)
                 q = quaternion_from_euler(0, 0, yaw)
 
                 current_heading.quaternion.x = q[0]
@@ -423,6 +438,14 @@ class RosNMEADriver(object):
                 current_heading.quaternion.z = q[2]
                 current_heading.quaternion.w = q[3]
                 self.heading_pub.publish(current_heading)
+                rospy.loginfo_throttle(
+                    1.0,
+                    "G90 heading: raw_hdt=%.2fdeg install_offset=%.2fdeg north_cw=%.2fdeg ros_yaw=%.2fdeg",
+                    heading_value,
+                    self.rotation_data,
+                    self._normalize_deg(heading_north_cw_deg),
+                    yaw_deg,
+                )
 
                 #wheeltec_tues debug
                 pose_msg = PoseStamped()
@@ -438,7 +461,7 @@ class RosNMEADriver(object):
                 self.pose_pub.publish(pose_msg)      
 
                 heading_deg_msg = Float32() 
-                heading_deg_msg.data = heading_data 
+                heading_deg_msg.data = self._normalize_deg(heading_north_cw_deg)
                 self.heading_deg_pub.publish(heading_deg_msg)          
         else:
             return False

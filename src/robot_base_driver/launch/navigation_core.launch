@@ -24,6 +24,7 @@
     <arg name="gps_use_rmc" default="false" />
     <arg name="gps_rotation" default="90.0" />
     <arg name="gps_use_gnss_time" default="false" />
+    <arg name="gps_heading_source_is_north_cw" default="true" />
     <arg name="use_global_ekf" default="false" />
     <arg name="publish_static_map_odom_outdoor" default="true" />
     <arg name="global_odom_use_heading" default="true" />
@@ -51,6 +52,7 @@
             <arg name="use_rmc" value="$(arg gps_use_rmc)" />
             <arg name="gps_rotation" value="$(arg gps_rotation)" />
             <arg name="use_gnss_time" value="$(arg gps_use_gnss_time)" />
+            <arg name="heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         </include>
     </group>
 
