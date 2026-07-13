@@ -7,7 +7,9 @@ from datetime import datetime
 import rospy
 from geometry_msgs.msg import QuaternionStamped
 from nav_msgs.msg import Odometry
+from nmea_msgs.msg import Gpgga
 from sensor_msgs.msg import NavSatFix
+from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion
 
 
@@ -17,6 +19,8 @@ class G90HealthMonitor:
         self.fix_topic = rospy.get_param("~fix_topic", "/gps/fix")
         self.heading_topic = rospy.get_param("~heading_topic", "/heading")
         self.odom_topic = rospy.get_param("~odom_topic", "/odometry/global")
+        self.guard_status_topic = rospy.get_param("~guard_status_topic", "/gps_guard/status")
+        self.gga_topic = rospy.get_param("~gga_topic", "/gnss/gpgga")
         self.label = rospy.get_param("~label", "g90_health")
         self.log_to_file = bool(rospy.get_param("~log_to_file", True))
         self.log_dir = rospy.get_param("~log_dir", "/home/nuc/lxw/neupan_ws/tracker_logs")
@@ -29,11 +33,15 @@ class G90HealthMonitor:
         self.last_heading_stamp = None
         self.prev_heading_yaw_deg = None
         self.last_odom_yaw_deg = None
+        self.last_guard_status = None
+        self.last_gga = None
         self.samples = []
 
         rospy.Subscriber(self.fix_topic, NavSatFix, self.fix_cb, queue_size=10)
         rospy.Subscriber(self.heading_topic, QuaternionStamped, self.heading_cb, queue_size=10)
         rospy.Subscriber(self.odom_topic, Odometry, self.odom_cb, queue_size=10)
+        rospy.Subscriber(self.guard_status_topic, String, self.guard_status_cb, queue_size=10)
+        rospy.Subscriber(self.gga_topic, Gpgga, self.gga_cb, queue_size=10)
         rospy.Timer(rospy.Duration(0.5), self.timer_cb)
         rospy.on_shutdown(self.on_shutdown)
         rospy.loginfo(
@@ -64,6 +72,15 @@ class G90HealthMonitor:
 
     def odom_cb(self, msg):
         self.last_odom_yaw_deg = self.yaw_from_quaternion(msg.pose.pose.orientation)
+
+    def guard_status_cb(self, msg):
+        try:
+            self.last_guard_status = json.loads(msg.data)
+        except (TypeError, ValueError):
+            self.last_guard_status = {"mode": "INVALID_STATUS", "reason": msg.data}
+
+    def gga_cb(self, msg):
+        self.last_gga = msg
 
     def timer_cb(self, _event):
         if self.last_fix is None or self.last_heading_yaw_deg is None:
@@ -101,6 +118,10 @@ class G90HealthMonitor:
             "heading_jump_deg": heading_jump,
             "odom_global_yaw_deg": self.last_odom_yaw_deg,
             "odom_heading_diff_deg": odom_diff,
+            "gps_guard": self.last_guard_status,
+            "gga_quality": None if self.last_gga is None else int(self.last_gga.gps_qual),
+            "num_satellites": None if self.last_gga is None else int(self.last_gga.num_sats),
+            "hdop": None if self.last_gga is None else float(self.last_gga.hdop),
         }
         self.samples.append(sample)
         if self.max_samples > 0 and len(self.samples) > self.max_samples:
@@ -116,7 +137,7 @@ class G90HealthMonitor:
 
         rospy.loginfo_throttle(
             0.5,
-            "%s: fix=%d lat=%.8f lon=%.8f cov=[%.4f, %.4f, %.4f] heading=%.1fdeg jump=%s odom_diff=%s warn=%s",
+            "%s: fix=%d lat=%.8f lon=%.8f cov=[%.4f, %.4f, %.4f] heading=%.1fdeg jump=%s odom_diff=%s guard=%s/%s warn=%s",
             self.label,
             self.last_fix.status.status,
             self.last_fix.latitude,
@@ -127,6 +148,8 @@ class G90HealthMonitor:
             self.last_heading_yaw_deg,
             "none" if heading_jump is None else f"{heading_jump:.1f}deg",
             "none" if odom_diff is None else f"{odom_diff:.1f}deg",
+            "none" if self.last_guard_status is None else self.last_guard_status.get("mode", "unknown"),
+            "none" if self.last_guard_status is None else self.last_guard_status.get("reason", "unknown"),
             ",".join(warn_tokens) if warn_tokens else "none",
         )
 
@@ -137,7 +160,8 @@ class G90HealthMonitor:
             os.makedirs(self.log_dir, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = os.path.join(self.log_dir, f"{self.label}_{stamp}.json")
-            with open(path, "w") as f:
+            temp_path = path + ".tmp"
+            with open(temp_path, "w") as f:
                 json.dump(
                     {
                         "label": self.label,
@@ -151,6 +175,9 @@ class G90HealthMonitor:
                     indent=2,
                     ensure_ascii=True,
                 )
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
             rospy.loginfo("%s: wrote health log to %s", self.label, path)
         except Exception as exc:
             rospy.logwarn("%s: failed to write health log: %s", self.label, exc)

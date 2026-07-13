@@ -111,6 +111,7 @@ class YawCompareMonitor:
             os.makedirs(self.log_dir, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = os.path.join(self.log_dir, "{}_{}.json".format(self.label, stamp))
+            temp_path = path + ".tmp"
             payload = {
                 "label": self.label,
                 "odom_topic": self.odom_topic,
@@ -118,8 +119,11 @@ class YawCompareMonitor:
                 "sample_count": len(self.samples),
                 "samples": self.samples,
             }
-            with open(path, "w") as f:
+            with open(temp_path, "w") as f:
                 json.dump(payload, f, indent=2, ensure_ascii=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
             rospy.loginfo("%s: wrote yaw log to %s", self.label, path)
         except Exception as exc:
             rospy.logwarn("%s: failed to write yaw log: %s", self.label, exc)

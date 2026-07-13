@@ -30,6 +30,25 @@
     <arg name="global_odom_use_heading" default="true" />
     <arg name="global_odom_heading_topic" default="/heading" />
     <arg name="global_odom_heading_timeout" default="0.5" />
+    <!-- G90弱信号保护：RTK不可信时使用本地FAST-LIO续推，恢复后平滑校正。 -->
+    <arg name="gps_guard_enable" default="true" />
+    <arg name="gps_guard_min_fix_status" default="2" />
+    <arg name="gps_guard_required_gga_quality" default="4" />
+    <arg name="gps_guard_min_satellites" default="8" />
+    <arg name="gps_guard_max_hdop" default="1.5" />
+    <arg name="gps_guard_max_position_covariance" default="0.25" />
+    <arg name="gps_guard_heading_jump_limit_deg" default="8.0" />
+    <arg name="gps_guard_max_tracking_position_error" default="3.0" />
+    <arg name="gps_guard_max_tracking_yaw_error_deg" default="20.0" />
+    <arg name="gps_guard_initial_stable_sec" default="2.0" />
+    <arg name="gps_guard_recovery_stable_sec" default="4.0" />
+    <arg name="gps_guard_recovery_position_rate" default="0.5" />
+    <arg name="gps_guard_recovery_yaw_rate_deg" default="8.0" />
+    <arg name="gps_guard_local_max_speed" default="2.0" />
+    <arg name="gps_guard_local_max_lateral_speed" default="0.8" />
+    <arg name="gps_guard_local_max_yaw_rate_deg" default="90.0" />
+    <arg name="gps_guard_local_fault_hold_sec" default="2.0" />
+    <arg name="enable_localization_safety_stop" default="false" />
 
     <!-- 1) 底盘驱动：仅发布 /odom -->
     <include file="$(find robot_base_driver)/launch/driver.launch">
@@ -40,6 +59,7 @@
         <arg name="wheelbase" value="$(arg wheelbase)"/>
         <arg name="wheel_radius" value="$(arg wheel_radius)"/>
         <arg name="publish_tf" value="false" />
+        <arg name="enable_localization_safety_stop" value="$(arg enable_localization_safety_stop)" />
     </include>
 
     <!-- 2) 室外时启用上位机 G90 NMEA，发布 /gps/fix -->
@@ -94,12 +114,34 @@
             <!-- 稳定模式：直接使用 navsat 输出作为全局里程计，避免全局EKF发散 -->
             <node pkg="robot_base_driver" type="global_odom_bridge.py" name="global_odom_bridge" output="screen">
                 <param name="input_topic" value="/odometry/gps" />
+                <param name="local_topic" value="/odometry/local" />
+                <param name="fix_topic" value="/gps/fix" />
+                <param name="gga_topic" value="/gnss/gpgga" />
                 <param name="output_topic" value="/odometry/global" />
+                <param name="status_topic" value="/gps_guard/status" />
+                <param name="safety_topic" value="/localization_safe" />
                 <param name="output_frame" value="map" />
                 <param name="child_frame" value="base_link" />
                 <param name="use_heading_orientation" value="$(arg global_odom_use_heading)" />
                 <param name="heading_topic" value="$(arg global_odom_heading_topic)" />
                 <param name="heading_timeout_sec" value="$(arg global_odom_heading_timeout)" />
+                <param name="guard_enabled" value="$(arg gps_guard_enable)" />
+                <param name="min_fix_status" value="$(arg gps_guard_min_fix_status)" />
+                <param name="required_gga_quality" value="$(arg gps_guard_required_gga_quality)" />
+                <param name="min_satellites" value="$(arg gps_guard_min_satellites)" />
+                <param name="max_hdop" value="$(arg gps_guard_max_hdop)" />
+                <param name="max_position_covariance" value="$(arg gps_guard_max_position_covariance)" />
+                <param name="heading_jump_limit_deg" value="$(arg gps_guard_heading_jump_limit_deg)" />
+                <param name="max_tracking_position_error" value="$(arg gps_guard_max_tracking_position_error)" />
+                <param name="max_tracking_yaw_error_deg" value="$(arg gps_guard_max_tracking_yaw_error_deg)" />
+                <param name="initial_stable_sec" value="$(arg gps_guard_initial_stable_sec)" />
+                <param name="recovery_stable_sec" value="$(arg gps_guard_recovery_stable_sec)" />
+                <param name="recovery_position_rate" value="$(arg gps_guard_recovery_position_rate)" />
+                <param name="recovery_yaw_rate_deg" value="$(arg gps_guard_recovery_yaw_rate_deg)" />
+                <param name="local_max_speed" value="$(arg gps_guard_local_max_speed)" />
+                <param name="local_max_lateral_speed" value="$(arg gps_guard_local_max_lateral_speed)" />
+                <param name="local_max_yaw_rate_deg" value="$(arg gps_guard_local_max_yaw_rate_deg)" />
+                <param name="local_fault_hold_sec" value="$(arg gps_guard_local_fault_hold_sec)" />
             </node>
             <group if="$(arg publish_static_map_odom_outdoor)">
                 <node pkg="tf" type="static_transform_publisher" name="map_to_odom_outdoor" args="0 0 0 0 0 0 map odom 100" />

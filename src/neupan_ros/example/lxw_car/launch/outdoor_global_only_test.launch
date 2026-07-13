@@ -52,6 +52,15 @@
     <arg name="gps_heading_source_is_north_cw" default="true" />
     <arg name="gps_use_gnss_time" default="false" />
     <arg name="use_global_ekf" default="false" />
+    <arg name="gps_guard_enable" default="true" />
+    <arg name="gps_guard_min_fix_status" default="2" />
+    <arg name="gps_guard_max_position_covariance" default="0.25" />
+    <arg name="gps_guard_heading_jump_limit_deg" default="8.0" />
+    <arg name="gps_guard_max_tracking_position_error" default="3.0" />
+    <arg name="gps_guard_max_tracking_yaw_error_deg" default="20.0" />
+    <arg name="gps_guard_recovery_stable_sec" default="4.0" />
+    <arg name="gps_guard_recovery_position_rate" default="0.5" />
+    <arg name="gps_guard_recovery_yaw_rate_deg" default="8.0" />
 
     <arg name="align_map_odom_with_global_local" default="true" />
     <arg name="map_odom_align_timeout" default="2.0" />
@@ -95,9 +104,20 @@
         <arg name="gps_heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         <arg name="gps_use_gnss_time" value="$(arg gps_use_gnss_time)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
+        <arg name="gps_guard_enable" value="$(arg gps_guard_enable)" />
+        <arg name="gps_guard_min_fix_status" value="$(arg gps_guard_min_fix_status)" />
+        <arg name="gps_guard_max_position_covariance" value="$(arg gps_guard_max_position_covariance)" />
+        <arg name="gps_guard_heading_jump_limit_deg" value="$(arg gps_guard_heading_jump_limit_deg)" />
+        <arg name="gps_guard_max_tracking_position_error" value="$(arg gps_guard_max_tracking_position_error)" />
+        <arg name="gps_guard_max_tracking_yaw_error_deg" value="$(arg gps_guard_max_tracking_yaw_error_deg)" />
+        <arg name="gps_guard_recovery_stable_sec" value="$(arg gps_guard_recovery_stable_sec)" />
+        <arg name="gps_guard_recovery_position_rate" value="$(arg gps_guard_recovery_position_rate)" />
+        <arg name="gps_guard_recovery_yaw_rate_deg" value="$(arg gps_guard_recovery_yaw_rate_deg)" />
         <arg name="publish_static_map_odom_outdoor" value="false" if="$(arg align_map_odom_with_global_local)" />
         <arg name="publish_static_map_odom_outdoor" value="true" unless="$(arg align_map_odom_with_global_local)" />
         <arg name="publish_static_map_odom" value="false" />
+        <arg name="enable_localization_safety_stop" value="true" unless="$(arg use_global_ekf)" />
+        <arg name="enable_localization_safety_stop" value="false" if="$(arg use_global_ekf)" />
     </include>
 
     <group if="$(arg align_map_odom_with_global_local)">
@@ -259,6 +279,18 @@
             <param name="label" value="odom_vs_g90" />
             <param name="log_to_file" value="true" />
             <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
+        </node>
+        <node pkg="robot_base_driver" type="g90_health_monitor.py" name="g90_health_monitor" output="screen">
+            <param name="fix_topic" value="/gps/fix" />
+            <param name="heading_topic" value="/heading" />
+            <param name="odom_topic" value="/odometry/global" />
+            <param name="guard_status_topic" value="/gps_guard/status" />
+            <param name="gga_topic" value="/gnss/gpgga" />
+            <param name="label" value="g90_health_global_only" />
+            <param name="log_to_file" value="true" />
+            <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
+            <param name="heading_jump_warn_deg" value="8.0" />
+            <param name="pos_cov_warn_m2" value="0.25" />
         </node>
     </group>
 

@@ -3,6 +3,7 @@ import rospy
 import tf
 from geometry_msgs.msg import Twist, Quaternion
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Bool
 import serial # 需要安装 pyserial
 import math
 
@@ -19,6 +20,13 @@ class RobotBaseDriver:
         # 机器人运动学参数 (Ackermann)
         self.wheelbase = rospy.get_param('~wheelbase', 0.67) # 轴距 (m)
         self.wheel_radius = rospy.get_param('~wheel_radius', 0.1275) # 轮半径 (m)
+        self.enable_localization_safety_stop = rospy.get_param(
+            '~enable_localization_safety_stop', False
+        )
+        self.localization_safety_topic = rospy.get_param(
+            '~localization_safety_topic', '/localization_safe'
+        )
+        self.localization_safe = not self.enable_localization_safety_stop
 
         # 初始化串口
         try:
@@ -28,8 +36,16 @@ class RobotBaseDriver:
             self.serial = None
             rospy.logerr(f"Failed to connect to serial port: {e}")
 
+        if self.enable_localization_safety_stop:
+            self.send_serial_command(0.0, 0.0)
+            rospy.logwarn("Localization safety gate enabled; holding stop until localization is ready")
+
         # 订阅上层规划器的速度指令
         rospy.Subscriber('/neupan_cmd_vel', Twist, self.cmd_vel_callback)
+        if self.enable_localization_safety_stop:
+            rospy.Subscriber(
+                self.localization_safety_topic, Bool, self.localization_safety_callback
+            )
         
         # 发布里程计
         self.odom_pub = rospy.Publisher('/odom', Odometry, queue_size=10)
@@ -64,6 +80,13 @@ class RobotBaseDriver:
         # 【修改】Neupan 直接输出的是转向角 (rad)
         steering_angle = msg.angular.z 
 
+        if self.enable_localization_safety_stop and not self.localization_safe:
+            v = 0.0
+            steering_angle = 0.0
+            rospy.logerr_throttle(
+                1.0, "Localization unsafe: blocking planner command and holding stop"
+            )
+
         # 【新增】电机死区处理：过滤掉过小的速度，防止电机异响和震荡
         dead_zone = 0.05 # 5cm/s
         if abs(v) < dead_zone:
@@ -85,8 +108,19 @@ class RobotBaseDriver:
             steering_deg = -max_steering_deg
         
         # 构造指令: CMD,<油门>,<转向>
+        self.send_serial_command(throttle, steering_deg)
+
+    def localization_safety_callback(self, msg):
+        was_safe = self.localization_safe
+        self.localization_safe = bool(msg.data)
+        if was_safe and not self.localization_safe:
+            rospy.logerr("Localization became unsafe; sending immediate stop to MCU")
+            self.send_serial_command(0.0, 0.0)
+        elif not was_safe and self.localization_safe:
+            rospy.loginfo("Localization recovered; planner commands are enabled")
+
+    def send_serial_command(self, throttle, steering_deg):
         command = f"CMD,{throttle:.2f},{steering_deg:.2f}\n"
-        
         if self.serial and self.serial.is_open:
             try:
                 self.serial.write(command.encode())

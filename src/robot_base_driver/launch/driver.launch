@@ -11,6 +11,8 @@
     <arg name="base_frame" default="base_link"/>
     <arg name="odom_frame" default="odom"/>
     <arg name="publish_tf" default="true"/>
+    <arg name="enable_localization_safety_stop" default="false"/>
+    <arg name="localization_safety_topic" default="/localization_safe"/>
 
     <!-- 启动底盘驱动节点 -->
     <node pkg="robot_base_driver" type="base_driver_node.py" name="robot_base_driver" output="screen">
@@ -21,6 +23,8 @@
         <param name="base_frame" value="$(arg base_frame)"/>
         <param name="odom_frame" value="$(arg odom_frame)"/>
         <param name="publish_tf" value="$(arg publish_tf)"/>
+        <param name="enable_localization_safety_stop" value="$(arg enable_localization_safety_stop)"/>
+        <param name="localization_safety_topic" value="$(arg localization_safety_topic)"/>
     </node>
 
     <!-- 静态 TF 发布: base_link 到 laser_link -->

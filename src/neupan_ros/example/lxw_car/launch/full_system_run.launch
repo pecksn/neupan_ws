@@ -33,6 +33,24 @@
     <arg name="map_odom_align_timeout" default="2.0" doc="map_odom 动态对齐消息接收超时(秒)" />
     <arg name="map_odom_align_yaw_bias_deg" default="0.0" doc="map_odom 偏航补偿角(度); 默认0，只有确认 local odom 与 global yaw 固定差角时再手动设置" />
     <arg name="map_odom_align_use_global_yaw" default="true" doc="true: 用 /odometry/global 与 /odometry/local 的 yaw 实时对齐 map->odom" />
+    <!-- 桥底/隧道GPS保护参数。协方差单位为m^2，恢复速率单位为m/s和deg/s。 -->
+    <arg name="gps_guard_enable" default="true" doc="GPS失锁时切换到FAST-LIO本地续推" />
+    <arg name="gps_guard_min_fix_status" default="2" doc="最低可接受NavSatFix状态；2对应当前驱动的RTK类解" />
+    <arg name="gps_guard_required_gga_quality" default="4" doc="只允许GGA quality=4，即RTK Fixed" />
+    <arg name="gps_guard_min_satellites" default="8" doc="恢复GPS所需最少卫星数" />
+    <arg name="gps_guard_max_hdop" default="1.5" doc="恢复GPS允许的最大HDOP" />
+    <arg name="gps_guard_max_position_covariance" default="0.25" doc="水平协方差上限，超过后拒绝GPS" />
+    <arg name="gps_guard_heading_jump_limit_deg" default="8.0" doc="单次G90航向跳变拒绝阈值" />
+    <arg name="gps_guard_max_tracking_position_error" default="3.0" doc="跟踪期间GPS与本地续推最大位置差" />
+    <arg name="gps_guard_max_tracking_yaw_error_deg" default="20.0" doc="跟踪期间GPS与本地续推最大航向差" />
+    <arg name="gps_guard_initial_stable_sec" default="2.0" doc="启动时GPS连续稳定确认时间" />
+    <arg name="gps_guard_recovery_stable_sec" default="3.0" doc="失锁后GPS连续稳定恢复时间" />
+    <arg name="gps_guard_recovery_position_rate" default="0.5" doc="恢复时全局位置最大校正速度" />
+    <arg name="gps_guard_recovery_yaw_rate_deg" default="8.0" doc="恢复时全局航向最大校正速度" />
+    <arg name="gps_guard_local_max_speed" default="2.0" doc="FAST-LIO允许的最大瞬时速度" />
+    <arg name="gps_guard_local_max_lateral_speed" default="0.8" doc="FAST-LIO允许的最大横向速度" />
+    <arg name="gps_guard_local_max_yaw_rate_deg" default="90.0" doc="FAST-LIO允许的最大瞬时角速度" />
+    <arg name="gps_guard_local_fault_hold_sec" default="2.0" doc="本地里程计跳变后的停车观察时间" />
 
     <!-- 室外 OSM 规划参数 -->
     <arg name="osm_lookahead_dist" default="4.0" />
@@ -84,6 +102,25 @@
         <arg name="gps_heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         <arg name="gps_use_gnss_time" value="$(arg gps_use_gnss_time)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
+        <arg name="gps_guard_enable" value="$(arg gps_guard_enable)" />
+        <arg name="gps_guard_min_fix_status" value="$(arg gps_guard_min_fix_status)" />
+        <arg name="gps_guard_required_gga_quality" value="$(arg gps_guard_required_gga_quality)" />
+        <arg name="gps_guard_min_satellites" value="$(arg gps_guard_min_satellites)" />
+        <arg name="gps_guard_max_hdop" value="$(arg gps_guard_max_hdop)" />
+        <arg name="gps_guard_max_position_covariance" value="$(arg gps_guard_max_position_covariance)" />
+        <arg name="gps_guard_heading_jump_limit_deg" value="$(arg gps_guard_heading_jump_limit_deg)" />
+        <arg name="gps_guard_max_tracking_position_error" value="$(arg gps_guard_max_tracking_position_error)" />
+        <arg name="gps_guard_max_tracking_yaw_error_deg" value="$(arg gps_guard_max_tracking_yaw_error_deg)" />
+        <arg name="gps_guard_initial_stable_sec" value="$(arg gps_guard_initial_stable_sec)" />
+        <arg name="gps_guard_recovery_stable_sec" value="$(arg gps_guard_recovery_stable_sec)" />
+        <arg name="gps_guard_recovery_position_rate" value="$(arg gps_guard_recovery_position_rate)" />
+        <arg name="gps_guard_recovery_yaw_rate_deg" value="$(arg gps_guard_recovery_yaw_rate_deg)" />
+        <arg name="gps_guard_local_max_speed" value="$(arg gps_guard_local_max_speed)" />
+        <arg name="gps_guard_local_max_lateral_speed" value="$(arg gps_guard_local_max_lateral_speed)" />
+        <arg name="gps_guard_local_max_yaw_rate_deg" value="$(arg gps_guard_local_max_yaw_rate_deg)" />
+        <arg name="gps_guard_local_fault_hold_sec" value="$(arg gps_guard_local_fault_hold_sec)" />
+        <arg name="enable_localization_safety_stop" value="$(arg outdoor_mode)" unless="$(arg use_global_ekf)" />
+        <arg name="enable_localization_safety_stop" value="false" if="$(arg use_global_ekf)" />
         <arg name="publish_static_map_odom_outdoor" value="false" if="$(arg align_map_odom_with_global_local)" />
         <arg name="publish_static_map_odom_outdoor" value="true" unless="$(arg align_map_odom_with_global_local)" />
         <!-- 本launch内部自行管理 amcl/static_map_odom，防止和底层冲突 -->
@@ -234,6 +271,8 @@
             <param name="fix_topic" value="/gps/fix" />
             <param name="heading_topic" value="/heading" />
             <param name="odom_topic" value="/odometry/global" />
+            <param name="guard_status_topic" value="/gps_guard/status" />
+            <param name="gga_topic" value="/gnss/gpgga" />
             <param name="label" value="g90_health_full" />
             <param name="log_to_file" value="true" />
             <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
