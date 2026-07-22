@@ -1,7 +1,7 @@
 <launch>
     <!-- true: 室外融合GPS，false: 室内仅里程计/LIO -->
     <arg name="outdoor_mode" default="true" />
-    <arg name="imu_topic" default="/imu/data" />
+    <arg name="imu_topic" default="/livox/imu" />
     <arg name="use_fixed_datum" default="false" />
     <arg name="datum_lat" default="23.0398" />
     <arg name="datum_lon" default="113.39002" />
@@ -9,6 +9,12 @@
     <arg name="navsat_delay" default="0.60" />
     <arg name="navsat_transform_timeout" default="1.00" />
     <arg name="outdoor_ekf_tf_time_offset" default="0.0" />
+    <!-- FAST-LIO 输出级保护；FAST-LIO 内部滤波后仍可能在桥底退化。 -->
+    <arg name="lio_guard_max_speed" default="2.0" />
+    <arg name="lio_guard_max_lateral_speed" default="0.8" />
+    <arg name="lio_guard_max_yaw_rate_deg" default="90.0" />
+    <arg name="lio_guard_max_sample_gap" default="0.5" />
+    <arg name="lio_guard_recovery_stable_sec" default="2.0" />
 
     <!-- 串口&底盘参数 -->
     <arg name="port" default="/dev/ttyUSB0"/>
@@ -28,6 +34,7 @@
     <arg name="use_global_ekf" default="false" />
     <arg name="publish_static_map_odom_outdoor" default="true" />
     <arg name="global_odom_use_heading" default="true" />
+    <arg name="global_odom_heading_filter_window_sec" default="10.0" />
     <arg name="global_odom_heading_topic" default="/heading" />
     <arg name="global_odom_heading_timeout" default="0.5" />
     <!-- G90弱信号保护：RTK不可信时使用本地FAST-LIO续推，恢复后平滑校正。 -->
@@ -38,7 +45,8 @@
     <arg name="gps_guard_max_hdop" default="1.5" />
     <arg name="gps_guard_max_position_covariance" default="0.25" />
     <arg name="gps_guard_heading_jump_limit_deg" default="8.0" />
-    <arg name="gps_guard_max_tracking_position_error" default="3.0" />
+    <arg name="gps_guard_max_tracking_position_error" default="0.5" />
+    <arg name="gps_guard_max_tracking_candidate_step" default="0.35" />
     <arg name="gps_guard_max_tracking_yaw_error_deg" default="20.0" />
     <arg name="gps_guard_initial_stable_sec" default="2.0" />
     <arg name="gps_guard_recovery_stable_sec" default="4.0" />
@@ -76,14 +84,29 @@
         </include>
     </group>
 
-    <!-- 3) 本地EKF：融合 /odom + /Odometry，产出 /odometry/local -->
+    <!-- 3) FAST-LIO 跳变保护：异常时停止向 EKF 注入 LIO，恢复时保持 SE(2) 连续。 -->
+    <node pkg="robot_base_driver" type="lio_odom_guard.py" name="lio_odom_guard" output="screen">
+        <param name="input_topic" value="/Odometry" />
+        <param name="wheel_topic" value="/odom" />
+        <param name="output_topic" value="/odometry/lio_guarded" />
+        <param name="status_topic" value="/lio_guard/status" />
+        <param name="healthy_topic" value="/lio_guard/healthy" />
+        <param name="max_speed" value="$(arg lio_guard_max_speed)" />
+        <param name="max_lateral_speed" value="$(arg lio_guard_max_lateral_speed)" />
+        <param name="max_yaw_rate_deg" value="$(arg lio_guard_max_yaw_rate_deg)" />
+        <param name="max_sample_gap" value="$(arg lio_guard_max_sample_gap)" />
+        <param name="recovery_stable_sec" value="$(arg lio_guard_recovery_stable_sec)" />
+    </node>
+
+    <!-- 4) 本地EKF：融合 /odom + 受保护FAST-LIO，产出 /odometry/local。
+         不重复融合 /livox/imu，因为 FAST-LIO 已经使用了同一颗 IMU。 -->
     <node pkg="robot_localization" type="ekf_localization_node" name="ekf_local" clear_params="true" output="screen">
         <rosparam command="load" file="$(find robot_base_driver)/config/ekf_local.yaml" />
         <param if="$(arg outdoor_mode)" name="transform_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
         <remap from="odometry/filtered" to="/odometry/local" />
     </node>
 
-    <!-- 4) 室外：GPS转里程计 + 全局EKF -->
+    <!-- 5) 室外：GPS转里程计 + 全局EKF -->
     <group if="$(arg outdoor_mode)">
         <node pkg="robot_localization" type="navsat_transform_node" name="navsat_transform" clear_params="true" output="screen">
             <remap from="gps/fix" to="/gps/fix" />
@@ -123,6 +146,7 @@
                 <param name="output_frame" value="map" />
                 <param name="child_frame" value="base_link" />
                 <param name="use_heading_orientation" value="$(arg global_odom_use_heading)" />
+                <param name="heading_filter_window_sec" value="$(arg global_odom_heading_filter_window_sec)" />
                 <param name="heading_topic" value="$(arg global_odom_heading_topic)" />
                 <param name="heading_timeout_sec" value="$(arg global_odom_heading_timeout)" />
                 <param name="guard_enabled" value="$(arg gps_guard_enable)" />
@@ -133,6 +157,7 @@
                 <param name="max_position_covariance" value="$(arg gps_guard_max_position_covariance)" />
                 <param name="heading_jump_limit_deg" value="$(arg gps_guard_heading_jump_limit_deg)" />
                 <param name="max_tracking_position_error" value="$(arg gps_guard_max_tracking_position_error)" />
+                <param name="max_tracking_candidate_step" value="$(arg gps_guard_max_tracking_candidate_step)" />
                 <param name="max_tracking_yaw_error_deg" value="$(arg gps_guard_max_tracking_yaw_error_deg)" />
                 <param name="initial_stable_sec" value="$(arg gps_guard_initial_stable_sec)" />
                 <param name="recovery_stable_sec" value="$(arg gps_guard_recovery_stable_sec)" />
@@ -149,7 +174,7 @@
         </group>
     </group>
 
-    <!-- 5) 室内：给 map->odom 固定变换，方便全局规划使用 map 坐标 -->
+    <!-- 6) 室内：给 map->odom 固定变换，方便全局规划使用 map 坐标 -->
     <arg name="publish_static_map_odom" default="true" />
     <group unless="$(arg outdoor_mode)">
         <group if="$(arg publish_static_map_odom)">

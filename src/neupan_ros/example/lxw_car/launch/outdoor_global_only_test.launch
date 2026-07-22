@@ -6,7 +6,7 @@
     <arg name="enable_livox_driver" default="true" doc="Whether to run Livox MID360 driver" />
     <arg name="enable_rviz" default="true" />
     <arg name="rviz_config" default="$(find hybrid_astar)/launch/config.rviz" />
-    <arg name="imu_topic" default="/imu/data" />
+    <arg name="imu_topic" default="/livox/imu" />
     <arg name="enable_neupan_tracking" default="false" doc="Legacy option: track path with NeuPAN" />
     <arg name="enable_direct_astar_tracking" default="true" doc="Track /osm_global_path directly without NeuPAN" />
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" />
@@ -28,10 +28,10 @@
     <arg name="direct_tracker_yaw_offset_deg" default="0.0" />
     <arg name="direct_tracker_final_segment_lateral_tolerance" default="1.5" />
     <arg name="direct_tracker_road_half_width" default="4.5" />
-    <arg name="direct_tracker_lateral_deadband" default="4.5" />
+    <arg name="direct_tracker_lateral_deadband" default="0.30" doc="直线路段允许不修正的横向误差；必须明显小于右侧车道偏移" />
     <arg name="direct_tracker_straight_segment_angle_deg" default="10.0" />
     <arg name="direct_tracker_straight_heading_deadband_deg" default="8.0" />
-    <arg name="enable_yaw_monitor" default="true" />
+    <arg name="enable_system_log" default="true" />
 
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
@@ -56,7 +56,8 @@
     <arg name="gps_guard_min_fix_status" default="2" />
     <arg name="gps_guard_max_position_covariance" default="0.25" />
     <arg name="gps_guard_heading_jump_limit_deg" default="8.0" />
-    <arg name="gps_guard_max_tracking_position_error" default="3.0" />
+    <arg name="gps_guard_max_tracking_position_error" default="0.5" />
+    <arg name="gps_guard_max_tracking_candidate_step" default="0.35" />
     <arg name="gps_guard_max_tracking_yaw_error_deg" default="20.0" />
     <arg name="gps_guard_recovery_stable_sec" default="4.0" />
     <arg name="gps_guard_recovery_position_rate" default="0.5" />
@@ -78,6 +79,12 @@
     <arg name="outdoor_path_turn_dense_after" default="2.0" />
     <arg name="outdoor_path_turn_recover_after" default="6.0" />
     <arg name="outdoor_path_min_points" default="3" />
+    <arg name="osm_enable_right_lane_offset" default="true" />
+    <arg name="osm_respect_oneway" default="true" />
+    <arg name="osm_default_lane_width" default="3.0" />
+    <arg name="osm_default_road_width" default="6.0" />
+    <arg name="osm_right_lane_offset_ratio" default="0.25" />
+    <arg name="osm_max_right_lane_offset" default="2.0" />
     <arg name="auto_set_initialpose" default="true" />
     <arg name="publish_pose_markers" default="true" />
     <arg name="publish_snap_debug_markers" default="true" />
@@ -109,6 +116,7 @@
         <arg name="gps_guard_max_position_covariance" value="$(arg gps_guard_max_position_covariance)" />
         <arg name="gps_guard_heading_jump_limit_deg" value="$(arg gps_guard_heading_jump_limit_deg)" />
         <arg name="gps_guard_max_tracking_position_error" value="$(arg gps_guard_max_tracking_position_error)" />
+        <arg name="gps_guard_max_tracking_candidate_step" value="$(arg gps_guard_max_tracking_candidate_step)" />
         <arg name="gps_guard_max_tracking_yaw_error_deg" value="$(arg gps_guard_max_tracking_yaw_error_deg)" />
         <arg name="gps_guard_recovery_stable_sec" value="$(arg gps_guard_recovery_stable_sec)" />
         <arg name="gps_guard_recovery_position_rate" value="$(arg gps_guard_recovery_position_rate)" />
@@ -151,6 +159,7 @@
     <group if="$(arg run_fast_lio_slam)">
         <include file="$(find fast_lio)/launch/mapping_mid360.launch">
             <arg name="rviz" value="false" />
+            <arg name="pcd_save_en" value="false" />
         </include>
     </group>
 
@@ -209,6 +218,12 @@
         <param name="path_turn_dense_after" value="$(arg outdoor_path_turn_dense_after)" />
         <param name="path_turn_recover_after" value="$(arg outdoor_path_turn_recover_after)" />
         <param name="path_min_points" value="$(arg outdoor_path_min_points)" />
+        <param name="enable_right_lane_offset" value="$(arg osm_enable_right_lane_offset)" />
+        <param name="respect_oneway" value="$(arg osm_respect_oneway)" />
+        <param name="default_lane_width" value="$(arg osm_default_lane_width)" />
+        <param name="default_road_width" value="$(arg osm_default_road_width)" />
+        <param name="right_lane_offset_ratio" value="$(arg osm_right_lane_offset_ratio)" />
+        <param name="max_right_lane_offset" value="$(arg osm_max_right_lane_offset)" />
         <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
         <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
         <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />
@@ -253,46 +268,20 @@
             <param name="straight_segment_angle_deg" value="$(arg direct_tracker_straight_segment_angle_deg)" />
             <param name="straight_heading_deadband_deg" value="$(arg direct_tracker_straight_heading_deadband_deg)" />
             <param name="debug_log" value="true" />
+            <param name="status_topic" value="/global_path_tracker/status" />
         </node>
     </group>
 
-    <group if="$(arg enable_yaw_monitor)">
-        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_local" output="screen">
-            <param name="topic" value="/odometry/local" />
-            <param name="label" value="odom_local" />
-        </node>
-        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_gps" output="screen">
-            <param name="topic" value="/odometry/gps" />
-            <param name="label" value="odom_gps" />
-        </node>
-        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_global" output="screen">
-            <param name="topic" value="/odometry/global" />
-            <param name="label" value="odom_global" />
-        </node>
-        <node pkg="robot_base_driver" type="quaternion_yaw_monitor.py" name="gps_heading_monitor" output="screen">
-            <param name="topic" value="/heading" />
-            <param name="label" value="g90_heading" />
-        </node>
-        <node pkg="robot_base_driver" type="yaw_compare_monitor.py" name="yaw_compare_monitor" output="screen">
-            <param name="odom_topic" value="/odometry/global" />
-            <param name="heading_topic" value="/heading" />
-            <param name="label" value="odom_vs_g90" />
-            <param name="log_to_file" value="true" />
-            <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
-        </node>
-        <node pkg="robot_base_driver" type="g90_health_monitor.py" name="g90_health_monitor" output="screen">
-            <param name="fix_topic" value="/gps/fix" />
-            <param name="heading_topic" value="/heading" />
-            <param name="odom_topic" value="/odometry/global" />
-            <param name="guard_status_topic" value="/gps_guard/status" />
-            <param name="gga_topic" value="/gnss/gpgga" />
-            <param name="label" value="g90_health_global_only" />
-            <param name="log_to_file" value="true" />
-            <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
-            <param name="heading_jump_warn_deg" value="8.0" />
-            <param name="pos_cov_warn_m2" value="0.25" />
-        </node>
-    </group>
+    <node if="$(arg enable_system_log)" pkg="robot_base_driver" type="system_run_logger.py" name="system_run_logger" output="screen">
+        <param name="command_topic" value="/neupan_cmd_vel" />
+        <param name="tracker_status_topic" value="/global_path_tracker/status" />
+        <param name="label" value="system_run_global_only" />
+        <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
+        <param name="sample_rate" value="10.0" />
+        <param name="flush_interval" value="1.0" />
+        <param name="max_file_size_mb" value="256.0" />
+        <param name="print_to_screen" value="false" />
+    </node>
 
     <group if="$(arg enable_neupan_tracking)">
         <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">

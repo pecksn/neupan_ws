@@ -109,8 +109,8 @@ class RosNMEADriver(object):
 
         self.rotation_data = rospy.get_param('~rotation', 90.0)
         self.heading_source_is_north_cw = rospy.get_param('~heading_source_is_north_cw', True)
-        print('rotation_data is:')
-        print(self.rotation_data)
+        self.debug_output = rospy.get_param('~debug_output', False)
+        rospy.loginfo('G90 heading rotation offset: %.2f deg', self.rotation_data)
  
         self.valid_fix = False
 
@@ -176,6 +176,8 @@ class RosNMEADriver(object):
         }
 
     def _log_fix(self, current_fix, fix_type):
+        if not self.debug_output:
+            return
         rospy.loginfo_throttle(
             1.0,
             (
@@ -438,14 +440,15 @@ class RosNMEADriver(object):
                 current_heading.quaternion.z = q[2]
                 current_heading.quaternion.w = q[3]
                 self.heading_pub.publish(current_heading)
-                rospy.loginfo_throttle(
-                    1.0,
-                    "G90 heading: raw_hdt=%.2fdeg install_offset=%.2fdeg north_cw=%.2fdeg ros_yaw=%.2fdeg",
-                    heading_value,
-                    self.rotation_data,
-                    self._normalize_deg(heading_north_cw_deg),
-                    yaw_deg,
-                )
+                if self.debug_output:
+                    rospy.loginfo_throttle(
+                        1.0,
+                        "G90 heading: raw_hdt=%.2fdeg install_offset=%.2fdeg north_cw=%.2fdeg ros_yaw=%.2fdeg",
+                        heading_value,
+                        self.rotation_data,
+                        self._normalize_deg(heading_north_cw_deg),
+                        yaw_deg,
+                    )
 
                 #wheeltec_tues debug
                 pose_msg = PoseStamped()

@@ -8,7 +8,7 @@
     <!-- 基础传感器配置 -->
     <arg name="enable_livox_driver" default="true"  doc="实车必须开启雷达驱动"/>
     <arg name="enable_rviz"         default="true" />
-    <arg name="imu_topic"           default="/imu/data" />
+    <arg name="imu_topic"           default="/livox/imu" doc="MID360原始IMU，供FAST-LIO/navsat使用；本地EKF不重复融合" />
     <arg name="indoor_map_file"     default="/home/nuc/lxw/maps/my_corridor_fastlio.yaml" />
 
     <!-- OSM 地图原点（建议与 datum 一致） -->
@@ -29,6 +29,7 @@
     <arg name="gps_heading_source_is_north_cw" default="true" doc="true: G90 HDT 航向按北为0、顺时针为正进行转换" />
     <arg name="gps_use_gnss_time" default="false" doc="是否使用 GNSS 自身时间戳" />
     <arg name="use_global_ekf" default="false" doc="false: 稳定模式直接使用/odometry/gps; true: 使用ekf_global" />
+    <arg name="global_odom_heading_filter_window_sec" default="10.0" doc="G90与局部航向关系的时间窗口；桥口退化时冻结进入窗口前后的稳健航向" />
     <arg name="align_map_odom_with_global_local" default="true" doc="用 /odometry/global 与 /odometry/local 对齐 map->odom，便于点云与全局标记一致" />
     <arg name="map_odom_align_timeout" default="2.0" doc="map_odom 动态对齐消息接收超时(秒)" />
     <arg name="map_odom_align_yaw_bias_deg" default="0.0" doc="map_odom 偏航补偿角(度); 默认0，只有确认 local odom 与 global yaw 固定差角时再手动设置" />
@@ -41,7 +42,8 @@
     <arg name="gps_guard_max_hdop" default="1.5" doc="恢复GPS允许的最大HDOP" />
     <arg name="gps_guard_max_position_covariance" default="0.25" doc="水平协方差上限，超过后拒绝GPS" />
     <arg name="gps_guard_heading_jump_limit_deg" default="8.0" doc="单次G90航向跳变拒绝阈值" />
-    <arg name="gps_guard_max_tracking_position_error" default="3.0" doc="跟踪期间GPS与本地续推最大位置差" />
+    <arg name="gps_guard_max_tracking_position_error" default="0.5" doc="GPS候选变换与当前map到odom的最大位置差，超出后冻结GPS" />
+    <arg name="gps_guard_max_tracking_candidate_step" default="0.35" doc="相邻GPS候选变换最大平移量，拦截桥口RTK假固定突跳" />
     <arg name="gps_guard_max_tracking_yaw_error_deg" default="20.0" doc="跟踪期间GPS与本地续推最大航向差" />
     <arg name="gps_guard_initial_stable_sec" default="2.0" doc="启动时GPS连续稳定确认时间" />
     <arg name="gps_guard_recovery_stable_sec" default="3.0" doc="失锁后GPS连续稳定恢复时间" />
@@ -51,6 +53,12 @@
     <arg name="gps_guard_local_max_lateral_speed" default="0.8" doc="FAST-LIO允许的最大横向速度" />
     <arg name="gps_guard_local_max_yaw_rate_deg" default="90.0" doc="FAST-LIO允许的最大瞬时角速度" />
     <arg name="gps_guard_local_fault_hold_sec" default="2.0" doc="本地里程计跳变后的停车观察时间" />
+    <!-- FAST-LIO进入本地EKF前的独立输出保护。 -->
+    <arg name="lio_guard_max_speed" default="2.0" doc="LIO最大平面速度，超过则拒绝该段输出" />
+    <arg name="lio_guard_max_lateral_speed" default="0.8" doc="LIO最大车体横向速度" />
+    <arg name="lio_guard_max_yaw_rate_deg" default="90.0" doc="LIO最大偏航角速度" />
+    <arg name="lio_guard_max_sample_gap" default="0.5" doc="LIO消息最大允许间隔，超时后重新连续对齐" />
+    <arg name="lio_guard_recovery_stable_sec" default="2.0" doc="异常后LIO连续正常多久才重新接入EKF" />
 
     <!-- 室外 OSM 规划参数 -->
     <arg name="osm_lookahead_dist" default="4.0" />
@@ -65,12 +73,18 @@
     <arg name="outdoor_path_turn_dense_after" default="2.0" doc="出弯后保持加密的长度(米)" />
     <arg name="outdoor_path_turn_recover_after" default="6.0" doc="出弯后逐渐恢复为直线间距的长度(米)" />
     <arg name="outdoor_path_min_points" default="3" doc="室外路径最少下发给 NeuPAN 的点数" />
+    <arg name="osm_enable_right_lane_offset" default="true" doc="根据道路宽度和行驶方向将OSM中心线偏移到右侧半幅中心" />
+    <arg name="osm_respect_oneway" default="true" doc="A*是否遵守OSM oneway方向" />
+    <arg name="osm_default_lane_width" default="3.0" doc="OSM仅有lanes时使用的单车道估算宽度(米)" />
+    <arg name="osm_default_road_width" default="6.0" doc="OSM缺少width和lanes时的道路总宽回退值(米)" />
+    <arg name="osm_right_lane_offset_ratio" default="0.25" doc="右侧参考线偏移占道路总宽的比例；0.25为右半幅中心" />
+    <arg name="osm_max_right_lane_offset" default="0.0" doc="右侧参考线最大偏移(米)，防止宽路估算导致偏移过大" />
     <arg name="auto_set_initialpose" default="true" />
     <arg name="publish_pose_markers" default="true" />
     <arg name="publish_snap_debug_markers" default="true" />
     <arg name="gps_marker_timeout" default="2.0" />
     <arg name="enable_gps_goal_bridge" default="true" />
-    <arg name="enable_yaw_monitor" default="true" />
+    <arg name="enable_system_log" default="true" doc="Ctrl+C后生成一个包含定位、GPS、保护状态和控制指令的综合日志" />
     <arg name="outdoor_use_hybrid_astar" default="false" doc="室外是否启用 Hybrid A*；false 时 NeuPAN 直接跟踪 OSM A* 路径" />
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" doc="室外 NeuPAN 初始路径来源话题；可选 /osm_global_path 或 /sPath" />
     <arg name="neupan_config_indoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_indoor.yaml" />
@@ -81,6 +95,12 @@
     <arg name="adaptive_front_half_angle_deg" default="60.0" doc="只统计车头前方 +/- 该角度范围内的障碍点" />
     <arg name="clear_adjust_profile" default="1.2 21.0 0.05 0.3 0.2" doc="空旷模式 q_s p_u eta d_max d_min" />
     <arg name="avoid_adjust_profile" default="2.8 18.0 1.5 1.0 0.2" doc="避障模式 q_s p_u eta d_max d_min" />
+    <!-- NeuPAN雷达失效保护：空旷全inf允许通过，scan/TF失效则停车。 -->
+    <arg name="neupan_stop_on_scan_fault" default="true" />
+    <arg name="neupan_scan_timeout" default="0.5" />
+    <arg name="neupan_scan_transform_timeout" default="0.5" />
+    <arg name="neupan_scan_recovery_stable_sec" default="0.5" />
+    <arg name="neupan_scan_filtered_empty_timeout" default="2.0" />
 
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
@@ -102,6 +122,7 @@
         <arg name="gps_heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         <arg name="gps_use_gnss_time" value="$(arg gps_use_gnss_time)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
+        <arg name="global_odom_heading_filter_window_sec" value="$(arg global_odom_heading_filter_window_sec)" />
         <arg name="gps_guard_enable" value="$(arg gps_guard_enable)" />
         <arg name="gps_guard_min_fix_status" value="$(arg gps_guard_min_fix_status)" />
         <arg name="gps_guard_required_gga_quality" value="$(arg gps_guard_required_gga_quality)" />
@@ -110,6 +131,7 @@
         <arg name="gps_guard_max_position_covariance" value="$(arg gps_guard_max_position_covariance)" />
         <arg name="gps_guard_heading_jump_limit_deg" value="$(arg gps_guard_heading_jump_limit_deg)" />
         <arg name="gps_guard_max_tracking_position_error" value="$(arg gps_guard_max_tracking_position_error)" />
+        <arg name="gps_guard_max_tracking_candidate_step" value="$(arg gps_guard_max_tracking_candidate_step)" />
         <arg name="gps_guard_max_tracking_yaw_error_deg" value="$(arg gps_guard_max_tracking_yaw_error_deg)" />
         <arg name="gps_guard_initial_stable_sec" value="$(arg gps_guard_initial_stable_sec)" />
         <arg name="gps_guard_recovery_stable_sec" value="$(arg gps_guard_recovery_stable_sec)" />
@@ -119,6 +141,11 @@
         <arg name="gps_guard_local_max_lateral_speed" value="$(arg gps_guard_local_max_lateral_speed)" />
         <arg name="gps_guard_local_max_yaw_rate_deg" value="$(arg gps_guard_local_max_yaw_rate_deg)" />
         <arg name="gps_guard_local_fault_hold_sec" value="$(arg gps_guard_local_fault_hold_sec)" />
+        <arg name="lio_guard_max_speed" value="$(arg lio_guard_max_speed)" />
+        <arg name="lio_guard_max_lateral_speed" value="$(arg lio_guard_max_lateral_speed)" />
+        <arg name="lio_guard_max_yaw_rate_deg" value="$(arg lio_guard_max_yaw_rate_deg)" />
+        <arg name="lio_guard_max_sample_gap" value="$(arg lio_guard_max_sample_gap)" />
+        <arg name="lio_guard_recovery_stable_sec" value="$(arg lio_guard_recovery_stable_sec)" />
         <arg name="enable_localization_safety_stop" value="$(arg outdoor_mode)" unless="$(arg use_global_ekf)" />
         <arg name="enable_localization_safety_stop" value="false" if="$(arg use_global_ekf)" />
         <arg name="publish_static_map_odom_outdoor" value="false" if="$(arg align_map_odom_with_global_local)" />
@@ -138,6 +165,7 @@
                     <param name="timeout_sec" value="$(arg map_odom_align_timeout)"/>
                     <param name="yaw_bias_deg" value="$(arg map_odom_align_yaw_bias_deg)"/>
                     <param name="align_yaw_with_global" value="$(arg map_odom_align_use_global_yaw)"/>
+                    <param name="print_yaw_status" value="false"/>
                 </node>
             </group>
         </group>
@@ -164,7 +192,8 @@
     <!-- 3.3 FAST-LIO / 高精度里程计 -->
     <group if="$(arg run_fast_lio_slam)">
         <include file="$(find fast_lio)/launch/mapping_mid360.launch">
-            <arg name="rviz" value="false" /> 
+            <arg name="rviz" value="false" />
+            <arg name="pcd_save_en" value="false" />
         </include>
     </group>
 
@@ -244,6 +273,12 @@
             <param name="path_turn_dense_after" value="$(arg outdoor_path_turn_dense_after)" />
             <param name="path_turn_recover_after" value="$(arg outdoor_path_turn_recover_after)" />
             <param name="path_min_points" value="$(arg outdoor_path_min_points)" />
+            <param name="enable_right_lane_offset" value="$(arg osm_enable_right_lane_offset)" />
+            <param name="respect_oneway" value="$(arg osm_respect_oneway)" />
+            <param name="default_lane_width" value="$(arg osm_default_lane_width)" />
+            <param name="default_road_width" value="$(arg osm_default_road_width)" />
+            <param name="right_lane_offset_ratio" value="$(arg osm_right_lane_offset_ratio)" />
+            <param name="max_right_lane_offset" value="$(arg osm_max_right_lane_offset)" />
             <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
             <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
             <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />
@@ -259,27 +294,25 @@
         </node>
     </group>
 
-    <group if="$(arg enable_yaw_monitor)">
-        <node pkg="robot_base_driver" type="yaw_compare_monitor.py" name="yaw_compare_monitor" output="screen">
-            <param name="odom_topic" value="/odometry/global" />
-            <param name="heading_topic" value="/heading" />
-            <param name="label" value="odom_vs_g90_full" />
-            <param name="log_to_file" value="true" />
-            <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
-        </node>
-        <node pkg="robot_base_driver" type="g90_health_monitor.py" name="g90_health_monitor" output="screen">
-            <param name="fix_topic" value="/gps/fix" />
-            <param name="heading_topic" value="/heading" />
-            <param name="odom_topic" value="/odometry/global" />
-            <param name="guard_status_topic" value="/gps_guard/status" />
-            <param name="gga_topic" value="/gnss/gpgga" />
-            <param name="label" value="g90_health_full" />
-            <param name="log_to_file" value="true" />
-            <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
-            <param name="heading_jump_warn_deg" value="8.0" />
-            <param name="pos_cov_warn_m2" value="0.25" />
-        </node>
-    </group>
+    <node if="$(arg enable_system_log)" pkg="robot_base_driver" type="system_run_logger.py" name="system_run_logger" output="screen">
+        <param name="fix_topic" value="/gps/fix" />
+        <param name="gga_topic" value="/gnss/gpgga" />
+        <param name="heading_topic" value="/heading" />
+        <param name="global_odom_topic" value="/odometry/global" />
+        <param name="local_odom_topic" value="/odometry/local" />
+        <param name="command_topic" value="/neupan_cmd_vel" />
+        <param name="gps_guard_topic" value="/gps_guard/status" />
+        <param name="lio_guard_topic" value="/lio_guard/status" />
+        <param name="tracker_status_topic" value="/global_path_tracker/status" />
+        <param name="scan_health_topic" value="/neupan/scan_health" />
+        <param name="safety_topic" value="/localization_safe" />
+        <param name="label" value="system_run_full" />
+        <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
+        <param name="sample_rate" value="10.0" />
+        <param name="flush_interval" value="1.0" />
+        <param name="max_file_size_mb" value="256.0" />
+        <param name="print_to_screen" value="false" />
+    </node>
 
     <!-- ==================== 5. 导航规划体系 ==================== -->
     <!-- 室内：始终使用 Hybrid A*，NeuPAN 监听 /sPath -->
@@ -303,12 +336,18 @@
             <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
             <param name="refresh_initial_path" value="true"/>
             <param name="include_initial_path_direction" value="true"/>
+            <param name="verbose_runtime_log" value="false"/>
             <param name="enable_adaptive_adjust" value="$(arg enable_adaptive_adjust)"/>
             <param name="adaptive_far_distance" value="$(arg adaptive_far_distance)"/>
             <param name="adaptive_near_distance" value="$(arg adaptive_near_distance)"/>
             <param name="adaptive_front_half_angle_deg" value="$(arg adaptive_front_half_angle_deg)"/>
             <param name="clear_adjust_profile" value="$(arg clear_adjust_profile)"/>
             <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
+            <param name="stop_on_scan_fault" value="$(arg neupan_stop_on_scan_fault)"/>
+            <param name="scan_timeout" value="$(arg neupan_scan_timeout)"/>
+            <param name="scan_transform_timeout" value="$(arg neupan_scan_transform_timeout)"/>
+            <param name="scan_recovery_stable_sec" value="$(arg neupan_scan_recovery_stable_sec)"/>
+            <param name="scan_filtered_empty_timeout" value="$(arg neupan_scan_filtered_empty_timeout)"/>
             <remap from="/initial_path" to="/sPath" />
             <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
         </node>
@@ -342,6 +381,11 @@
                 <param name="adaptive_front_half_angle_deg" value="$(arg adaptive_front_half_angle_deg)"/>
                 <param name="clear_adjust_profile" value="$(arg clear_adjust_profile)"/>
                 <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
+                <param name="stop_on_scan_fault" value="$(arg neupan_stop_on_scan_fault)"/>
+                <param name="scan_timeout" value="$(arg neupan_scan_timeout)"/>
+                <param name="scan_transform_timeout" value="$(arg neupan_scan_transform_timeout)"/>
+                <param name="scan_recovery_stable_sec" value="$(arg neupan_scan_recovery_stable_sec)"/>
+                <param name="scan_filtered_empty_timeout" value="$(arg neupan_scan_filtered_empty_timeout)"/>
                 <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
                 <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
             </node>
@@ -367,6 +411,11 @@
                 <param name="adaptive_front_half_angle_deg" value="$(arg adaptive_front_half_angle_deg)"/>
                 <param name="clear_adjust_profile" value="$(arg clear_adjust_profile)"/>
                 <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
+                <param name="stop_on_scan_fault" value="$(arg neupan_stop_on_scan_fault)"/>
+                <param name="scan_timeout" value="$(arg neupan_scan_timeout)"/>
+                <param name="scan_transform_timeout" value="$(arg neupan_scan_transform_timeout)"/>
+                <param name="scan_recovery_stable_sec" value="$(arg neupan_scan_recovery_stable_sec)"/>
+                <param name="scan_filtered_empty_timeout" value="$(arg neupan_scan_filtered_empty_timeout)"/>
                 <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
                 <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
             </node>

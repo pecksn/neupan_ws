@@ -27,6 +27,7 @@ class RobotBaseDriver:
             '~localization_safety_topic', '/localization_safe'
         )
         self.localization_safe = not self.enable_localization_safety_stop
+        self.print_sent_command = rospy.get_param('~print_sent_command', False)
 
         # 初始化串口
         try:
@@ -124,7 +125,8 @@ class RobotBaseDriver:
         if self.serial and self.serial.is_open:
             try:
                 self.serial.write(command.encode())
-                rospy.loginfo_throttle(1, f"Send to MCU: {command.strip()}")
+                if self.print_sent_command:
+                    rospy.loginfo_throttle(1, f"Send to MCU: {command.strip()}")
             except Exception as e:
                 rospy.logerr(f"Serial write failed: {e}")
 

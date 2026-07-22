@@ -21,11 +21,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
 from neupan import neupan
+import json
 import rospy
 from geometry_msgs.msg import Twist, PoseStamped, Quaternion, PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry, Path
 from visualization_msgs.msg import MarkerArray, Marker
 from sensor_msgs.msg import LaserScan, PointCloud2
+from std_msgs.msg import String
 from math import sin, cos, atan2, degrees, radians
 import numpy as np
 from neupan.util import get_transform
@@ -56,11 +58,23 @@ class neupan_core:
         scan_range_para = rospy.get_param("~scan_range", "0.0 5.0")
         scan_range_para = scan_range_para.replace(",", " ")
         self.scan_range = np.fromstring(scan_range_para, dtype=np.float32, sep=" ")
+        self.stop_on_scan_fault = bool(rospy.get_param("~stop_on_scan_fault", True))
+        self.scan_timeout = max(0.1, float(rospy.get_param("~scan_timeout", 0.5)))
+        self.scan_transform_timeout = max(
+            0.1, float(rospy.get_param("~scan_transform_timeout", 0.5))
+        )
+        self.scan_recovery_stable_sec = max(
+            0.0, float(rospy.get_param("~scan_recovery_stable_sec", 0.5))
+        )
+        self.scan_filtered_empty_timeout = max(
+            0.1, float(rospy.get_param("~scan_filtered_empty_timeout", 2.0))
+        )
 
         self.dune_checkpoint = rospy.get_param("~dune_checkpoint", None)
         self.refresh_initial_path = rospy.get_param("~refresh_initial_path", False)
         self.flip_angle = rospy.get_param("~flip_angle", False)
         self.include_initial_path_direction = rospy.get_param("~include_initial_path_direction", False)
+        self.verbose_runtime_log = bool(rospy.get_param("~verbose_runtime_log", False))
         self.enable_adaptive_adjust = rospy.get_param("~enable_adaptive_adjust", True)
         self.adaptive_far_distance = float(rospy.get_param("~adaptive_far_distance", "4.0"))
         self.adaptive_near_distance = float(rospy.get_param("~adaptive_near_distance", "1.8"))
@@ -89,8 +103,16 @@ class neupan_core:
         self.obstacle_points = None  # (2, n)  n number of points
         self.robot_state = None  # (3, 1) [x, y, theta]
         self.stop = False
+        self.arrive = False
         self.current_adjust_profile_name = "init"
         self.current_adjust_values = None
+        self.last_scan_received_time = None
+        self.last_scan_valid_time = None
+        self.scan_valid_since = None
+        self.filtered_empty_since = None
+        self.scan_fault_reason = "waiting_for_scan"
+        self.scan_mode = "WAITING"
+        self.last_scan_status_publish = rospy.Time(0)
 
         # publisher
         self.vel_pub = rospy.Publisher("/neupan_cmd_vel", Twist, queue_size=10)
@@ -101,6 +123,9 @@ class neupan_core:
         self.ref_path_pub = rospy.Publisher(
             "/neupan_initial_path", Path, queue_size=10
         )  # initial path
+        self.scan_health_pub = rospy.Publisher(
+            "/neupan/scan_health", String, queue_size=2, latch=True
+        )
 
         ## for rviz visualization
         self.point_markers_pub_dune = rospy.Publisher(
@@ -152,10 +177,16 @@ class neupan_core:
                         self.base_frame, self.map_frame
                     ),
                 )
+                self.vel_pub.publish(Twist())
+                self.publish_scan_health(rospy.Time.now())
+                r.sleep()
                 continue
 
             if self.robot_state is None:
                 rospy.logwarn_throttle(1, "waiting for robot state")
+                self.vel_pub.publish(Twist())
+                self.publish_scan_health(rospy.Time.now())
+                r.sleep()
                 continue
 
             rospy.loginfo_once(
@@ -171,6 +202,9 @@ class neupan_core:
 
             if self.neupan_planner.initial_path is None:
                 rospy.logwarn_throttle(1, "waiting for neupan initial path")
+                self.vel_pub.publish(Twist())
+                self.publish_scan_health(rospy.Time.now())
+                r.sleep()
                 continue
 
             rospy.loginfo_once("initial Path Received")
@@ -178,10 +212,15 @@ class neupan_core:
                 self.generate_path_msg(self.neupan_planner.initial_path)
             )
 
-            if self.obstacle_points is None:
-                rospy.logwarn_throttle(
-                    1, "No obstacle points, only path tracking task will be performed"
+            scan_healthy, scan_reason = self.scan_is_healthy(rospy.Time.now())
+            self.publish_scan_health(rospy.Time.now())
+            if self.stop_on_scan_fault and not scan_healthy:
+                rospy.logerr_throttle(
+                    1.0, "NeuPAN scan safety stop: %s", scan_reason
                 )
+                self.vel_pub.publish(Twist())
+                r.sleep()
+                continue
 
             self.update_adaptive_adjust_parameters()
 
@@ -195,8 +234,8 @@ class neupan_core:
             
             if hasattr(self, 'last_plan_time_debug'):
                 dt_loop = (t0 - self.last_plan_time_debug).to_sec()
-                if dt_loop > 0:
-                     rospy.loginfo_throttle(1.0, f"Hz: {1.0/dt_loop:.1f} | TF: {dt_tf:.1f}ms | Infer: {dt_infer:.1f}ms")
+                if dt_loop > 0 and self.verbose_runtime_log:
+                    rospy.loginfo_throttle(1.0, f"Hz: {1.0/dt_loop:.1f} | TF: {dt_tf:.1f}ms | Infer: {dt_infer:.1f}ms")
             
             self.last_plan_time_debug = t0
 
@@ -206,7 +245,7 @@ class neupan_core:
             ref_state = None
             if info.get("ref_state_list") is not None and len(info["ref_state_list"]) > 0:
                 ref_state = info["ref_state_list"][0]
-            if ref_state is not None:
+            if ref_state is not None and self.verbose_runtime_log:
                 robot_yaw = self.robot_state[2, 0]
                 ref_yaw = ref_state[2, 0]
                 yaw_error = atan2(sin(ref_yaw - robot_yaw), cos(ref_yaw - robot_yaw))
@@ -222,7 +261,7 @@ class neupan_core:
 
             if info["arrive"]:
                 # print(action)
-                rospy.loginfo_throttle(0.1, "arrive at the target")
+                rospy.loginfo_throttle(1.0, "arrive at the target")
 
             # publish the path and velocity
             self.plan_pub.publish(self.generate_path_msg(info["opt_state_list"]))
@@ -230,7 +269,11 @@ class neupan_core:
             self.vel_pub.publish(self.generate_twist_msg(action))
 
             # 计算并打印距离目的地的距离
-            if self.neupan_planner.waypoints is not None and len(self.neupan_planner.waypoints) > 0:
+            if (
+                self.verbose_runtime_log
+                and self.neupan_planner.waypoints is not None
+                and len(self.neupan_planner.waypoints) > 0
+            ):
                 target = self.neupan_planner.waypoints[-1]
                 dist = np.linalg.norm(self.robot_state[:2] - target[:2])
                 rospy.loginfo_throttle(1.0, f"Distance to destination: {dist:.2f} m")
@@ -260,6 +303,80 @@ class neupan_core:
             )
             profile = np.array(fallback, dtype=np.float32)
         return profile
+
+    def mark_scan_valid(self, now, mode):
+        if self.scan_valid_since is None:
+            self.scan_valid_since = now
+        self.last_scan_valid_time = now
+        self.scan_fault_reason = "ok"
+        self.scan_mode = mode
+
+    def mark_scan_fault(self, reason):
+        self.scan_valid_since = None
+        self.scan_fault_reason = reason
+        self.scan_mode = "FAULT"
+
+    def scan_is_healthy(self, now):
+        if not self.stop_on_scan_fault:
+            return True, "guard_disabled"
+        if self.last_scan_received_time is None:
+            return False, "scan_missing"
+        scan_age = (now - self.last_scan_received_time).to_sec()
+        if scan_age > self.scan_timeout:
+            return False, "scan_stale_{:.2f}s".format(scan_age)
+        if self.last_scan_valid_time is None:
+            return False, self.scan_fault_reason
+        valid_age = (now - self.last_scan_valid_time).to_sec()
+        if valid_age > self.scan_transform_timeout:
+            return False, "scan_transform_stale_{:.2f}s".format(valid_age)
+        if self.scan_valid_since is None:
+            return False, self.scan_fault_reason
+        stable_sec = (now - self.scan_valid_since).to_sec()
+        if stable_sec < self.scan_recovery_stable_sec:
+            return False, "scan_recovering_{:.2f}s".format(stable_sec)
+        return True, "ok"
+
+    def publish_scan_health(self, now):
+        if (now - self.last_scan_status_publish).to_sec() < 0.5:
+            return
+        self.last_scan_status_publish = now
+        healthy, reason = self.scan_is_healthy(now)
+        front_min_distance = self.compute_min_obstacle_distance()
+        planner_min_distance = None
+        if getattr(self.neupan_planner, "min_distance", None) is not None:
+            try:
+                planner_min_distance = float(
+                    self.neupan_planner.min_distance.detach().item()
+                )
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                planner_min_distance = None
+        payload = {
+            "stamp": now.to_sec(),
+            "healthy": healthy,
+            "reason": reason,
+            "mode": self.scan_mode,
+            "scan_age_sec": None
+            if self.last_scan_received_time is None
+            else max(0.0, (now - self.last_scan_received_time).to_sec()),
+            "valid_age_sec": None
+            if self.last_scan_valid_time is None
+            else max(0.0, (now - self.last_scan_valid_time).to_sec()),
+            "recovery_stable_sec": None
+            if self.scan_valid_since is None
+            else max(0.0, (now - self.scan_valid_since).to_sec()),
+            "obstacle_points": 0
+            if self.obstacle_points is None
+            else int(self.obstacle_points.shape[1]),
+            "front_min_obstacle_distance_m": front_min_distance,
+            "planner_min_distance_m": planner_min_distance,
+            "planner_stop": bool(self.stop),
+            "planner_arrive": bool(self.arrive),
+            "adjust_profile": self.current_adjust_profile_name,
+            "adjust": self.current_adjust_values,
+        }
+        self.scan_health_pub.publish(
+            String(data=json.dumps(payload, separators=(",", ":")))
+        )
 
     def compute_min_obstacle_distance(self):
         if self.robot_state is None or self.obstacle_points is None or self.obstacle_points.size == 0:
@@ -329,27 +446,37 @@ class neupan_core:
             "min_distance": min_distance,
         }
 
-        rospy.loginfo_throttle(
-            1.0,
-            "neupan adaptive adjust: mode=%s alpha=%.2f min_obs=%s q_s=%.2f p_u=%.2f eta=%.2f d_max=%.2f d_min=%.2f",
-            profile_name,
-            alpha,
-            "none" if min_distance is None else f"{min_distance:.2f}m",
-            q_s,
-            p_u,
-            eta,
-            d_max,
-            d_min,
-        )
+        if self.verbose_runtime_log:
+            rospy.loginfo_throttle(
+                1.0,
+                "neupan adaptive adjust: mode=%s alpha=%.2f min_obs=%s q_s=%.2f p_u=%.2f eta=%.2f d_max=%.2f d_min=%.2f",
+                profile_name,
+                alpha,
+                "none" if min_distance is None else f"{min_distance:.2f}m",
+                q_s,
+                p_u,
+                eta,
+                d_max,
+                d_min,
+            )
 
     # scan callback
     def scan_callback(self, scan_msg):
 
+        now = rospy.Time.now()
+        self.last_scan_received_time = now
+
         if self.robot_state is None:
+            self.mark_scan_fault("robot_pose_unavailable_for_scan")
             return None
 
         ranges = np.array(scan_msg.ranges)
-        angles = np.linspace(scan_msg.angle_min, scan_msg.angle_max, len(ranges))
+        angles = scan_msg.angle_min + np.arange(len(ranges)) * scan_msg.angle_increment
+        relevant_raw = np.isfinite(ranges)
+        relevant_raw &= ranges >= max(float(scan_msg.range_min), self.scan_range[0])
+        relevant_raw &= ranges <= min(float(scan_msg.range_max), self.scan_range[1])
+        relevant_raw &= angles > self.scan_angle_range[0]
+        relevant_raw &= angles < self.scan_angle_range[1]
 
         points = []
         # x, y, z, yaw, pitch, roll = self.lidar_offset
@@ -373,9 +500,21 @@ class neupan_core:
 
         if len(points) == 0:
             self.obstacle_points = None
-            rospy.loginfo_once("No valid scan points")
+            if not np.any(relevant_raw):
+                self.filtered_empty_since = None
+                self.mark_scan_valid(now, "CLEAR_NO_RETURNS")
+                return None
+
+            if self.filtered_empty_since is None:
+                self.filtered_empty_since = now
+            filtered_sec = (now - self.filtered_empty_since).to_sec()
+            if filtered_sec >= self.scan_filtered_empty_timeout:
+                self.mark_scan_fault("all_finite_scan_points_filtered")
+            else:
+                self.mark_scan_valid(now, "FILTERED_EMPTY_GRACE")
             return None
 
+        self.filtered_empty_since = None
         point_array = np.hstack(points)
 
         try:
@@ -388,6 +527,7 @@ class neupan_core:
 
             trans_matrix, rot_matrix = get_transform(np.c_[x, y, yaw].reshape(3, 1))
             self.obstacle_points = rot_matrix @ point_array + trans_matrix
+            self.mark_scan_valid(now, "TRACKING")
             rospy.loginfo_once("Scan obstacle points Received")
 
             return self.obstacle_points
@@ -397,6 +537,7 @@ class neupan_core:
             tf.ConnectivityException,
             tf.ExtrapolationException,
         ):
+            self.mark_scan_fault("scan_tf_unavailable")
             rospy.loginfo_throttle(
                 1,
                 "waiting for tf for the transform from {} to {}".format(
@@ -432,7 +573,8 @@ class neupan_core:
 
         initial_point_list = []
 
-        print(f"--- Received Path with {len(path.poses)} poses ---")
+        if self.verbose_runtime_log:
+            rospy.loginfo("Received path with %d poses", len(path.poses))
         for i in range(len(path.poses)):
             p = path.poses[i]
             x = p.pose.position.x
@@ -451,17 +593,12 @@ class neupan_core:
                 else:
                     theta = initial_point_list[-1][2, 0]
             
-            # Print the points out for debugging the left-turn issue (print the first 50 points to avoid spam)
-            if i < 50:
-                print(f"Point {i}: x={x:.4f}, y={y:.4f}, theta={theta:.4f} (deg: {theta*180/3.1415926:.2f})")
-            elif i == 50:
-                print(f"... [omitted remaining {len(path.poses) - 50} points] ...")
-            
             points = np.array([x, y, theta, 1]).reshape(4, 1)
             initial_point_list.append(points)
 
         if self.neupan_planner.initial_path is None or self.refresh_initial_path:
-            rospy.loginfo_throttle(0.1, "initial path update from given path")
+            if self.verbose_runtime_log:
+                rospy.loginfo_throttle(1.0, "initial path update from given path")
             self.neupan_planner.set_initial_path(initial_point_list)
             self.neupan_planner.reset()
     
@@ -495,7 +632,8 @@ class neupan_core:
             waypoints_list.append(points)
 
         if self.neupan_planner.initial_path is None or self.refresh_initial_path:
-            rospy.loginfo_throttle(0.1, "initial path update from waypoints")
+            if self.verbose_runtime_log:
+                rospy.loginfo_throttle(1.0, "initial path update from waypoints")
             self.neupan_planner.update_initial_path_from_waypoints(waypoints_list)
             self.neupan_planner.reset()
 
@@ -507,9 +645,8 @@ class neupan_core:
 
         self.goal = np.array([[x], [y], [theta]])
 
-        print(f"set neupan goal: {[x, y, theta]}")
-
-        rospy.loginfo_throttle(0.1, "initial path update from goal position")
+        if self.verbose_runtime_log:
+            rospy.loginfo("Set NeuPAN goal: x=%.2f y=%.2f yaw=%.1fdeg", x, y, degrees(theta))
         self.neupan_planner.update_initial_path_from_goal(self.robot_state, self.goal)
         self.neupan_planner.reset()
 

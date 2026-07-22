@@ -1,14 +1,12 @@
 #!/usr/bin/env python
 import json
 import math
-import os
-from collections import deque
-from datetime import datetime
 
 import rospy
 import tf
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
+from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion
 
 
@@ -62,8 +60,7 @@ class GlobalPathTracker(object):
         self.lateral_deadband = rospy.get_param("~lateral_deadband", self.road_half_width)
         self.straight_segment_angle_deg = rospy.get_param("~straight_segment_angle_deg", 10.0)
         self.straight_heading_deadband_deg = rospy.get_param("~straight_heading_deadband_deg", 8.0)
-        self.shutdown_log_dir = rospy.get_param("~shutdown_log_dir", "/home/nuc/lxw/neupan_ws/tracker_logs")
-        self.shutdown_log_max_entries = int(rospy.get_param("~shutdown_log_max_entries", 2000))
+        self.status_topic = rospy.get_param("~status_topic", "/global_path_tracker/status")
 
         self.path_points = []
         self.robot_pose = None
@@ -76,15 +73,14 @@ class GlobalPathTracker(object):
         self.clicked_goal_entered_approach_zone = False
         self.closest_terminal_dist_seen = None
         self.path_cumulative = []
-        self.debug_history = deque(maxlen=max(100, self.shutdown_log_max_entries))
         self.pose_source = None
         self.tf_listener = tf.TransformListener() if self.use_tf_pose else None
 
         self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=10)
+        self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=20)
         rospy.Subscriber(self.path_topic, Path, self.path_callback, queue_size=1)
         rospy.Subscriber(self.odom_topic, Odometry, self.odom_callback, queue_size=10)
         rospy.Subscriber(self.goal_topic, PoseStamped, self.goal_callback, queue_size=1)
-        rospy.on_shutdown(self.dump_shutdown_log)
 
         rospy.loginfo(
             "global_path_tracker: path=%s odom=%s cmd=%s use_tf_pose=%s",
@@ -166,46 +162,7 @@ class GlobalPathTracker(object):
             "path_points": len(self.path_points),
         }
         sample.update(kwargs)
-        self.debug_history.append(sample)
-
-    def dump_shutdown_log(self):
-        try:
-            os.makedirs(self.shutdown_log_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_path = os.path.join(self.shutdown_log_dir, "global_path_tracker_{}.json".format(timestamp))
-            payload = {
-                "created_at": timestamp,
-                "params": {
-                    "path_topic": self.path_topic,
-                    "odom_topic": self.odom_topic,
-                    "cmd_topic": self.cmd_topic,
-                    "goal_topic": self.goal_topic,
-                    "lookahead_dist": self.lookahead_dist,
-                    "goal_tolerance": self.goal_tolerance,
-                    "projected_goal_stop_tolerance": self.projected_goal_stop_tolerance,
-                    "wheelbase": self.wheelbase,
-                    "cruise_speed": self.cruise_speed,
-                    "min_speed": self.min_speed,
-                    "max_steering": self.max_steering,
-                    "yaw_offset_deg": self.yaw_offset_deg,
-                    "use_tf_pose": self.use_tf_pose,
-                    "tf_map_frame": self.tf_map_frame,
-                    "tf_base_frame": self.tf_base_frame,
-                },
-                "final_state": {
-                    "robot_pose": list(self.robot_pose) if self.robot_pose is not None else None,
-                    "pose_source": self.pose_source,
-                    "current_goal": list(self.current_goal) if self.current_goal is not None else None,
-                    "path_points": len(self.path_points),
-                    "goal_active": self.goal_active,
-                },
-                "history": list(self.debug_history),
-            }
-            with open(log_path, "w") as f:
-                json.dump(payload, f, indent=2, sort_keys=True)
-            rospy.loginfo("global_path_tracker wrote shutdown log: %s", log_path)
-        except Exception as exc:
-            rospy.logerr("global_path_tracker failed to write shutdown log: %s", exc)
+        self.status_pub.publish(String(data=json.dumps(sample, separators=(",", ":"))))
 
     @staticmethod
     def compute_cumulative_lengths(points):

@@ -3,7 +3,7 @@
     <arg name="enable_livox_driver" default="true" />
     <arg name="enable_rviz" default="true" />
     <arg name="rviz_config" default="$(find teb_test)/rviz/teb_outdoor.rviz" />
-    <arg name="imu_topic" default="/imu/data" />
+    <arg name="imu_topic" default="/livox/imu" />
 
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
@@ -45,8 +45,7 @@
     <arg name="publish_snap_debug_markers" default="true" />
     <arg name="gps_marker_timeout" default="2.0" />
     <arg name="enable_gps_goal_bridge" default="true" />
-    <arg name="enable_yaw_monitor" default="true" />
-    <arg name="enable_costmap_monitor" default="true" />
+    <arg name="enable_system_log" default="true" />
 
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
         <arg name="outdoor_mode" value="true" />
@@ -101,6 +100,7 @@
     <group if="$(arg run_fast_lio_slam)">
         <include file="$(find fast_lio)/launch/mapping_mid360.launch">
             <arg name="rviz" value="false" />
+            <arg name="pcd_save_en" value="false" />
         </include>
     </group>
 
@@ -170,40 +170,15 @@
         <param name="output_topic" value="/move_base_simple/goal" />
     </node>
 
-    <group if="$(arg enable_yaw_monitor)">
-        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_local" output="screen">
-            <param name="topic" value="/odometry/local" />
-            <param name="label" value="odom_local" />
-        </node>
-        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_gps" output="screen">
-            <param name="topic" value="/odometry/gps" />
-            <param name="label" value="odom_gps" />
-        </node>
-        <node pkg="robot_base_driver" type="odom_yaw_monitor.py" name="odom_yaw_monitor_global" output="screen">
-            <param name="topic" value="/odometry/global" />
-            <param name="label" value="odom_global" />
-        </node>
-        <node pkg="robot_base_driver" type="quaternion_yaw_monitor.py" name="gps_heading_monitor" output="screen">
-            <param name="topic" value="/heading" />
-            <param name="label" value="g90_heading" />
-        </node>
-        <node pkg="robot_base_driver" type="yaw_compare_monitor.py" name="yaw_compare_monitor" output="screen">
-            <param name="odom_topic" value="/odometry/global" />
-            <param name="heading_topic" value="/heading" />
-            <param name="label" value="odom_vs_g90_teb" />
-            <param name="log_to_file" value="true" />
-            <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
-        </node>
-    </group>
-
-    <group if="$(arg enable_costmap_monitor)">
-        <node pkg="robot_base_driver" type="costmap_monitor.py" name="costmap_monitor" output="screen">
-            <param name="scan_topic" value="/scan" />
-            <param name="local_costmap_topic" value="/move_base/local_costmap/costmap" />
-            <param name="global_costmap_topic" value="/move_base/global_costmap/costmap" />
-            <param name="label" value="teb_costmap" />
-        </node>
-    </group>
+    <node if="$(arg enable_system_log)" pkg="robot_base_driver" type="system_run_logger.py" name="system_run_logger" output="screen">
+        <param name="command_topic" value="/neupan_cmd_vel" />
+        <param name="label" value="system_run_teb" />
+        <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
+        <param name="sample_rate" value="10.0" />
+        <param name="flush_interval" value="1.0" />
+        <param name="max_file_size_mb" value="256.0" />
+        <param name="print_to_screen" value="false" />
+    </node>
 
     <node pkg="move_base" type="move_base" name="move_base" output="screen">
         <remap from="cmd_vel" to="/neupan_cmd_vel" />

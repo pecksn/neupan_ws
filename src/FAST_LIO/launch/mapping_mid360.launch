@@ -2,8 +2,11 @@
 <!-- Launch file for Livox MID360 LiDAR -->
 
 	<arg name="rviz" default="true" />
+	<!-- 单独建图默认保存PCD；导航launch应显式传false。 -->
+	<arg name="pcd_save_en" default="true" />
 
 	<rosparam command="load" file="$(find fast_lio)/config/mid360.yaml" />
+	<param name="pcd_save/pcd_save_en" type="bool" value="$(arg pcd_save_en)" />
 
 	<param name="feature_extract_enable" type="bool" value="0"/>
 	<param name="point_filter_num" type="int" value="3"/>

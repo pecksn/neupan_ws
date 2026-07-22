@@ -44,6 +44,7 @@
     <!-- 1.1 启动 FAST-LIO 激光里程计提供高精度 odometry 数据给 EKF -->
     <include file="$(find fast_lio)/launch/mapping_mid360.launch">
         <arg name="rviz" value="false" />
+        <arg name="pcd_save_en" value="false" />
     </include>
 
     <!-- 2. 启动 Livox 雷达 -->

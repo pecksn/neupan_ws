@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -33,6 +34,10 @@ struct EdgeInfo {
     std::string start_id;
     std::string end_id;
     double length{0.0};
+    double road_width{0.0};
+    int lanes{0};
+    bool forward_allowed{true};
+    bool backward_allowed{true};
 };
 
 struct SnapInfo {
@@ -42,6 +47,8 @@ struct SnapInfo {
     std::string end_id;
     double t{0.0};
     double edge_len{0.0};
+    bool forward_allowed{true};
+    bool backward_allowed{true};
     bool valid{false};
 };
 
@@ -69,6 +76,12 @@ public:
         private_nh_.param("publish_pose_markers", publish_pose_markers_, true);
         private_nh_.param("publish_snap_debug_markers", publish_snap_debug_markers_, true);
         private_nh_.param("gps_marker_timeout", gps_marker_timeout_, 2.0);
+        private_nh_.param("enable_right_lane_offset", enable_right_lane_offset_, false);
+        private_nh_.param("respect_oneway", respect_oneway_, true);
+        private_nh_.param("default_lane_width", default_lane_width_, 3.0);
+        private_nh_.param("default_road_width", default_road_width_, 6.0);
+        private_nh_.param("right_lane_offset_ratio", right_lane_offset_ratio_, 0.25);
+        private_nh_.param("max_right_lane_offset", max_right_lane_offset_, 2.0);
 
         gps_marker_timeout_ = std::max(0.2, gps_marker_timeout_);
         path_straight_spacing_ = std::max(0.3, path_straight_spacing_);
@@ -76,6 +89,10 @@ public:
         path_turn_angle_low_rad_ = degToRad(path_turn_angle_deg_low_);
         path_turn_angle_high_rad_ = degToRad(std::max(path_turn_angle_deg_low_, path_turn_angle_deg_high_));
         path_min_points_ = std::max(2, path_min_points_);
+        default_lane_width_ = std::max(1.5, default_lane_width_);
+        default_road_width_ = std::max(default_lane_width_, default_road_width_);
+        right_lane_offset_ratio_ = std::max(0.0, std::min(0.5, right_lane_offset_ratio_));
+        max_right_lane_offset_ = std::max(0.0, max_right_lane_offset_);
 
         wheelable_ways_ = {
             "primary", "secondary", "tertiary", "unclassified",
@@ -96,12 +113,16 @@ public:
 
         loadGraph();
         ROS_INFO(
-            "OSM C++ planner config: strict_road_mode=%s, start_snap_max_dist=%.2fm, goal_snap_max_dist=%.2fm, path_spacing=%.2f/%.2fm",
+            "OSM C++ planner config: strict_road_mode=%s, start_snap_max_dist=%.2fm, goal_snap_max_dist=%.2fm, path_spacing=%.2f/%.2fm, right_lane_offset=%s (ratio=%.2f max=%.2fm), respect_oneway=%s",
             strict_road_mode_ ? "true" : "false",
             start_snap_max_dist_,
             goal_snap_max_dist_,
             path_straight_spacing_,
-            path_turn_spacing_);
+            path_turn_spacing_,
+            enable_right_lane_offset_ ? "true" : "false",
+            right_lane_offset_ratio_,
+            max_right_lane_offset_,
+            respect_oneway_ ? "true" : "false");
 
         timer_ = nh_.createTimer(ros::Duration(0.1), &OSMGraphAStarPlanner::timerCallback, this);
     }
@@ -148,6 +169,12 @@ private:
     bool publish_pose_markers_{true};
     bool publish_snap_debug_markers_{true};
     double gps_marker_timeout_{2.0};
+    bool enable_right_lane_offset_{false};
+    bool respect_oneway_{true};
+    double default_lane_width_{3.0};
+    double default_road_width_{6.0};
+    double right_lane_offset_ratio_{0.25};
+    double max_right_lane_offset_{2.0};
 
     std::set<std::string> wheelable_ways_;
     std::unordered_map<std::string, XYPoint> nodes_;
@@ -203,6 +230,36 @@ private:
         return point;
     }
 
+    static double parsePositiveNumber(const std::string& value, double fallback = 0.0) {
+        if (value.empty()) {
+            return fallback;
+        }
+        char* end = nullptr;
+        const double parsed = std::strtod(value.c_str(), &end);
+        return (end != value.c_str() && std::isfinite(parsed) && parsed > 0.0) ? parsed : fallback;
+    }
+
+    static int parsePositiveInt(const std::string& value, int fallback = 0) {
+        const double parsed = parsePositiveNumber(value, static_cast<double>(fallback));
+        return parsed > 0.0 ? std::max(1, static_cast<int>(std::lround(parsed))) : fallback;
+    }
+
+    double fallbackRoadWidth(const std::string& highway) const {
+        if (highway == "trunk" || highway == "primary") {
+            return 10.5;
+        }
+        if (highway == "secondary") {
+            return 9.0;
+        }
+        if (highway == "tertiary") {
+            return 7.5;
+        }
+        if (highway == "living_street") {
+            return 5.0;
+        }
+        return default_road_width_;
+    }
+
     void loadGraph() {
         ROS_INFO("Filtering OSM for drivable roads: %s", osm_file_.c_str());
 
@@ -247,20 +304,40 @@ private:
                 continue;
             }
 
-            std::string hw_type;
+            std::unordered_map<std::string, std::string> tags;
             for (const auto& way_child : child.second) {
                 if (way_child.first != "tag") {
                     continue;
                 }
                 const auto& attrs = way_child.second.get_child("<xmlattr>");
-                if (attrs.get<std::string>("k", "") == "highway") {
-                    hw_type = attrs.get<std::string>("v", "");
-                    break;
-                }
+                tags[attrs.get<std::string>("k", "")] = attrs.get<std::string>("v", "");
             }
+
+            const std::string hw_type = tags["highway"];
 
             if (wheelable_ways_.count(hw_type) == 0) {
                 continue;
+            }
+
+            const int lanes = parsePositiveInt(tags["lanes"]);
+            double road_width = parsePositiveNumber(tags["width"]);
+            if (road_width <= 0.0 && lanes > 0) {
+                road_width = lanes * default_lane_width_;
+            }
+            if (road_width <= 0.0) {
+                road_width = fallbackRoadWidth(hw_type);
+            }
+
+            bool forward_allowed = true;
+            bool backward_allowed = true;
+            if (respect_oneway_) {
+                const std::string oneway = tags["oneway"];
+                const bool roundabout = tags["junction"] == "roundabout";
+                if (oneway == "-1") {
+                    forward_allowed = false;
+                } else if (oneway == "yes" || oneway == "true" || oneway == "1" || roundabout) {
+                    backward_allowed = false;
+                }
             }
 
             std::vector<std::string> refs;
@@ -294,9 +371,13 @@ private:
                 }
 
                 const double dist = hypot2d(temp_nodes[n1].x, temp_nodes[n1].y, temp_nodes[n2].x, temp_nodes[n2].y);
-                adjacency_[n1].push_back({n2, dist});
-                adjacency_[n2].push_back({n1, dist});
-                edges_.push_back({n1, n2, dist});
+                if (forward_allowed) {
+                    adjacency_[n1].push_back({n2, dist});
+                }
+                if (backward_allowed) {
+                    adjacency_[n2].push_back({n1, dist});
+                }
+                edges_.push_back({n1, n2, dist, road_width, lanes, forward_allowed, backward_allowed});
                 marker.points.push_back(toRosPoint(temp_nodes[n1]));
                 marker.points.push_back(toRosPoint(temp_nodes[n2]));
             }
@@ -373,6 +454,8 @@ private:
                 best.end_id = edge.end_id;
                 best.t = t;
                 best.edge_len = edge.length;
+                best.forward_allowed = edge.forward_allowed;
+                best.backward_allowed = edge.backward_allowed;
                 best.valid = true;
             }
         }
@@ -388,6 +471,8 @@ private:
             best.end_id = nearest.first;
             best.t = 0.0;
             best.edge_len = 0.0;
+            best.forward_allowed = true;
+            best.backward_allowed = true;
             best.valid = true;
         }
         return best;
@@ -469,20 +554,30 @@ private:
         std::vector<XYPoint> best_path;
         double best_cost = std::numeric_limits<double>::infinity();
 
-        if ((start_snap.start_id == goal_snap.start_id && start_snap.end_id == goal_snap.end_id) ||
-            (start_snap.start_id == goal_snap.end_id && start_snap.end_id == goal_snap.start_id)) {
-            best_path = {start, goal};
-            best_cost = hypot2d(start.x, start.y, goal.x, goal.y);
+        if (start_snap.start_id == goal_snap.start_id && start_snap.end_id == goal_snap.end_id) {
+            const bool direction_allowed =
+                (goal_snap.t >= start_snap.t && start_snap.forward_allowed) ||
+                (goal_snap.t < start_snap.t && start_snap.backward_allowed);
+            if (direction_allowed) {
+                best_path = {start, goal};
+                best_cost = hypot2d(start.x, start.y, goal.x, goal.y);
+            }
         }
 
-        const std::vector<std::pair<std::string, double>> start_candidates = {
-            {start_snap.start_id, start_snap.t * start_snap.edge_len},
-            {start_snap.end_id, (1.0 - start_snap.t) * start_snap.edge_len}
-        };
-        const std::vector<std::pair<std::string, double>> goal_candidates = {
-            {goal_snap.start_id, goal_snap.t * goal_snap.edge_len},
-            {goal_snap.end_id, (1.0 - goal_snap.t) * goal_snap.edge_len}
-        };
+        std::vector<std::pair<std::string, double>> start_candidates;
+        std::vector<std::pair<std::string, double>> goal_candidates;
+        if (start_snap.backward_allowed) {
+            start_candidates.push_back({start_snap.start_id, start_snap.t * start_snap.edge_len});
+        }
+        if (start_snap.forward_allowed) {
+            start_candidates.push_back({start_snap.end_id, (1.0 - start_snap.t) * start_snap.edge_len});
+        }
+        if (goal_snap.forward_allowed) {
+            goal_candidates.push_back({goal_snap.start_id, goal_snap.t * goal_snap.edge_len});
+        }
+        if (goal_snap.backward_allowed) {
+            goal_candidates.push_back({goal_snap.end_id, (1.0 - goal_snap.t) * goal_snap.edge_len});
+        }
 
         for (const auto& start_candidate : start_candidates) {
             for (const auto& goal_candidate : goal_candidates) {
@@ -508,6 +603,56 @@ private:
         }
 
         return dedupePathPoints(best_path);
+    }
+
+    double rightLaneOffsetAt(const XYPoint& point) const {
+        double nearest_dist = std::numeric_limits<double>::infinity();
+        double road_width = default_road_width_;
+        int lanes = 0;
+        bool one_way = false;
+        for (const auto& edge : edges_) {
+            const XYPoint& a = nodes_.at(edge.start_id);
+            const XYPoint& b = nodes_.at(edge.end_id);
+            double t = 0.0;
+            const XYPoint projected = projectPointToSegment(point.x, point.y, a, b, t);
+            const double dist = hypot2d(point.x, point.y, projected.x, projected.y);
+            if (dist < nearest_dist) {
+                nearest_dist = dist;
+                road_width = edge.road_width;
+                lanes = edge.lanes;
+                one_way = edge.forward_allowed != edge.backward_allowed;
+            }
+        }
+        if (one_way && lanes <= 1) {
+            return 0.0;
+        }
+        return std::min(max_right_lane_offset_, std::max(0.0, road_width * right_lane_offset_ratio_));
+    }
+
+    std::vector<XYPoint> applyRightLaneOffset(const std::vector<XYPoint>& center_path) const {
+        if (!enable_right_lane_offset_ || center_path.size() < 2 || max_right_lane_offset_ <= 0.0) {
+            return center_path;
+        }
+
+        std::vector<XYPoint> shifted;
+        shifted.reserve(center_path.size());
+        for (size_t i = 0; i < center_path.size(); ++i) {
+            const XYPoint& prev = center_path[i == 0 ? 0 : i - 1];
+            const XYPoint& next = center_path[i + 1 < center_path.size() ? i + 1 : i];
+            const double dx = next.x - prev.x;
+            const double dy = next.y - prev.y;
+            const double length = std::hypot(dx, dy);
+            if (length <= 1e-6) {
+                shifted.push_back(center_path[i]);
+                continue;
+            }
+            const double offset = rightLaneOffsetAt(center_path[i]);
+            shifted.push_back({
+                center_path[i].x + offset * dy / length,
+                center_path[i].y - offset * dx / length
+            });
+        }
+        return dedupePathPoints(shifted);
     }
 
     void publishInitialpose() {
@@ -1047,12 +1192,13 @@ private:
             }
         }
 
-        std::vector<XYPoint> raw_path = buildGraphPath(start_snap, goal_snap);
-        if (raw_path.empty()) {
+        std::vector<XYPoint> graph_path = buildGraphPath(start_snap, goal_snap);
+        if (graph_path.empty()) {
             ROS_WARN("OSM graph A* failed to find a drivable path");
             return;
         }
 
+        std::vector<XYPoint> raw_path = applyRightLaneOffset(resamplePathForTracking(graph_path));
         if (!strict_road_mode_) {
             raw_path.push_back({gx, gy});
             raw_path = dedupePathPoints(raw_path);
@@ -1067,11 +1213,12 @@ private:
         path_pub_.publish(buildPathMessage(current_path_));
         publishPoseMarkers(true, current_path_.front());
         ROS_INFO(
-            "Road path planned: raw=%zu points, resampled=%zu points, start snap %.2fm, goal snap %.2fm",
-            raw_path.size(),
+            "Road path planned: graph=%zu points, tracking=%zu points, start snap %.2fm, goal snap %.2fm, right lane offset=%s",
+            graph_path.size(),
             current_path_.size(),
             start_dist,
-            goal_dist);
+            goal_dist,
+            enable_right_lane_offset_ ? "enabled" : "disabled");
     }
 
     void goalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {

@@ -19,6 +19,7 @@ class MapOdomAlignBridge:
         self.yaw_bias_deg = float(rospy.get_param("~yaw_bias_deg", 0.0))
         self.yaw_bias_rad = math.radians(self.yaw_bias_deg)
         self.align_yaw_with_global = bool(rospy.get_param("~align_yaw_with_global", False))
+        self.print_yaw_status = bool(rospy.get_param("~print_yaw_status", False))
 
         self.last_global = None
         self.last_local = None
@@ -99,16 +100,17 @@ class MapOdomAlignBridge:
         else:
             dyaw = self._normalize_angle(self.yaw_bias_rad)
             yaw_mode = "local"
-        rospy.loginfo_throttle(
-            1.0,
-            "map_odom_align_bridge yaw raw=%.1f deg, bias=%.1f deg, used=%.1f deg mode=%s global=%.1f local=%.1f",
-            math.degrees(raw_dyaw),
-            self.yaw_bias_deg,
-            math.degrees(dyaw),
-            yaw_mode,
-            math.degrees(gyaw),
-            math.degrees(lyaw),
-        )
+        if self.print_yaw_status:
+            rospy.loginfo_throttle(
+                1.0,
+                "map_odom_align_bridge yaw raw=%.1f deg, bias=%.1f deg, used=%.1f deg mode=%s global=%.1f local=%.1f",
+                math.degrees(raw_dyaw),
+                self.yaw_bias_deg,
+                math.degrees(dyaw),
+                yaw_mode,
+                math.degrees(gyaw),
+                math.degrees(lyaw),
+            )
         c = math.cos(dyaw)
         s = math.sin(dyaw)
         tx = gx - (c * lx - s * ly)

@@ -36,7 +36,11 @@ class GlobalOdomBridge:
         self.output_frame = rospy.get_param("~output_frame", "map")
         self.child_frame = rospy.get_param("~child_frame", "base_link")
         self.use_heading_orientation = bool(rospy.get_param("~use_heading_orientation", True))
+        self.heading_filter_window_sec = max(
+            0.0, float(rospy.get_param("~heading_filter_window_sec", 10.0))
+        )
         self.guard_enabled = bool(rospy.get_param("~guard_enabled", True))
+        self.print_status_to_screen = bool(rospy.get_param("~print_status_to_screen", False))
 
         self.publish_rate = max(1.0, float(rospy.get_param("~publish_rate", 30.0)))
         self.data_timeout_sec = max(0.1, float(rospy.get_param("~data_timeout_sec", 1.0)))
@@ -55,7 +59,10 @@ class GlobalOdomBridge:
             0.0, float(rospy.get_param("~heading_jump_hold_sec", 1.0))
         )
         self.max_tracking_position_error = max(
-            0.1, float(rospy.get_param("~max_tracking_position_error", 3.0))
+            0.1, float(rospy.get_param("~max_tracking_position_error", 0.5))
+        )
+        self.max_tracking_candidate_step = max(
+            0.0, float(rospy.get_param("~max_tracking_candidate_step", 0.35))
         )
         self.max_tracking_yaw_error_rad = math.radians(
             max(1.0, float(rospy.get_param("~max_tracking_yaw_error_deg", 20.0)))
@@ -127,11 +134,14 @@ class GlobalOdomBridge:
         self.stable_since = None
         self.last_recovery_candidate = None
         self.recovery_candidates = deque()
+        self.heading_transform_history = deque()
         self.last_processed_gps_recv = None
         self.last_correction_time = rospy.Time.now()
         self.last_status_publish = rospy.Time(0)
         self.last_position_error = None
         self.last_yaw_error_deg = None
+        self.last_tracking_candidate = None
+        self.last_candidate_step_m = None
 
         self.pub = rospy.Publisher(self.output_topic, Odometry, queue_size=10)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=2, latch=True)
@@ -224,6 +234,7 @@ class GlobalOdomBridge:
         self.local_fault_reason = reason
         self.stable_since = None
         self.recovery_candidates.clear()
+        self.heading_transform_history.clear()
 
         # FAST-LIO can reset its local origin after degeneracy. Preserve the
         # last published global pose while re-anchoring to the new local pose.
@@ -325,15 +336,41 @@ class GlobalOdomBridge:
                 return False, "heading_jump"
         return True, "ok" if self.guard_enabled else "guard_disabled"
 
-    def candidate_transform(self):
+    def filtered_heading_transform_yaw(self, now, raw_yaw):
+        self.heading_transform_history.append((now.to_sec(), raw_yaw))
+        cutoff = now.to_sec() - self.heading_filter_window_sec
+        while (
+            self.heading_transform_history
+            and self.heading_transform_history[0][0] < cutoff
+        ):
+            self.heading_transform_history.popleft()
+
+        if self.heading_filter_window_sec <= 0.0:
+            return raw_yaw
+
+        sin_sum = sum(math.sin(entry[1]) for entry in self.heading_transform_history)
+        cos_sum = sum(math.cos(entry[1]) for entry in self.heading_transform_history)
+        if abs(sin_sum) < 1e-9 and abs(cos_sum) < 1e-9:
+            return raw_yaw
+        return math.atan2(sin_sum, cos_sum)
+
+    def discard_latest_heading_candidate(self, now):
+        if not self.use_heading_orientation or not self.heading_transform_history:
+            return
+        if abs(self.heading_transform_history[-1][0] - now.to_sec()) <= 1e-6:
+            self.heading_transform_history.pop()
+
+    def candidate_transform(self, now):
         gps_pos = self.last_gps_odom.pose.pose.position
         local_pose = self.last_local_odom.pose.pose
         local_yaw = self.yaw_from_quaternion(local_pose.orientation)
         if self.use_heading_orientation:
             global_yaw = self.last_heading_yaw
+            raw_dyaw = self.normalize_angle(global_yaw - local_yaw)
+            dyaw = self.filtered_heading_transform_yaw(now, raw_dyaw)
         else:
             global_yaw = self.yaw_from_quaternion(self.last_gps_odom.pose.pose.orientation)
-        dyaw = self.normalize_angle(global_yaw - local_yaw)
+            dyaw = self.normalize_angle(global_yaw - local_yaw)
         c = math.cos(dyaw)
         s = math.sin(dyaw)
         tx = gps_pos.x - (c * local_pose.position.x - s * local_pose.position.y)
@@ -406,11 +443,13 @@ class GlobalOdomBridge:
         self.transform_yaw = self.normalize_angle(self.transform_yaw + yaw_step)
 
     def set_mode(self, mode, reason):
-        if mode != self.mode or reason != self.reason:
+        if mode != self.mode:
             if mode == self.DEAD_RECKONING:
                 rospy.logwarn("GPS guard: %s -> %s (%s)", self.mode, mode, reason)
             else:
                 rospy.loginfo("GPS guard: %s -> %s (%s)", self.mode, mode, reason)
+        elif reason != self.reason and self.print_status_to_screen:
+            rospy.loginfo("GPS guard: mode=%s reason=%s", mode, reason)
         self.mode = mode
         self.reason = reason
 
@@ -434,13 +473,15 @@ class GlobalOdomBridge:
         correction_dt = max(0.0, min(0.5, (now - self.last_correction_time).to_sec()))
         self.last_correction_time = now
 
-        candidate = self.candidate_transform()
+        candidate = self.candidate_transform(now)
         self.append_recovery_candidate(now, candidate)
         if not self.transform_initialized:
             self.last_recovery_candidate = candidate
             if self.recovery_window_stable(self.initial_stable_sec):
                 self.transform_x, self.transform_y, self.transform_yaw = candidate
                 self.transform_initialized = True
+                self.last_tracking_candidate = candidate
+                self.last_candidate_step_m = 0.0
                 self.stable_since = None
                 self.recovery_candidates.clear()
                 self.set_mode(self.TRACKING, "gps_initialized")
@@ -453,6 +494,25 @@ class GlobalOdomBridge:
         self.last_yaw_error_deg = math.degrees(yaw_error)
 
         if self.mode == self.TRACKING:
+            if self.last_tracking_candidate is not None:
+                self.last_candidate_step_m = math.hypot(
+                    candidate[0] - self.last_tracking_candidate[0],
+                    candidate[1] - self.last_tracking_candidate[1],
+                )
+                if (
+                    self.max_tracking_candidate_step > 0.0
+                    and self.last_candidate_step_m > self.max_tracking_candidate_step
+                ):
+                    # Reject the whole GPS/G90 sample before it can move map->odom.
+                    # The transform remains frozen until the normal recovery window passes.
+                    self.discard_latest_heading_candidate(now)
+                    self.stable_since = now
+                    self.last_recovery_candidate = candidate
+                    self.recovery_candidates.clear()
+                    self.set_mode(self.DEAD_RECKONING, "gps_candidate_step")
+                    return
+            else:
+                self.last_candidate_step_m = 0.0
             if position_error > self.max_tracking_position_error:
                 self.stable_since = now
                 self.last_recovery_candidate = candidate
@@ -468,6 +528,7 @@ class GlobalOdomBridge:
             self.move_transform_toward(
                 candidate, correction_dt, self.tracking_position_rate, self.tracking_yaw_rate
             )
+            self.last_tracking_candidate = candidate
             self.set_mode(self.TRACKING, "gps_good")
             return
 
@@ -489,6 +550,8 @@ class GlobalOdomBridge:
             self.last_position_error = position_error
             self.last_yaw_error_deg = math.degrees(yaw_error)
             if position_error <= 0.10 and abs(yaw_error) <= math.radians(1.0):
+                self.last_tracking_candidate = candidate
+                self.last_candidate_step_m = 0.0
                 self.stable_since = None
                 self.recovery_candidates.clear()
                 self.set_mode(self.TRACKING, "gps_recovered")
@@ -561,24 +624,35 @@ class GlobalOdomBridge:
             "local_yaw_rate_deg_s": self.local_yaw_rate_deg_s,
             "position_error_m": self.last_position_error,
             "yaw_error_deg": self.last_yaw_error_deg,
+            "candidate_step_m": self.last_candidate_step_m,
+            "max_tracking_candidate_step_m": self.max_tracking_candidate_step,
+            "transform_x": self.transform_x if self.transform_initialized else None,
+            "transform_y": self.transform_y if self.transform_initialized else None,
+            "transform_yaw_deg": math.degrees(self.transform_yaw)
+            if self.transform_initialized
+            else None,
+            "heading_filter_window_sec": self.heading_filter_window_sec,
+            "heading_filter_samples": len(self.heading_transform_history),
+            "yaw_frozen": bool(self.transform_initialized and self.mode == self.DEAD_RECKONING),
         }
         self.status_pub.publish(String(data=json.dumps(payload, separators=(",", ":"))))
-        rospy.loginfo_throttle(
-            1.0,
-            "GPS guard mode=%s reason=%s GGA=%s sats=%s HDOP=%s fix=%s cov=[%s,%s] "
-            "local_safe=%s correction_error=[%s m,%s deg]",
-            self.mode,
-            self.reason,
-            "none" if gga_quality is None else str(gga_quality),
-            "none" if satellites is None else str(satellites),
-            "none" if hdop is None else "%.2f" % hdop,
-            "none" if fix_status is None else str(fix_status),
-            "none" if cov_x is None else "%.3f" % cov_x,
-            "none" if cov_y is None else "%.3f" % cov_y,
-            localization_safe,
-            "none" if self.last_position_error is None else "%.2f" % self.last_position_error,
-            "none" if self.last_yaw_error_deg is None else "%.1f" % self.last_yaw_error_deg,
-        )
+        if self.print_status_to_screen:
+            rospy.loginfo_throttle(
+                1.0,
+                "GPS guard mode=%s reason=%s GGA=%s sats=%s HDOP=%s fix=%s cov=[%s,%s] "
+                "local_safe=%s correction_error=[%s m,%s deg]",
+                self.mode,
+                self.reason,
+                "none" if gga_quality is None else str(gga_quality),
+                "none" if satellites is None else str(satellites),
+                "none" if hdop is None else "%.2f" % hdop,
+                "none" if fix_status is None else str(fix_status),
+                "none" if cov_x is None else "%.3f" % cov_x,
+                "none" if cov_y is None else "%.3f" % cov_y,
+                localization_safe,
+                "none" if self.last_position_error is None else "%.2f" % self.last_position_error,
+                "none" if self.last_yaw_error_deg is None else "%.1f" % self.last_yaw_error_deg,
+            )
 
     def timer_cb(self, _event):
         now = rospy.Time.now()

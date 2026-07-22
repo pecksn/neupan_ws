@@ -13,6 +13,7 @@
     <arg name="publish_tf" default="true"/>
     <arg name="enable_localization_safety_stop" default="false"/>
     <arg name="localization_safety_topic" default="/localization_safe"/>
+    <arg name="print_sent_command" default="false"/>
 
     <!-- 启动底盘驱动节点 -->
     <node pkg="robot_base_driver" type="base_driver_node.py" name="robot_base_driver" output="screen">
@@ -25,6 +26,7 @@
         <param name="publish_tf" value="$(arg publish_tf)"/>
         <param name="enable_localization_safety_stop" value="$(arg enable_localization_safety_stop)"/>
         <param name="localization_safety_topic" value="$(arg localization_safety_topic)"/>
+        <param name="print_sent_command" value="$(arg print_sent_command)"/>
     </node>
 
     <!-- 静态 TF 发布: base_link 到 laser_link -->

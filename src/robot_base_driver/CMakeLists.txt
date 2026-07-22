@@ -19,13 +19,10 @@ include_directories(
 
 catkin_install_python(PROGRAMS
   src/base_driver_node.py
-  src/costmap_monitor.py
   src/global_odom_bridge.py
   src/global_path_tracker.py
-  src/g90_health_monitor.py
+  src/lio_odom_guard.py
   src/map_odom_align_bridge.py
-  src/odom_yaw_monitor.py
-  src/quaternion_yaw_monitor.py
-  src/yaw_compare_monitor.py
+  src/system_run_logger.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
