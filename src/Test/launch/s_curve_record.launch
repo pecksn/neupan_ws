@@ -1,0 +1,16 @@
+<launch>
+  <arg name="speed" default="0.35" />
+  <arg name="duration" default="30.0" />
+  <arg name="steer_amplitude_deg" default="10.0" />
+  <arg name="steer_period" default="6.0" />
+  <arg name="bag_prefix" default="/home/nuc/lxw/neupan_ws/tracker_logs/s_curve_motion" />
+
+  <include file="$(find test_motion_tools)/launch/open_loop_motion_record.launch">
+    <arg name="mode" value="s_curve" />
+    <arg name="speed" value="$(arg speed)" />
+    <arg name="duration" value="$(arg duration)" />
+    <arg name="steer_amplitude_deg" value="$(arg steer_amplitude_deg)" />
+    <arg name="steer_period" value="$(arg steer_period)" />
+    <arg name="bag_prefix" value="$(arg bag_prefix)" />
+  </include>
+</launch>

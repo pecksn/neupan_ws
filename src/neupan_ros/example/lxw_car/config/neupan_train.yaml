@@ -4,10 +4,10 @@ device: 'cpu'
 robot:
   kinematics: 'acker'   # 保持 'acker' 不变
   wheelbase: 0.67       # 【修改】前后轮轴距 (单位: 米)
-  max_speed: [1.0, 0.5] # 【修改】最大线速度(m/s), 最大倒车速度(m/s)
-  max_acce: [1.0, 1.0]  # 【修改】最大加速度
+  max_speed: [1.0, 0.35] # 【修改】最大线速度(m/s), 最大倒车速度(m/s)
+  max_acce: [1.0, 0.35]  # 【修改】最大加速度
   length: 0.95          # 【修改】车身总长度 (米) - 用于碰撞检测 0.95 
-  width: 0.67           # 【修改】车身总宽度 (米) - 用于碰撞检测 0.67
+  width: 0.60           # 【修改】车身总宽度 (米) - 用于碰撞检测 0.67
 
 train:
   direct_train: true

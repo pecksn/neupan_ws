@@ -196,7 +196,8 @@ class GlobalPathTracker(object):
             t = clamp((rel_x * ux + rel_y * uy) / seg_len, 0.0, 1.0)
             proj_x = x0 + t * dx
             proj_y = y0 + t * dy
-            lateral = math.hypot(x - proj_x, y - proj_y)
+            signed_lateral = rel_x * (-uy) + rel_y * ux
+            lateral = abs(signed_lateral)
             s = self.path_cumulative[i] + t * seg_len
 
             if lateral < best_lateral:
@@ -206,6 +207,7 @@ class GlobalPathTracker(object):
                     "proj_x": proj_x,
                     "proj_y": proj_y,
                     "lateral": lateral,
+                    "signed_lateral": signed_lateral,
                     "t": t,
                     "s": s,
                     "remaining": self.path_cumulative[-1] - s,

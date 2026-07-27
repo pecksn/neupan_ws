@@ -1,0 +1,13 @@
+<launch>
+  <arg name="speed" default="0.4" />
+  <arg name="duration" default="20.0" />
+  <arg name="bag_prefix" default="/home/nuc/lxw/neupan_ws/tracker_logs/straight_motion" />
+
+  <include file="$(find test_motion_tools)/launch/open_loop_motion_record.launch">
+    <arg name="mode" value="straight" />
+    <arg name="speed" value="$(arg speed)" />
+    <arg name="duration" value="$(arg duration)" />
+    <arg name="steer_amplitude_deg" value="0.0" />
+    <arg name="bag_prefix" value="$(arg bag_prefix)" />
+  </include>
+</launch>

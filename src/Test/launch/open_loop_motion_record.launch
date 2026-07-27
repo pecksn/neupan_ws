@@ -1,0 +1,46 @@
+<launch>
+  <!-- Run only the open-loop command publisher and rosbag recorder.
+       Start base driver, GPS heading, and odometry/localization separately. -->
+
+  <arg name="mode" default="straight" doc="straight or s_curve" />
+  <arg name="speed" default="0.4" doc="forward speed in m/s" />
+  <arg name="duration" default="20.0" doc="motion duration in seconds" />
+  <arg name="rate" default="20.0" doc="command publish rate in Hz" />
+  <arg name="ramp_time" default="2.0" doc="speed ramp time at start/end in seconds" />
+  <arg name="steer_amplitude_deg" default="10.0" doc="S-curve steering amplitude in degrees" />
+  <arg name="steer_period" default="6.0" doc="S-curve steering period in seconds" />
+  <arg name="max_speed" default="1.0" />
+  <arg name="max_steer_deg" default="20.0" />
+  <arg name="cmd_topic" default="/neupan_cmd_vel" />
+  <arg name="record_bag" default="true" />
+  <arg name="bag_prefix" default="/home/nuc/lxw/neupan_ws/tracker_logs/open_loop_$(arg mode)" />
+
+  <node pkg="test_motion_tools" type="open_loop_motion.py" name="open_loop_motion" output="screen">
+    <param name="mode" value="$(arg mode)" />
+    <param name="speed" value="$(arg speed)" />
+    <param name="duration" value="$(arg duration)" />
+    <param name="rate" value="$(arg rate)" />
+    <param name="ramp_time" value="$(arg ramp_time)" />
+    <param name="steer_amplitude_deg" value="$(arg steer_amplitude_deg)" />
+    <param name="steer_period" value="$(arg steer_period)" />
+    <param name="max_speed" value="$(arg max_speed)" />
+    <param name="max_steer_deg" value="$(arg max_steer_deg)" />
+    <param name="cmd_topic" value="$(arg cmd_topic)" />
+  </node>
+
+  <node if="$(arg record_bag)" pkg="rosbag" type="record" name="open_loop_motion_bag" output="screen"
+        args="-o $(arg bag_prefix)
+              /gps/fix
+              /gnss/gpgga
+              /heading
+              /heading_deg
+              /odometry/global
+              /odometry/local
+              /neupan_cmd_vel
+              /open_loop_motion/status
+              /gps_guard/status
+              /lio_guard/status
+              /localization_safe
+              /tf
+              /tf_static" />
+</launch>

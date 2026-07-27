@@ -8,7 +8,7 @@ from datetime import datetime
 
 import rospy
 from geometry_msgs.msg import QuaternionStamped, Twist
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from nmea_msgs.msg import Gpgga
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Bool, String
@@ -26,6 +26,7 @@ class SystemRunLogger:
         self.global_odom_topic = rospy.get_param("~global_odom_topic", "/odometry/global")
         self.local_odom_topic = rospy.get_param("~local_odom_topic", "/odometry/local")
         self.command_topic = rospy.get_param("~command_topic", "/neupan_cmd_vel")
+        self.global_path_topic = rospy.get_param("~global_path_topic", "/osm_global_path")
         self.gps_guard_topic = rospy.get_param("~gps_guard_topic", "/gps_guard/status")
         self.lio_guard_topic = rospy.get_param("~lio_guard_topic", "/lio_guard/status")
         self.tracker_status_topic = rospy.get_param(
@@ -54,6 +55,7 @@ class SystemRunLogger:
             "global_odom": None,
             "local_odom": None,
             "command": None,
+            "global_path": None,
             "gps_guard": None,
             "lio_guard": None,
             "tracker_status": None,
@@ -77,6 +79,7 @@ class SystemRunLogger:
         rospy.Subscriber(self.global_odom_topic, Odometry, self.global_odom_cb, queue_size=30)
         rospy.Subscriber(self.local_odom_topic, Odometry, self.local_odom_cb, queue_size=50)
         rospy.Subscriber(self.command_topic, Twist, self.command_cb, queue_size=100)
+        rospy.Subscriber(self.global_path_topic, Path, self.global_path_cb, queue_size=2)
         rospy.Subscriber(self.gps_guard_topic, String, self.gps_guard_cb, queue_size=20)
         rospy.Subscriber(self.lio_guard_topic, String, self.lio_guard_cb, queue_size=20)
         rospy.Subscriber(
@@ -101,12 +104,19 @@ class SystemRunLogger:
             "global_odom": self.global_odom_topic,
             "local_odom": self.local_odom_topic,
             "command": self.command_topic,
+            "global_path": self.global_path_topic,
             "gps_guard": self.gps_guard_topic,
             "lio_guard": self.lio_guard_topic,
             "tracker_status": self.tracker_status_topic,
             "scan_health": self.scan_health_topic,
             "safety": self.safety_topic,
         }
+
+    @staticmethod
+    def local_time_string(timestamp=None):
+        if timestamp is None:
+            timestamp = time.time()
+        return datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="milliseconds")
 
     def open_log_file(self):
         try:
@@ -121,6 +131,7 @@ class SystemRunLogger:
                     "record_type": "metadata",
                     "label": self.label,
                     "created_at": rospy.Time.now().to_sec(),
+                    "created_at_local": self.local_time_string(),
                     "sample_rate": self.sample_rate,
                     "max_file_size_mb": self.max_file_size_bytes / (1024.0 * 1024.0),
                     "topics": self.topic_map(),
@@ -254,6 +265,27 @@ class SystemRunLogger:
             },
         )
 
+    def global_path_cb(self, msg):
+        if not msg.poses:
+            self.update("global_path", {"frame_id": msg.header.frame_id, "points": 0})
+            return
+        first = msg.poses[0].pose
+        last = msg.poses[-1].pose
+        self.update(
+            "global_path",
+            {
+                "msg_stamp": self.message_stamp(msg.header),
+                "frame_id": msg.header.frame_id,
+                "points": len(msg.poses),
+                "start_x": float(first.position.x),
+                "start_y": float(first.position.y),
+                "start_yaw_deg": self.yaw_deg(first.orientation),
+                "end_x": float(last.position.x),
+                "end_y": float(last.position.y),
+                "end_yaw_deg": self.yaw_deg(last.orientation),
+            },
+        )
+
     @staticmethod
     def parse_status(msg):
         try:
@@ -278,7 +310,7 @@ class SystemRunLogger:
 
     def timer_cb(self, _event):
         now = rospy.Time.now().to_sec()
-        sample = {"stamp": now}
+        sample = {"stamp": now, "local_time": self.local_time_string(now)}
         for key, value in self.latest.items():
             sample[key] = value
             received = self.received_at[key]
