@@ -73,6 +73,9 @@
     <arg name="outdoor_path_turn_dense_after" default="2.0" doc="出弯后保持加密的长度(米)" />
     <arg name="outdoor_path_turn_recover_after" default="6.0" doc="出弯后逐渐恢复为直线间距的长度(米)" />
     <arg name="outdoor_path_min_points" default="3" doc="室外路径最少下发给 NeuPAN 的点数" />
+    <arg name="osm_vector_map_line_width" default="1.2" doc="RViz中OSM蓝色中心线宽度(米)" />
+    <arg name="osm_vector_map_z" default="0.35" doc="RViz中OSM蓝色中心线显示高度" />
+    <arg name="osm_vector_map_alpha" default="1.0" />
     <arg name="osm_enable_right_lane_offset" default="true" doc="根据道路宽度和行驶方向将OSM中心线偏移到右侧半幅中心" />
     <arg name="osm_respect_oneway" default="true" doc="A*是否遵守OSM oneway方向" />
     <arg name="osm_default_lane_width" default="3.0" doc="OSM仅有lanes时使用的单车道估算宽度(米)" />
@@ -250,13 +253,6 @@
     </group>
 
     <group if="$(arg outdoor_mode)">
-        <!-- 启动 OSM 大地图拼接节点 -->
-        <node pkg="osm_map_handler" type="static_osm_map_server.py" name="osm_road_map" output="screen">
-            <param name="map_dir" value="/home/nuc/lxw/ros_maps/19" />
-            <param name="default_lat" value="$(arg map_origin_lat)" /> 
-            <param name="default_lon" value="$(arg map_origin_lon)" />
-        </node>
-        
         <!-- 启动室外 C++ A* 规划器 -->
         <node pkg="osm_map_handler" type="global_astar_node" name="outdoor_global_astar" output="screen">
             <param name="default_lat" value="$(arg map_origin_lat)" />
@@ -279,6 +275,9 @@
             <param name="default_road_width" value="$(arg osm_default_road_width)" />
             <param name="right_lane_offset_ratio" value="$(arg osm_right_lane_offset_ratio)" />
             <param name="max_right_lane_offset" value="$(arg osm_max_right_lane_offset)" />
+            <param name="vector_map_line_width" value="$(arg osm_vector_map_line_width)" />
+            <param name="vector_map_z" value="$(arg osm_vector_map_z)" />
+            <param name="vector_map_alpha" value="$(arg osm_vector_map_alpha)" />
             <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
             <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
             <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />

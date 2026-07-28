@@ -35,7 +35,6 @@
 
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
-    <arg name="osm_map_dir" default="/home/nuc/lxw/ros_maps/19" />
 
     <arg name="use_fixed_datum" default="true" />
     <arg name="datum_yaw" default="0.0" />
@@ -80,6 +79,9 @@
     <arg name="outdoor_path_turn_dense_after" default="2.0" />
     <arg name="outdoor_path_turn_recover_after" default="6.0" />
     <arg name="outdoor_path_min_points" default="3" />
+    <arg name="osm_vector_map_line_width" default="1.2" />
+    <arg name="osm_vector_map_z" default="0.35" />
+    <arg name="osm_vector_map_alpha" default="1.0" />
     <arg name="osm_enable_right_lane_offset" default="false" />
     <arg name="osm_respect_oneway" default="true" />
     <arg name="osm_default_lane_width" default="3.0" />
@@ -197,13 +199,7 @@
         <param name="use_inf" value="true" />
     </node>
 
-    <!-- Outdoor OSM map + global planner -->
-    <node pkg="osm_map_handler" type="static_osm_map_server.py" name="osm_road_map" output="screen">
-        <param name="map_dir" value="$(arg osm_map_dir)" />
-        <param name="default_lat" value="$(arg map_origin_lat)" />
-        <param name="default_lon" value="$(arg map_origin_lon)" />
-    </node>
-
+    <!-- Outdoor OSM vector global planner -->
     <node pkg="osm_map_handler" type="global_astar_node" name="outdoor_global_astar" output="screen">
         <param name="default_lat" value="$(arg map_origin_lat)" />
         <param name="default_lon" value="$(arg map_origin_lon)" />
@@ -225,6 +221,9 @@
         <param name="default_road_width" value="$(arg osm_default_road_width)" />
         <param name="right_lane_offset_ratio" value="$(arg osm_right_lane_offset_ratio)" />
         <param name="max_right_lane_offset" value="$(arg osm_max_right_lane_offset)" />
+        <param name="vector_map_line_width" value="$(arg osm_vector_map_line_width)" />
+        <param name="vector_map_z" value="$(arg osm_vector_map_z)" />
+        <param name="vector_map_alpha" value="$(arg osm_vector_map_alpha)" />
         <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
         <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
         <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />

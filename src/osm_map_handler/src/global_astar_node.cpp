@@ -82,10 +82,15 @@ public:
         private_nh_.param("default_road_width", default_road_width_, 6.0);
         private_nh_.param("right_lane_offset_ratio", right_lane_offset_ratio_, 0.25);
         private_nh_.param("max_right_lane_offset", max_right_lane_offset_, 2.0);
+        private_nh_.param("vector_map_line_width", vector_map_line_width_, 1.2);
+        private_nh_.param("vector_map_z", vector_map_z_, 0.35);
+        private_nh_.param("vector_map_alpha", vector_map_alpha_, 1.0);
 
         gps_marker_timeout_ = std::max(0.2, gps_marker_timeout_);
         path_straight_spacing_ = std::max(0.3, path_straight_spacing_);
         path_turn_spacing_ = std::max(0.2, std::min(path_turn_spacing_, path_straight_spacing_));
+        vector_map_line_width_ = std::max(0.05, vector_map_line_width_);
+        vector_map_alpha_ = std::max(0.0, std::min(1.0, vector_map_alpha_));
         path_turn_angle_low_rad_ = degToRad(path_turn_angle_deg_low_);
         path_turn_angle_high_rad_ = degToRad(std::max(path_turn_angle_deg_low_, path_turn_angle_deg_high_));
         path_min_points_ = std::max(2, path_min_points_);
@@ -175,6 +180,9 @@ private:
     double default_road_width_{6.0};
     double right_lane_offset_ratio_{0.25};
     double max_right_lane_offset_{2.0};
+    double vector_map_line_width_{1.2};
+    double vector_map_z_{0.35};
+    double vector_map_alpha_{1.0};
 
     std::set<std::string> wheelable_ways_;
     std::unordered_map<std::string, XYPoint> nodes_;
@@ -291,11 +299,11 @@ private:
         marker.id = 0;
         marker.type = visualization_msgs::Marker::LINE_LIST;
         marker.action = visualization_msgs::Marker::ADD;
-        marker.scale.x = 0.4;
-        marker.color.r = 0.10;
-        marker.color.g = 0.35;
+        marker.scale.x = vector_map_line_width_;
+        marker.color.r = 0.0;
+        marker.color.g = 0.15;
         marker.color.b = 1.0;
-        marker.color.a = 0.9;
+        marker.color.a = vector_map_alpha_;
         marker.pose.orientation.w = 1.0;
 
         int way_count = 0;
@@ -378,8 +386,8 @@ private:
                     adjacency_[n2].push_back({n1, dist});
                 }
                 edges_.push_back({n1, n2, dist, road_width, lanes, forward_allowed, backward_allowed});
-                marker.points.push_back(toRosPoint(temp_nodes[n1]));
-                marker.points.push_back(toRosPoint(temp_nodes[n2]));
+                marker.points.push_back(toRosPoint(temp_nodes[n1], vector_map_z_));
+                marker.points.push_back(toRosPoint(temp_nodes[n2], vector_map_z_));
             }
             ++way_count;
         }

@@ -1,26 +1,71 @@
 <launch>
-  <!-- Run only the open-loop command publisher and rosbag recorder.
-       Start base driver, GPS heading, and odometry/localization separately. -->
+  <!-- Open-loop command publisher plus rosbag recorder.
+       This launch starts the base driver by default, but does not start global
+       planning, local planning, NeuPAN, or TEB. -->
 
   <arg name="mode" default="straight" doc="straight or s_curve" />
   <arg name="speed" default="0.4" doc="forward speed in m/s" />
   <arg name="duration" default="20.0" doc="motion duration in seconds" />
   <arg name="rate" default="20.0" doc="command publish rate in Hz" />
-  <arg name="ramp_time" default="2.0" doc="speed ramp time at start/end in seconds" />
+  <arg name="start_delay" default="2.0" doc="wait before publishing non-zero motion command" />
+  <arg name="ramp_time" default="0.0" doc="speed ramp time at start/end in seconds; 0 keeps commanded speed constant" />
+  <arg name="wait_for_sources" default="true" doc="wait for valid /gps/fix and /heading before moving" />
+  <arg name="source_wait_timeout" default="30.0" />
+  <arg name="wait_for_cmd_subscriber" default="true" />
+  <arg name="allow_heading_deg_fallback" default="true" />
   <arg name="steer_amplitude_deg" default="10.0" doc="S-curve steering amplitude in degrees" />
   <arg name="steer_period" default="6.0" doc="S-curve steering period in seconds" />
   <arg name="max_speed" default="1.0" />
   <arg name="max_steer_deg" default="20.0" />
   <arg name="cmd_topic" default="/neupan_cmd_vel" />
+  <arg name="start_base_driver" default="true" />
+  <arg name="base_port" default="/dev/ttyUSB0" />
+  <arg name="base_baudrate" default="115200" />
+  <arg name="wheelbase" default="0.67" />
+  <arg name="wheel_radius" default="0.1275" />
+  <arg name="start_gps_driver" default="true" doc="Start G90 GPS driver for standalone open-loop tests" />
+  <arg name="gps_port" default="/dev/wheeltec_gnss" />
+  <arg name="gps_baud" default="115200" />
+  <arg name="gps_frame" default="gps_link" />
+  <arg name="gps_rotation" default="90.0" />
+  <arg name="gps_heading_source_is_north_cw" default="true" />
   <arg name="record_bag" default="true" />
   <arg name="bag_prefix" default="/home/nuc/lxw/neupan_ws/tracker_logs/open_loop_$(arg mode)" />
+  <arg name="record_sync_log" default="true" />
+  <arg name="sync_log_dir" default="/home/nuc/lxw/neupan_ws/tracker_logs" />
+  <arg name="sync_log_rate" default="20.0" />
+  <arg name="require_packet_sources" default="true" doc="Publish bag packet only after GPS, heading, and command are available" />
+  <arg name="skip_zero_speed_packets" default="true" />
+
+  <include if="$(arg start_base_driver)" file="$(find robot_base_driver)/launch/driver.launch">
+    <arg name="port" value="$(arg base_port)" />
+    <arg name="baudrate" value="$(arg base_baudrate)" />
+    <arg name="wheelbase" value="$(arg wheelbase)" />
+    <arg name="wheel_radius" value="$(arg wheel_radius)" />
+    <arg name="publish_tf" value="true" />
+    <arg name="enable_localization_safety_stop" value="false" />
+    <arg name="print_sent_command" value="true" />
+  </include>
+
+  <include if="$(arg start_gps_driver)" file="$(find robot_base_driver)/launch/g90_nmea.launch">
+    <arg name="gps_port" value="$(arg gps_port)" />
+    <arg name="gps_baud" value="$(arg gps_baud)" />
+    <arg name="gps_frame" value="$(arg gps_frame)" />
+    <arg name="gps_rotation" value="$(arg gps_rotation)" />
+    <arg name="heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
+  </include>
 
   <node pkg="test_motion_tools" type="open_loop_motion.py" name="open_loop_motion" output="screen">
     <param name="mode" value="$(arg mode)" />
     <param name="speed" value="$(arg speed)" />
     <param name="duration" value="$(arg duration)" />
     <param name="rate" value="$(arg rate)" />
+    <param name="start_delay" value="$(arg start_delay)" />
     <param name="ramp_time" value="$(arg ramp_time)" />
+    <param name="wait_for_sources" value="$(arg wait_for_sources)" />
+    <param name="source_wait_timeout" value="$(arg source_wait_timeout)" />
+    <param name="wait_for_cmd_subscriber" value="$(arg wait_for_cmd_subscriber)" />
+    <param name="allow_heading_deg_fallback" value="$(arg allow_heading_deg_fallback)" />
     <param name="steer_amplitude_deg" value="$(arg steer_amplitude_deg)" />
     <param name="steer_period" value="$(arg steer_period)" />
     <param name="max_speed" value="$(arg max_speed)" />
@@ -28,19 +73,15 @@
     <param name="cmd_topic" value="$(arg cmd_topic)" />
   </node>
 
+  <node if="$(arg record_sync_log)" pkg="test_motion_tools" type="open_loop_data_logger.py" name="open_loop_data_logger" output="screen">
+    <param name="label" value="open_loop_$(arg mode)_sync" />
+    <param name="log_dir" value="$(arg sync_log_dir)" />
+    <param name="sample_rate" value="$(arg sync_log_rate)" />
+    <param name="require_packet_sources" value="$(arg require_packet_sources)" />
+    <param name="skip_zero_speed_packets" value="$(arg skip_zero_speed_packets)" />
+  </node>
+
   <node if="$(arg record_bag)" pkg="rosbag" type="record" name="open_loop_motion_bag" output="screen"
         args="-o $(arg bag_prefix)
-              /gps/fix
-              /gnss/gpgga
-              /heading
-              /heading_deg
-              /odometry/global
-              /odometry/local
-              /neupan_cmd_vel
-              /open_loop_motion/status
-              /gps_guard/status
-              /lio_guard/status
-              /localization_safe
-              /tf
-              /tf_static" />
+              /open_loop_motion/packet" />
 </launch>
