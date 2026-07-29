@@ -82,9 +82,14 @@ public:
         private_nh_.param("default_road_width", default_road_width_, 6.0);
         private_nh_.param("right_lane_offset_ratio", right_lane_offset_ratio_, 0.25);
         private_nh_.param("max_right_lane_offset", max_right_lane_offset_, 2.0);
-        private_nh_.param("vector_map_line_width", vector_map_line_width_, 1.2);
+        private_nh_.param("vector_map_line_width", vector_map_line_width_, 0.25);
         private_nh_.param("vector_map_z", vector_map_z_, 0.35);
         private_nh_.param("vector_map_alpha", vector_map_alpha_, 1.0);
+        private_nh_.param("path_point_marker_scale", path_point_marker_scale_, 0.85);
+        private_nh_.param("path_line_marker_width", path_line_marker_width_, 0.10);
+        private_nh_.param("path_endpoint_marker_scale", path_endpoint_marker_scale_, 1.35);
+        private_nh_.param("snap_marker_scale", snap_marker_scale_, 1.10);
+        private_nh_.param("snap_link_marker_width", snap_link_marker_width_, 0.08);
 
         gps_marker_timeout_ = std::max(0.2, gps_marker_timeout_);
         path_straight_spacing_ = std::max(0.3, path_straight_spacing_);
@@ -98,6 +103,11 @@ public:
         default_road_width_ = std::max(default_lane_width_, default_road_width_);
         right_lane_offset_ratio_ = std::max(0.0, std::min(0.5, right_lane_offset_ratio_));
         max_right_lane_offset_ = std::max(0.0, max_right_lane_offset_);
+        path_point_marker_scale_ = std::max(0.2, path_point_marker_scale_);
+        path_line_marker_width_ = std::max(0.02, path_line_marker_width_);
+        path_endpoint_marker_scale_ = std::max(0.3, path_endpoint_marker_scale_);
+        snap_marker_scale_ = std::max(0.2, snap_marker_scale_);
+        snap_link_marker_width_ = std::max(0.02, snap_link_marker_width_);
 
         wheelable_ways_ = {
             "primary", "secondary", "tertiary", "unclassified",
@@ -180,9 +190,14 @@ private:
     double default_road_width_{6.0};
     double right_lane_offset_ratio_{0.25};
     double max_right_lane_offset_{2.0};
-    double vector_map_line_width_{1.2};
+    double vector_map_line_width_{0.25};
     double vector_map_z_{0.35};
     double vector_map_alpha_{1.0};
+    double path_point_marker_scale_{0.85};
+    double path_line_marker_width_{0.10};
+    double path_endpoint_marker_scale_{1.35};
+    double snap_marker_scale_{1.10};
+    double snap_link_marker_width_{0.08};
 
     std::set<std::string> wheelable_ways_;
     std::unordered_map<std::string, XYPoint> nodes_;
@@ -710,9 +725,9 @@ private:
             start_marker.action = visualization_msgs::Marker::ADD;
             start_marker.pose.position = toRosPoint(start_xy, 0.5);
             start_marker.pose.orientation.w = 1.0;
-            start_marker.scale.x = 1.0;
-            start_marker.scale.y = 1.0;
-            start_marker.scale.z = 1.0;
+            start_marker.scale.x = path_endpoint_marker_scale_;
+            start_marker.scale.y = path_endpoint_marker_scale_;
+            start_marker.scale.z = path_endpoint_marker_scale_;
             start_marker.color.r = 0.10;
             start_marker.color.g = 0.70;
             start_marker.color.b = 1.0;
@@ -733,15 +748,15 @@ private:
             path_points_marker.type = visualization_msgs::Marker::SPHERE_LIST;
             path_points_marker.action = visualization_msgs::Marker::ADD;
             path_points_marker.pose.orientation.w = 1.0;
-            path_points_marker.scale.x = 0.45;
-            path_points_marker.scale.y = 0.45;
-            path_points_marker.scale.z = 0.45;
+            path_points_marker.scale.x = path_point_marker_scale_;
+            path_points_marker.scale.y = path_point_marker_scale_;
+            path_points_marker.scale.z = path_point_marker_scale_;
             path_points_marker.color.r = 1.0;
             path_points_marker.color.g = 0.55;
             path_points_marker.color.b = 0.05;
             path_points_marker.color.a = 0.92;
             for (const auto& point : current_path_) {
-                path_points_marker.points.push_back(toRosPoint(point, 0.22));
+                path_points_marker.points.push_back(toRosPoint(point, 0.55));
             }
             marker_pub_.publish(path_points_marker);
 
@@ -753,13 +768,13 @@ private:
             path_line_marker.type = visualization_msgs::Marker::LINE_STRIP;
             path_line_marker.action = visualization_msgs::Marker::ADD;
             path_line_marker.pose.orientation.w = 1.0;
-            path_line_marker.scale.x = 0.18;
+            path_line_marker.scale.x = path_line_marker_width_;
             path_line_marker.color.r = 1.0;
             path_line_marker.color.g = 0.35;
             path_line_marker.color.b = 0.10;
             path_line_marker.color.a = 0.90;
             for (const auto& point : current_path_) {
-                path_line_marker.points.push_back(toRosPoint(point, 0.18));
+                path_line_marker.points.push_back(toRosPoint(point, 0.45));
             }
             marker_pub_.publish(path_line_marker);
         }
@@ -831,9 +846,9 @@ private:
         if (has_snap_start) {
             start_marker.pose.position = toRosPoint(snap_start, 0.7);
             start_marker.pose.orientation.w = 1.0;
-            start_marker.scale.x = 0.9;
-            start_marker.scale.y = 0.9;
-            start_marker.scale.z = 0.9;
+            start_marker.scale.x = snap_marker_scale_;
+            start_marker.scale.y = snap_marker_scale_;
+            start_marker.scale.z = snap_marker_scale_;
             start_marker.color.g = 1.0;
             start_marker.color.b = 1.0;
             start_marker.color.a = 0.9;
@@ -850,9 +865,9 @@ private:
         if (has_snap_goal) {
             goal_marker.pose.position = toRosPoint(snap_goal, 0.7);
             goal_marker.pose.orientation.w = 1.0;
-            goal_marker.scale.x = 0.9;
-            goal_marker.scale.y = 0.9;
-            goal_marker.scale.z = 0.9;
+            goal_marker.scale.x = snap_marker_scale_;
+            goal_marker.scale.y = snap_marker_scale_;
+            goal_marker.scale.z = snap_marker_scale_;
             goal_marker.color.r = 1.0;
             goal_marker.color.b = 1.0;
             goal_marker.color.a = 0.9;
@@ -867,7 +882,7 @@ private:
         start_link.type = visualization_msgs::Marker::LINE_LIST;
         start_link.action = (has_raw_start && has_snap_start) ? visualization_msgs::Marker::ADD : visualization_msgs::Marker::DELETE;
         if (start_link.action == visualization_msgs::Marker::ADD) {
-            start_link.scale.x = 0.12;
+            start_link.scale.x = snap_link_marker_width_;
             start_link.color.g = 1.0;
             start_link.color.b = 1.0;
             start_link.color.a = 0.85;
@@ -883,7 +898,7 @@ private:
         goal_link.type = visualization_msgs::Marker::LINE_LIST;
         goal_link.action = (has_raw_goal && has_snap_goal) ? visualization_msgs::Marker::ADD : visualization_msgs::Marker::DELETE;
         if (goal_link.action == visualization_msgs::Marker::ADD) {
-            goal_link.scale.x = 0.12;
+            goal_link.scale.x = snap_link_marker_width_;
             goal_link.color.r = 1.0;
             goal_link.color.b = 1.0;
             goal_link.color.a = 0.85;
@@ -931,16 +946,16 @@ private:
         snap_marker.action = visualization_msgs::Marker::ADD;
         snap_marker.pose.position = toRosPoint(snap_info.point, 0.55);
         snap_marker.pose.orientation.w = 1.0;
-        snap_marker.scale.x = 0.7;
-        snap_marker.scale.y = 0.7;
-        snap_marker.scale.z = 0.7;
+        snap_marker.scale.x = snap_marker_scale_;
+        snap_marker.scale.y = snap_marker_scale_;
+        snap_marker.scale.z = snap_marker_scale_;
         snap_marker.color.r = 1.0;
         snap_marker.color.g = 0.55;
         snap_marker.color.a = 0.95;
         marker_pub_.publish(snap_marker);
 
         link_marker.action = visualization_msgs::Marker::ADD;
-        link_marker.scale.x = 0.10;
+        link_marker.scale.x = snap_link_marker_width_;
         link_marker.color.r = 1.0;
         link_marker.color.g = 0.55;
         link_marker.color.a = 0.85;

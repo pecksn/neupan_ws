@@ -35,22 +35,21 @@
 
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
-
-    <arg name="use_fixed_datum" default="true" />
-    <arg name="datum_yaw" default="0.0" />
-    <arg name="navsat_delay" default="0.60" />
-    <arg name="navsat_transform_timeout" default="1.00" />
     <arg name="outdoor_ekf_tf_time_offset" default="0.0" />
 
     <arg name="gps_port" default="/dev/wheeltec_gnss" />
     <arg name="gps_baud" default="115200" />
     <arg name="gps_frame" default="gps_link" />
+    <arg name="gps_offset_x" default="0.0" />
+    <arg name="gps_offset_y" default="0.0" />
+    <arg name="gps_offset_z" default="0.25" />
     <arg name="gps_time_ref_source" default="gps" />
     <arg name="gps_use_rmc" default="false" />
     <arg name="gps_rotation" default="90.0" />
     <arg name="gps_heading_source_is_north_cw" default="true" />
     <arg name="gps_use_gnss_time" default="false" />
     <arg name="use_global_ekf" default="false" />
+    <arg name="gps_map_projection_rate" default="30.0" />
     <arg name="gps_guard_enable" default="true" />
     <arg name="gps_guard_min_fix_status" default="2" />
     <arg name="gps_guard_max_position_covariance" default="0.25" />
@@ -79,9 +78,14 @@
     <arg name="outdoor_path_turn_dense_after" default="2.0" />
     <arg name="outdoor_path_turn_recover_after" default="6.0" />
     <arg name="outdoor_path_min_points" default="3" />
-    <arg name="osm_vector_map_line_width" default="1.2" />
+    <arg name="osm_vector_map_line_width" default="0.25" />
     <arg name="osm_vector_map_z" default="0.35" />
     <arg name="osm_vector_map_alpha" default="1.0" />
+    <arg name="osm_path_point_marker_scale" default="0.85" />
+    <arg name="osm_path_line_marker_width" default="0.10" />
+    <arg name="osm_path_endpoint_marker_scale" default="1.35" />
+    <arg name="osm_snap_marker_scale" default="1.10" />
+    <arg name="osm_snap_link_marker_width" default="0.08" />
     <arg name="osm_enable_right_lane_offset" default="false" />
     <arg name="osm_respect_oneway" default="true" />
     <arg name="osm_default_lane_width" default="3.0" />
@@ -97,13 +101,8 @@
     <!-- Localization core -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
         <arg name="outdoor_mode" value="true" />
-        <arg name="imu_topic" value="$(arg imu_topic)" />
-        <arg name="use_fixed_datum" value="$(arg use_fixed_datum)" />
         <arg name="datum_lat" value="$(arg map_origin_lat)" />
         <arg name="datum_lon" value="$(arg map_origin_lon)" />
-        <arg name="datum_yaw" value="$(arg datum_yaw)" />
-        <arg name="navsat_delay" value="$(arg navsat_delay)" />
-        <arg name="navsat_transform_timeout" value="$(arg navsat_transform_timeout)" />
         <arg name="outdoor_ekf_tf_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
         <arg name="gps_port" value="$(arg gps_port)" />
         <arg name="gps_baud" value="$(arg gps_baud)" />
@@ -114,6 +113,7 @@
         <arg name="gps_heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         <arg name="gps_use_gnss_time" value="$(arg gps_use_gnss_time)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
+        <arg name="gps_map_projection_rate" value="$(arg gps_map_projection_rate)" />
         <arg name="gps_guard_enable" value="$(arg gps_guard_enable)" />
         <arg name="gps_guard_min_fix_status" value="$(arg gps_guard_min_fix_status)" />
         <arg name="gps_guard_max_position_covariance" value="$(arg gps_guard_max_position_covariance)" />
@@ -148,7 +148,7 @@
     <!-- Sensor / odometry support -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100" />
     <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 base_link body 100" />
-    <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="0.0 0.0 0.25 0 0 0 base_link gps_link 100" />
+    <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="$(arg gps_offset_x) $(arg gps_offset_y) $(arg gps_offset_z) 0 0 0 base_link $(arg gps_frame) 100" />
     <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100" />
 
     <group if="$(arg enable_livox_driver)">
@@ -224,6 +224,11 @@
         <param name="vector_map_line_width" value="$(arg osm_vector_map_line_width)" />
         <param name="vector_map_z" value="$(arg osm_vector_map_z)" />
         <param name="vector_map_alpha" value="$(arg osm_vector_map_alpha)" />
+        <param name="path_point_marker_scale" value="$(arg osm_path_point_marker_scale)" />
+        <param name="path_line_marker_width" value="$(arg osm_path_line_marker_width)" />
+        <param name="path_endpoint_marker_scale" value="$(arg osm_path_endpoint_marker_scale)" />
+        <param name="snap_marker_scale" value="$(arg osm_snap_marker_scale)" />
+        <param name="snap_link_marker_width" value="$(arg osm_snap_link_marker_width)" />
         <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
         <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
         <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />

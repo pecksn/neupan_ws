@@ -8,27 +8,26 @@
     <!-- 基础传感器配置 -->
     <arg name="enable_livox_driver" default="true"  doc="实车必须开启雷达驱动"/>
     <arg name="enable_rviz"         default="true" />
-    <arg name="imu_topic"           default="/livox/imu" doc="MID360原始IMU，供FAST-LIO/navsat使用；本地EKF不重复融合" />
+    <arg name="imu_topic"           default="/livox/imu" doc="MID360原始IMU，供FAST-LIO使用；本地EKF不重复融合" />
     <arg name="indoor_map_file"     default="/home/nuc/lxw/maps/my_corridor_fastlio.yaml" />
 
     <!-- OSM 地图原点（建议与 datum 一致） -->
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
-    <!-- 室外 GPS 固定基准点，防止每次启动原点漂移 -->
-    <arg name="use_fixed_datum" default="true" doc="true: 使用固定datum对齐GPS与OSM原点" />
-    <arg name="datum_yaw" default="0.0" />
-    <arg name="navsat_delay" default="0.60" doc="navsat_transform 延迟处理时间(秒)，用于等待 odom->base_link TF 到位" />
-    <arg name="navsat_transform_timeout" default="1.00" doc="navsat_transform TF 查询超时(秒)" />
     <arg name="outdoor_ekf_tf_time_offset" default="0.0" doc="室外时 EKF TF 时间偏移，建议 0 以避免时序警告" />
     <arg name="gps_port" default="/dev/wheeltec_gnss" doc="G90 接到上位机后的串口设备名" />
     <arg name="gps_baud" default="115200" doc="G90 NMEA 串口波特率" />
     <arg name="gps_frame" default="gps_link" doc="G90 在 TF 中使用的坐标系名称" />
+    <arg name="gps_offset_x" default="0.0" doc="GPS天线相对base_link的前向偏移(米)" />
+    <arg name="gps_offset_y" default="0.0" doc="GPS天线相对base_link的左向偏移(米)" />
+    <arg name="gps_offset_z" default="0.25" doc="GPS天线相对base_link的高度偏移(米)" />
     <arg name="gps_time_ref_source" default="gps" doc="TimeReference.source 字段" />
     <arg name="gps_use_rmc" default="false" doc="true 时使用 RMC，false 时使用 GGA/VTG" />
     <arg name="gps_rotation" default="90.0" doc="沿用 wheeltec_gps_driver 的航向旋转参数" />
     <arg name="gps_heading_source_is_north_cw" default="true" doc="true: G90 HDT 航向按北为0、顺时针为正进行转换" />
     <arg name="gps_use_gnss_time" default="false" doc="是否使用 GNSS 自身时间戳" />
     <arg name="use_global_ekf" default="false" doc="false: 稳定模式直接使用/odometry/gps; true: 使用ekf_global" />
+    <arg name="gps_map_projection_rate" default="30.0" doc="GPS投影里程计发布频率" />
     <arg name="global_odom_heading_filter_window_sec" default="10.0" doc="G90与局部航向关系的时间窗口；桥口退化时冻结进入窗口前后的稳健航向" />
     <arg name="align_map_odom_with_global_local" default="true" doc="用 /odometry/global 与 /odometry/local 对齐 map->odom，便于点云与全局标记一致" />
     <arg name="map_odom_align_timeout" default="2.0" doc="map_odom 动态对齐消息接收超时(秒)" />
@@ -73,9 +72,14 @@
     <arg name="outdoor_path_turn_dense_after" default="2.0" doc="出弯后保持加密的长度(米)" />
     <arg name="outdoor_path_turn_recover_after" default="6.0" doc="出弯后逐渐恢复为直线间距的长度(米)" />
     <arg name="outdoor_path_min_points" default="3" doc="室外路径最少下发给 NeuPAN 的点数" />
-    <arg name="osm_vector_map_line_width" default="1.2" doc="RViz中OSM蓝色中心线宽度(米)" />
+    <arg name="osm_vector_map_line_width" default="0.25" doc="RViz中OSM蓝色中心线宽度(米)" />
     <arg name="osm_vector_map_z" default="0.35" doc="RViz中OSM蓝色中心线显示高度" />
     <arg name="osm_vector_map_alpha" default="1.0" />
+    <arg name="osm_path_point_marker_scale" default="0.85" doc="RViz中A*路径点直径(米)" />
+    <arg name="osm_path_line_marker_width" default="0.10" doc="RViz中A*路径连线宽度(米)" />
+    <arg name="osm_path_endpoint_marker_scale" default="1.35" doc="RViz中A*起点/路径端点直径(米)" />
+    <arg name="osm_snap_marker_scale" default="1.10" doc="RViz中吸附起终点直径(米)" />
+    <arg name="osm_snap_link_marker_width" default="0.08" doc="RViz中原始点到吸附点连线宽度(米)" />
     <arg name="osm_enable_right_lane_offset" default="true" doc="根据道路宽度和行驶方向将OSM中心线偏移到右侧半幅中心" />
     <arg name="osm_respect_oneway" default="true" doc="A*是否遵守OSM oneway方向" />
     <arg name="osm_default_lane_width" default="3.0" doc="OSM仅有lanes时使用的单车道估算宽度(米)" />
@@ -108,13 +112,8 @@
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
         <arg name="outdoor_mode" value="$(arg outdoor_mode)" />
-        <arg name="imu_topic"    value="$(arg imu_topic)" />
-        <arg name="use_fixed_datum" value="$(arg use_fixed_datum)" />
         <arg name="datum_lat" value="$(arg map_origin_lat)" />
         <arg name="datum_lon" value="$(arg map_origin_lon)" />
-        <arg name="datum_yaw" value="$(arg datum_yaw)" />
-        <arg name="navsat_delay" value="$(arg navsat_delay)" />
-        <arg name="navsat_transform_timeout" value="$(arg navsat_transform_timeout)" />
         <arg name="outdoor_ekf_tf_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
         <arg name="gps_port" value="$(arg gps_port)" />
         <arg name="gps_baud" value="$(arg gps_baud)" />
@@ -125,6 +124,7 @@
         <arg name="gps_heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         <arg name="gps_use_gnss_time" value="$(arg gps_use_gnss_time)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
+        <arg name="gps_map_projection_rate" value="$(arg gps_map_projection_rate)" />
         <arg name="global_odom_heading_filter_window_sec" value="$(arg global_odom_heading_filter_window_sec)" />
         <arg name="gps_guard_enable" value="$(arg gps_guard_enable)" />
         <arg name="gps_guard_min_fix_status" value="$(arg gps_guard_min_fix_status)" />
@@ -188,8 +188,8 @@
     <!-- 3.2 雷达机械安装外参 (请根据实车尺寸调整位置) -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100"/>
     <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 base_link body 100"/>
-    <!-- GPS 天线外参，供 navsat_transform 去除 GPS 与车体原点偏移 -->
-    <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="0.0 0.0 0.25 0 0 0 base_link gps_link 100"/>
+    <!-- GPS 天线外参，供TF显示和其他传感器对齐使用；当前GPS到map投影不再走navsat_transform。 -->
+    <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="$(arg gps_offset_x) $(arg gps_offset_y) $(arg gps_offset_z) 0 0 0 base_link $(arg gps_frame) 100"/>
     <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100"/>
 
     <!-- 3.3 FAST-LIO / 高精度里程计 -->
@@ -278,6 +278,11 @@
             <param name="vector_map_line_width" value="$(arg osm_vector_map_line_width)" />
             <param name="vector_map_z" value="$(arg osm_vector_map_z)" />
             <param name="vector_map_alpha" value="$(arg osm_vector_map_alpha)" />
+            <param name="path_point_marker_scale" value="$(arg osm_path_point_marker_scale)" />
+            <param name="path_line_marker_width" value="$(arg osm_path_line_marker_width)" />
+            <param name="path_endpoint_marker_scale" value="$(arg osm_path_endpoint_marker_scale)" />
+            <param name="snap_marker_scale" value="$(arg osm_snap_marker_scale)" />
+            <param name="snap_link_marker_width" value="$(arg osm_snap_link_marker_width)" />
             <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
             <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
             <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />

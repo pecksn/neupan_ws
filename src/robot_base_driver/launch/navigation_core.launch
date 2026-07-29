@@ -1,13 +1,9 @@
 <launch>
     <!-- true: 室外融合GPS，false: 室内仅里程计/LIO -->
     <arg name="outdoor_mode" default="true" />
-    <arg name="imu_topic" default="/livox/imu" />
-    <arg name="use_fixed_datum" default="false" />
     <arg name="datum_lat" default="23.0398" />
     <arg name="datum_lon" default="113.39002" />
-    <arg name="datum_yaw" default="0.0" />
-    <arg name="navsat_delay" default="0.60" />
-    <arg name="navsat_transform_timeout" default="1.00" />
+    <arg name="gps_map_projection_rate" default="30.0" />
     <arg name="outdoor_ekf_tf_time_offset" default="0.0" />
     <!-- FAST-LIO 输出级保护；FAST-LIO 内部滤波后仍可能在桥底退化。 -->
     <arg name="lio_guard_max_speed" default="2.0" />
@@ -106,22 +102,21 @@
         <remap from="odometry/filtered" to="/odometry/local" />
     </node>
 
-    <!-- 5) 室外：GPS转里程计 + 全局EKF -->
+    <!-- 5) 室外：GPS转里程计 + 全局EKF
+         直接使用与 OSM A* 相同的经纬度投影生成 /odometry/gps。 -->
     <group if="$(arg outdoor_mode)">
-        <node pkg="robot_localization" type="navsat_transform_node" name="navsat_transform" clear_params="true" output="screen">
-            <remap from="gps/fix" to="/gps/fix" />
-            <remap from="imu/data" to="$(arg imu_topic)" />
-            <remap from="odometry/filtered" to="/odometry/local" />
-            <param name="frequency" value="30" />
-            <param name="delay" value="$(arg navsat_delay)" />
-            <param name="transform_timeout" value="$(arg navsat_transform_timeout)" />
-            <param name="wait_for_datum" value="$(arg use_fixed_datum)" />
-            <rosparam if="$(arg use_fixed_datum)" param="datum" subst_value="true">[$(arg datum_lat), $(arg datum_lon), $(arg datum_yaw)]</rosparam>
+        <node pkg="robot_base_driver" type="gps_fix_to_map_odom.py" name="gps_fix_to_map_odom" clear_params="true" output="screen">
+            <param name="fix_topic" value="/gps/fix" />
+            <param name="heading_topic" value="$(arg global_odom_heading_topic)" />
+            <param name="output_topic" value="/odometry/gps" />
+            <param name="frame_id" value="map" />
+            <param name="child_frame_id" value="$(arg base_frame)" />
+            <param name="origin_lat" value="$(arg datum_lat)" />
+            <param name="origin_lon" value="$(arg datum_lon)" />
             <param name="zero_altitude" value="true" />
-            <param name="publish_filtered_gps" value="true" />
-            <param name="use_odometry_yaw" value="true" />
-            <param name="broadcast_cartesian_transform" value="false" />
-            <param name="broadcast_cartesian_transform_as_parent_frame" value="false" />
+            <param name="use_heading" value="$(arg global_odom_use_heading)" />
+            <param name="heading_timeout_sec" value="$(arg global_odom_heading_timeout)" />
+            <param name="publish_rate" value="$(arg gps_map_projection_rate)" />
         </node>
 
         <group if="$(arg use_global_ekf)">

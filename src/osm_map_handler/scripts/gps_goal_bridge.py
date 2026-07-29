@@ -18,6 +18,7 @@ class GPSGoalBridge:
         self.reject_invalid_status = rospy.get_param('~reject_invalid_status', True)
         self.publish_marker = rospy.get_param('~publish_marker', True)
         self.marker_topic = rospy.get_param('~marker_topic', '/gps_goal_marker')
+        self.marker_scale = max(0.2, float(rospy.get_param('~marker_scale', 1.4)))
 
         self.earth_radius = 6378137.0
 
@@ -55,9 +56,9 @@ class GPSGoalBridge:
         marker.pose.position.y = y
         marker.pose.position.z = 0.6
         marker.pose.orientation.w = 1.0
-        marker.scale.x = 1.0
-        marker.scale.y = 1.0
-        marker.scale.z = 1.0
+        marker.scale.x = self.marker_scale
+        marker.scale.y = self.marker_scale
+        marker.scale.z = self.marker_scale
         marker.color.r = 1.0
         marker.color.g = 0.2
         marker.color.b = 0.2

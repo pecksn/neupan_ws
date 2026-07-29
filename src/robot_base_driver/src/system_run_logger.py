@@ -23,6 +23,7 @@ class SystemRunLogger:
         self.fix_topic = rospy.get_param("~fix_topic", "/gps/fix")
         self.gga_topic = rospy.get_param("~gga_topic", "/gnss/gpgga")
         self.heading_topic = rospy.get_param("~heading_topic", "/heading")
+        self.gps_odom_topic = rospy.get_param("~gps_odom_topic", "/odometry/gps")
         self.global_odom_topic = rospy.get_param("~global_odom_topic", "/odometry/global")
         self.local_odom_topic = rospy.get_param("~local_odom_topic", "/odometry/local")
         self.command_topic = rospy.get_param("~command_topic", "/neupan_cmd_vel")
@@ -52,6 +53,7 @@ class SystemRunLogger:
             "gps_fix": None,
             "gga": None,
             "heading": None,
+            "gps_odom": None,
             "global_odom": None,
             "local_odom": None,
             "command": None,
@@ -76,6 +78,7 @@ class SystemRunLogger:
         rospy.Subscriber(self.fix_topic, NavSatFix, self.fix_cb, queue_size=20)
         rospy.Subscriber(self.gga_topic, Gpgga, self.gga_cb, queue_size=20)
         rospy.Subscriber(self.heading_topic, QuaternionStamped, self.heading_cb, queue_size=30)
+        rospy.Subscriber(self.gps_odom_topic, Odometry, self.gps_odom_cb, queue_size=30)
         rospy.Subscriber(self.global_odom_topic, Odometry, self.global_odom_cb, queue_size=30)
         rospy.Subscriber(self.local_odom_topic, Odometry, self.local_odom_cb, queue_size=50)
         rospy.Subscriber(self.command_topic, Twist, self.command_cb, queue_size=100)
@@ -101,6 +104,7 @@ class SystemRunLogger:
             "fix": self.fix_topic,
             "gga": self.gga_topic,
             "heading": self.heading_topic,
+            "gps_odom": self.gps_odom_topic,
             "global_odom": self.global_odom_topic,
             "local_odom": self.local_odom_topic,
             "command": self.command_topic,
@@ -250,6 +254,9 @@ class SystemRunLogger:
 
     def global_odom_cb(self, msg):
         self.update("global_odom", self.odom_dict(msg))
+
+    def gps_odom_cb(self, msg):
+        self.update("gps_odom", self.odom_dict(msg))
 
     def local_odom_cb(self, msg):
         self.update("local_odom", self.odom_dict(msg))

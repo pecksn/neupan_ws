@@ -19,6 +19,7 @@ include_directories(
 
 catkin_install_python(PROGRAMS
   src/base_driver_node.py
+  src/gps_fix_to_map_odom.py
   src/global_odom_bridge.py
   src/global_path_tracker.py
   src/lio_odom_guard.py
