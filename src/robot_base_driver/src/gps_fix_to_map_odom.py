@@ -10,7 +10,17 @@ from tf.transformations import quaternion_from_euler
 
 
 class GpsFixToMapOdom:
-    """Project raw GPS fix into the same map frame used by the OSM planner."""
+    """Project raw GPS fix into the same map frame used by the OSM planner.
+
+    This node intentionally does not use robot_localization/navsat_transform_node.
+    The OSM A* planner converts OSM node lat/lon to map x/y with a local
+    equirectangular projection around origin_lat/origin_lon. When GPS was
+    converted by navsat_transform_node, /odometry/gps was based on the odom,
+    datum, yaw, and TF chain instead of this exact OSM projection, which caused
+    a stable meter-level offset between the RViz vehicle pose and the blue OSM
+    centerline. Keeping GPS and OSM on the same projection is the important
+    invariant for outdoor navigation here.
+    """
 
     def __init__(self):
         rospy.init_node("gps_fix_to_map_odom")
@@ -62,6 +72,9 @@ class GpsFixToMapOdom:
         return math.atan2(siny_cosp, cosy_cosp)
 
     def latlon_to_xy(self, lat, lon):
+        # Keep this formula identical to osm_map_handler/global_astar_node.cpp.
+        # If one side changes, GPS pose and OSM path will drift apart in RViz
+        # and in the path tracker.
         x = (lon - self.origin_lon) * (math.pi / 180.0) * self.earth_radius * math.cos(
             self.origin_lat * math.pi / 180.0
         )

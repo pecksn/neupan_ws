@@ -103,7 +103,9 @@
     </node>
 
     <!-- 5) 室外：GPS转里程计 + 全局EKF
-         直接使用与 OSM A* 相同的经纬度投影生成 /odometry/gps。 -->
+         /odometry/gps 必须和 OSM A* 使用同一套经纬度->map投影。
+         之前使用 navsat_transform 会引入 odom/datum/yaw/TF 相关坐标基准，
+         导致GPS点和OSM蓝线出现稳定米级偏移。 -->
     <group if="$(arg outdoor_mode)">
         <node pkg="robot_base_driver" type="gps_fix_to_map_odom.py" name="gps_fix_to_map_odom" clear_params="true" output="screen">
             <param name="fix_topic" value="/gps/fix" />
@@ -129,7 +131,7 @@
         </group>
 
         <group unless="$(arg use_global_ekf)">
-            <!-- 稳定模式：直接使用 navsat 输出作为全局里程计，避免全局EKF发散 -->
+            <!-- 稳定模式：使用OSM一致投影后的GPS里程计，并在GPS异常时由本地里程计续推。 -->
             <node pkg="robot_base_driver" type="global_odom_bridge.py" name="global_odom_bridge" output="screen">
                 <param name="input_topic" value="/odometry/gps" />
                 <param name="local_topic" value="/odometry/local" />

@@ -247,6 +247,10 @@ private:
     }
 
     XYPoint latLonToXY(double lat, double lon) const {
+        // Must stay identical to robot_base_driver/src/gps_fix_to_map_odom.py.
+        // OSM roads, GPS odometry, and global path tracking all share this map
+        // projection; using navsat_transform for GPS introduced a stable
+        // meter-level offset because it used a different odom/datum/yaw basis.
         XYPoint point;
         point.x = (lon - origin_lon_) * (M_PI / 180.0) * earth_radius_ * std::cos(origin_lat_ * M_PI / 180.0);
         point.y = (lat - origin_lat_) * (M_PI / 180.0) * earth_radius_;
