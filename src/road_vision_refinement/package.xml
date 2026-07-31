@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>road_vision_refinement</name>
+  <version>0.0.1</version>
+  <description>Camera-based road observation and optional OSM path refinement for outdoor navigation.</description>
+
+  <maintainer email="user@example.com">lxw</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>cv_bridge</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
+
+  <export>
+  </export>
+</package>
