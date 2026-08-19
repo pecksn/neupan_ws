@@ -187,7 +187,9 @@
   <joint name="base_to_laser" type="fixed">
     <parent link="base_link"/>
     <child link="laser_link"/>
-    <origin xyz="0.1 0 0.5" rpy="0 0 0"/>
+    <!-- Simulated 2D scan slice. Lifted slightly above the body so Gazebo rays do
+         not immediately hit the car itself. -->
+    <origin xyz="0.1 0 0.38" rpy="0 0 0"/>
   </joint>
 
   <link name="body"/>

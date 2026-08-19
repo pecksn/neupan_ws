@@ -58,6 +58,16 @@ class neupan_core:
         scan_range_para = rospy.get_param("~scan_range", "0.0 5.0")
         scan_range_para = scan_range_para.replace(",", " ")
         self.scan_range = np.fromstring(scan_range_para, dtype=np.float32, sep=" ")
+        self.scan_self_filter = bool(rospy.get_param("~scan_self_filter", False))
+        self.scan_self_filter_length = float(
+            rospy.get_param("~scan_self_filter_length", "0.0")
+        )
+        self.scan_self_filter_width = float(
+            rospy.get_param("~scan_self_filter_width", "0.0")
+        )
+        self.scan_self_filter_margin = max(
+            0.0, float(rospy.get_param("~scan_self_filter_margin", "0.03"))
+        )
         self.stop_on_scan_fault = bool(rospy.get_param("~stop_on_scan_fault", True))
         self.scan_timeout = max(0.1, float(rospy.get_param("~scan_timeout", 0.5)))
         self.scan_transform_timeout = max(
@@ -527,6 +537,33 @@ class neupan_core:
 
             trans_matrix, rot_matrix = get_transform(np.c_[x, y, yaw].reshape(3, 1))
             self.obstacle_points = rot_matrix @ point_array + trans_matrix
+
+            if (
+                self.scan_self_filter
+                and self.scan_self_filter_length > 0.0
+                and self.scan_self_filter_width > 0.0
+                and self.robot_state is not None
+            ):
+                robot_x, robot_y, robot_yaw = self.robot_state[:, 0]
+                dx = self.obstacle_points[0, :] - robot_x
+                dy = self.obstacle_points[1, :] - robot_y
+                cos_yaw = cos(robot_yaw)
+                sin_yaw = sin(robot_yaw)
+                local_x = cos_yaw * dx + sin_yaw * dy
+                local_y = -sin_yaw * dx + cos_yaw * dy
+                half_length = (
+                    self.scan_self_filter_length / 2.0
+                    + self.scan_self_filter_margin
+                )
+                half_width = (
+                    self.scan_self_filter_width / 2.0
+                    + self.scan_self_filter_margin
+                )
+                outside_body = (np.abs(local_x) > half_length) | (
+                    np.abs(local_y) > half_width
+                )
+                self.obstacle_points = self.obstacle_points[:, outside_body]
+
             self.mark_scan_valid(now, "TRACKING")
             rospy.loginfo_once("Scan obstacle points Received")
 

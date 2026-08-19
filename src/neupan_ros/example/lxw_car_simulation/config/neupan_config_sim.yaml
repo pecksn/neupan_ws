@@ -1,7 +1,7 @@
 # mpc
-receding: 45
+receding: 30
 step_time: 0.1
-ref_speed: 0.4
+ref_speed: 0.5
 device: 'cpu'
 time_print: False
 collision_threshold: 0.001
@@ -10,20 +10,20 @@ collision_threshold: 0.001
 robot:
   kinematics: 'acker'
   wheelbase: 0.67
-  max_speed: [1.0, 0.35]
-  max_acce: [0.8, 0.35]
+  max_speed: [1.5, 0.35]
+  max_acce: [0.8, 0.20]
   length: 0.95
   width: 0.60
 
 # initial path
 ipath:
-  interval: 0.10
+  interval: 0.09
   waypoints: []
   curve_style: 'reeds'
   min_radius: 1.85
   loop: False
   arrive_threshold: 0.5
-  close_threshold: 0.20
+  close_threshold: 0.30
   arrive_index_threshold: 2
 
 # proximal alternating minimization network
@@ -36,8 +36,8 @@ pan:
 
 # adjust parameters
 adjust:
-  q_s: 2.0
-  p_u: 18.0
-  eta: 2.0
-  d_max: 1.2
+  q_s: 1.2
+  p_u: 21.0
+  eta: 0.5
+  d_max: 0.5
   d_min: 0.2
