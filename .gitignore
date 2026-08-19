@@ -50,3 +50,5 @@ qtcreator-*
 
 # Catkin custom files
 CATKIN_IGNORE
+src/ros_astra_camera-main/libuvc/
+src/rvo_ros/
