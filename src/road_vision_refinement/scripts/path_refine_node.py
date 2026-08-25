@@ -3,8 +3,9 @@ import math
 from copy import deepcopy
 
 import rospy
+import json
 from nav_msgs.msg import Path
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 
 
 class PathRefineNode:
@@ -26,13 +27,17 @@ class PathRefineNode:
         self.filter_alpha = float(rospy.get_param("~filter_alpha", 0.2))
         self.invert_error = bool(rospy.get_param("~invert_error", False))
         self.republish_on_error = bool(rospy.get_param("~republish_on_error", True))
+        self.status_topic = rospy.get_param("~status_topic", "/road_vision/status")
+        self.invalid_decay_alpha = float(rospy.get_param("~invalid_decay_alpha", 0.08))
 
         self.path = None
         self.filtered_error = 0.0
+        self.vision_valid = False
 
         self.path_pub = rospy.Publisher(self.output_path_topic, Path, queue_size=1, latch=True)
         self.path_sub = rospy.Subscriber(self.input_path_topic, Path, self.path_cb, queue_size=1)
         self.error_sub = rospy.Subscriber(self.error_topic, Float32, self.error_cb, queue_size=5)
+        self.status_sub = rospy.Subscriber(self.status_topic, String, self.status_cb, queue_size=5)
 
         rospy.loginfo("path_refine_node: %s + %s -> %s",
                       self.input_path_topic, self.error_topic, self.output_path_topic)
@@ -42,6 +47,8 @@ class PathRefineNode:
         self.publish_refined()
 
     def error_cb(self, msg):
+        if not self.vision_valid:
+            return
         raw_error = -msg.data if self.invert_error else msg.data
         raw_error = max(-self.max_shift_m, min(self.max_shift_m, raw_error))
         alpha = max(0.0, min(1.0, self.filter_alpha))
@@ -49,10 +56,29 @@ class PathRefineNode:
         if self.republish_on_error:
             self.publish_refined()
 
+    def status_cb(self, msg):
+        try:
+            status = json.loads(msg.data)
+            valid = bool(status.get("valid", False))
+        except (TypeError, ValueError):
+            valid = False
+        self.vision_valid = valid
+        if not valid:
+            # Fade stale visual correction toward the map path instead of
+            # dropping it in one frame. Status is published at camera rate,
+            # so repeated callbacks provide a smooth return to zero.
+            alpha = max(0.0, min(1.0, self.invalid_decay_alpha))
+            self.filtered_error *= (1.0 - alpha)
+        if self.republish_on_error:
+            self.publish_refined()
+
     def publish_refined(self):
         if self.path is None:
             return
         if not self.path.poses:
+            self.path_pub.publish(self.path)
+            return
+        if not self.vision_valid and abs(self.filtered_error) < 1e-3:
             self.path_pub.publish(self.path)
             return
 

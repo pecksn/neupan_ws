@@ -2,7 +2,7 @@
   <arg name="image_topic" default="/camera/rgb/image_raw" />
   <arg name="input_path_topic" default="/osm_global_path" />
   <arg name="output_path_topic" default="/osm_global_path_refined" />
-  <arg name="enable_path_refine" default="true" />
+  <arg name="enable_path_refine" default="false" />
 
   <!-- HSV defaults target low-saturation asphalt/gray road regions. Tune in rqt_reconfigure-style by relaunching. -->
   <arg name="roi_top_ratio" default="0.45" />
@@ -15,6 +15,23 @@
   <arg name="min_area_ratio" default="0.015" />
   <arg name="max_correction_m" default="0.8" />
   <arg name="process_rate" default="10.0" />
+  <!-- auto: prefer center line, then fall back to road-region center. -->
+  <arg name="target_mode" default="auto" />
+  <arg name="center_line_right_offset_ratio" default="0.18" />
+  <arg name="road_edge_clearance_ratio" default="0.18" />
+  <!-- +1 assumes forward motion with camera optical right = vehicle right; -1 reverses it. -->
+  <arg name="center_line_right_sign" default="1.0" />
+  <!-- Hold the last visual target briefly, then fade back to the map path. -->
+  <arg name="invalid_hold_sec" default="1.0" />
+  <arg name="invalid_decay_alpha" default="0.08" />
+  <arg name="min_confidence" default="0.35" />
+  <arg name="min_line_confidence" default="0.40" />
+  <arg name="white_s_max" default="75" />
+  <arg name="white_v_min" default="175" />
+  <arg name="yellow_h_min" default="15" />
+  <arg name="yellow_h_max" default="42" />
+  <arg name="yellow_s_min" default="60" />
+  <arg name="yellow_v_min" default="70" />
 
   <node pkg="road_vision_refinement" type="road_vision_node.py" name="road_vision" output="screen">
     <param name="image_topic" value="$(arg image_topic)" />
@@ -28,6 +45,19 @@
     <param name="min_area_ratio" value="$(arg min_area_ratio)" />
     <param name="max_correction_m" value="$(arg max_correction_m)" />
     <param name="process_rate" value="$(arg process_rate)" />
+    <param name="target_mode" value="$(arg target_mode)" />
+    <param name="center_line_right_offset_ratio" value="$(arg center_line_right_offset_ratio)" />
+    <param name="road_edge_clearance_ratio" value="$(arg road_edge_clearance_ratio)" />
+    <param name="center_line_right_sign" value="$(arg center_line_right_sign)" />
+    <param name="invalid_hold_sec" value="$(arg invalid_hold_sec)" />
+    <param name="min_confidence" value="$(arg min_confidence)" />
+    <param name="min_line_confidence" value="$(arg min_line_confidence)" />
+    <param name="white_s_max" value="$(arg white_s_max)" />
+    <param name="white_v_min" value="$(arg white_v_min)" />
+    <param name="yellow_h_min" value="$(arg yellow_h_min)" />
+    <param name="yellow_h_max" value="$(arg yellow_h_max)" />
+    <param name="yellow_s_min" value="$(arg yellow_s_min)" />
+    <param name="yellow_v_min" value="$(arg yellow_v_min)" />
   </node>
 
   <group if="$(arg enable_path_refine)">
@@ -35,6 +65,8 @@
       <param name="input_path_topic" value="$(arg input_path_topic)" />
       <param name="output_path_topic" value="$(arg output_path_topic)" />
       <param name="error_topic" value="/road_vision/lateral_error" />
+      <param name="status_topic" value="/road_vision/status" />
+      <param name="invalid_decay_alpha" value="$(arg invalid_decay_alpha)" />
       <param name="max_shift_m" value="$(arg max_correction_m)" />
       <param name="filter_alpha" value="0.2" />
       <param name="invert_error" value="false" />
