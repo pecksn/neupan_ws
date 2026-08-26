@@ -40,9 +40,28 @@ class RoadVisionNode:
         self.invalid_hold_sec = float(rospy.get_param("~invalid_hold_sec", 1.0))
         self.min_confidence = float(rospy.get_param("~min_confidence", 0.35))
         self.min_line_confidence = float(rospy.get_param("~min_line_confidence", 0.40))
+        self.center_line_requires_road = bool(rospy.get_param("~center_line_requires_road", True))
         self.road_edge_clearance_ratio = float(rospy.get_param("~road_edge_clearance_ratio", 0.18))
-        self.line_search_margin_px = int(rospy.get_param("~line_search_margin_px", 24))
+        self.road_min_scanline_count = max(1, int(rospy.get_param("~road_min_scanline_count", 3)))
+        self.road_min_bottom_touch_ratio = float(
+            rospy.get_param("~road_min_bottom_touch_ratio", 0.92)
+        )
+        self.line_search_margin_px = int(rospy.get_param("~line_search_margin_px", 10))
         self.line_min_length_ratio = float(rospy.get_param("~line_min_length_ratio", 0.12))
+        self.line_max_jump_px = float(rospy.get_param("~line_max_jump_px", 70.0))
+        self.line_max_angle_jump_deg = float(rospy.get_param("~line_max_angle_jump_deg", 25.0))
+        self.line_smoothing_alpha = float(rospy.get_param("~line_smoothing_alpha", 0.25))
+        self.line_confirm_frames = max(1, int(rospy.get_param("~line_confirm_frames", 3)))
+        self.center_line_expected_x_ratio = float(
+            rospy.get_param("~center_line_expected_x_ratio", 0.40)
+        )
+        self.center_line_max_offset_ratio = float(
+            rospy.get_param("~center_line_max_offset_ratio", 0.32)
+        )
+        self.center_line_slope_sign = float(rospy.get_param("~center_line_slope_sign", -1.0))
+        self.center_line_max_eval_x_ratio = float(
+            rospy.get_param("~center_line_max_eval_x_ratio", 0.62)
+        )
 
         self.white_s_max = int(rospy.get_param("~white_s_max", 75))
         self.white_v_min = int(rospy.get_param("~white_v_min", 175))
@@ -69,6 +88,15 @@ class RoadVisionNode:
         self.last_confidence = 0.0
         self.last_source = "none"
         self.last_line_x = None
+        self.last_line_angle_deg = None
+        self.last_line_coeffs = None
+        self.line_candidate_streak = 0
+        self.pending_line_x = None
+        self.pending_line_angle_deg = None
+        self.current_line_confidence = 0.0
+        self.current_line_confirmed = False
+        self.current_road_confidence = 0.0
+        self.current_road_bottom_touch_ratio = 0.0
 
         self.mask_pub = rospy.Publisher("~mask", Image, queue_size=1)
         self.line_mask_pub = rospy.Publisher("~center_line_mask", Image, queue_size=1)
@@ -101,24 +129,45 @@ class RoadVisionNode:
         road_mask_roi = self.make_road_mask(roi)
         line_mask_roi = self.make_center_line_mask(roi)
         line_result = self.detect_center_line(line_mask_roi, width, roi_height, y_eval)
+        self.current_line_confidence = 0.0 if line_result is None else line_result["confidence"]
+        self.current_line_confirmed = False if line_result is None else line_result["confirmed"]
+        if line_result is None or line_result["confidence"] < self.min_line_confidence:
+            # A weak/absent candidate must not accumulate confirmation frames.
+            self.line_candidate_streak = 0
+            self.pending_line_x = None
+            self.pending_line_angle_deg = None
         road_result = self.estimate_road_region(road_mask_roi, width, roi_height)
+        self.current_road_confidence = 0.0 if road_result is None else road_result["confidence"]
+        self.current_road_bottom_touch_ratio = (
+            0.0 if road_result is None else road_result["bottom_touch_ratio"]
+        )
 
         debug = bgr.copy()
         cv2.rectangle(debug, (0, roi_top), (width - 1, height - 1), (0, 200, 255), 2)
         cv2.line(debug, (width // 2, roi_top), (width // 2, height - 1), (255, 0, 0), 2)
 
         selected = None
-        if self.target_mode in ("auto", "center_line") and line_result is not None:
+        line_context_ok = road_result is not None and road_result["confidence"] >= self.min_confidence
+        if self.target_mode in ("auto", "center_line") and line_result is not None and (
+                not self.center_line_requires_road or line_context_ok):
             if line_result["confidence"] >= self.min_line_confidence:
-                selected = self.center_line_target(line_result, width)
-                self.draw_center_line(debug, line_result, roi_top, roi_height)
+                if line_result["confirmed"]:
+                    selected = self.center_line_target(line_result, width)
+                    self.draw_center_line(debug, line_result, roi_top, roi_height)
+        elif self.center_line_requires_road:
+            self.line_candidate_streak = 0
+            self.pending_line_x = None
+            self.pending_line_angle_deg = None
 
         if selected is None and self.target_mode in ("auto", "road_edge") and road_result is not None:
-            selected = self.road_edge_target(road_result)
-            self.draw_road_region(debug, road_result, roi_top, roi_height)
+            if road_result["confidence"] >= self.min_confidence:
+                selected = self.road_edge_target(road_result)
+                if selected is not None:
+                    self.draw_road_region(debug, road_result, roi_top, roi_height)
         if selected is None and self.target_mode == "road_region" and road_result is not None:
-            selected = self.road_region_target(road_result)
-            self.draw_road_region(debug, road_result, roi_top, roi_height)
+            if road_result["confidence"] >= self.min_confidence:
+                selected = self.road_region_target(road_result)
+                self.draw_road_region(debug, road_result, roi_top, roi_height)
 
         if selected is None:
             self.publish_invalid(debug, now)
@@ -196,6 +245,58 @@ class RoadVisionNode:
 
         degree = 2 if fit_x.size >= 120 and np.ptp(fit_y) >= roi_height * 0.35 else 1
         coeffs = np.polyfit(fit_y.astype(np.float64), fit_x.astype(np.float64), degree)
+        raw_line_x = float(np.polyval(coeffs, y_eval))
+        angle_deg = math.degrees(math.atan2(line_dx, line_dy))
+        slope_sign = 1.0 if line_dx >= 0.0 else -1.0
+        expected_slope_sign = 1.0 if self.center_line_slope_sign >= 0.0 else -1.0
+        if abs(line_dx) > 0.15 * abs(line_dy) and slope_sign != expected_slope_sign:
+            self.line_candidate_streak = 0
+            self.pending_line_x = None
+            self.pending_line_angle_deg = None
+            return None
+        if raw_line_x > np.clip(self.center_line_max_eval_x_ratio, 0.5, 0.95) * width:
+            self.line_candidate_streak = 0
+            self.pending_line_x = None
+            self.pending_line_angle_deg = None
+            return None
+        expected_x = float(np.clip(self.center_line_expected_x_ratio, 0.0, 1.0) * width)
+        max_offset = float(np.clip(self.center_line_max_offset_ratio, 0.05, 0.9) * width)
+        if abs(raw_line_x - expected_x) > max_offset:
+            self.line_candidate_streak = 0
+            self.pending_line_x = None
+            self.pending_line_angle_deg = None
+            return None
+        if self.pending_line_x is None:
+            self.line_candidate_streak = 1
+        else:
+            pending_jump = abs(raw_line_x - self.pending_line_x)
+            pending_angle_delta = abs(
+                (angle_deg - self.pending_line_angle_deg + 90.0) % 180.0 - 90.0
+            )
+            if pending_jump > self.line_max_jump_px or pending_angle_delta > self.line_max_angle_jump_deg:
+                # A different Hough segment appeared; require a fresh run of
+                # consecutive frames before exposing it as a center line.
+                self.line_candidate_streak = 1
+            else:
+                self.line_candidate_streak += 1
+        self.pending_line_x = raw_line_x
+        self.pending_line_angle_deg = angle_deg
+        if self.last_line_x is not None and abs(raw_line_x - self.last_line_x) > self.line_max_jump_px:
+            self.line_candidate_streak = 0
+            return None
+        if self.last_line_angle_deg is not None:
+            # HoughLinesP may return the same segment with reversed endpoints;
+            # compare line orientation modulo 180 degrees.
+            angle_delta = abs((angle_deg - self.last_line_angle_deg + 90.0) % 180.0 - 90.0)
+            if angle_delta > self.line_max_angle_jump_deg:
+                self.line_candidate_streak = 0
+                return None
+
+        # Smooth the fitted curve itself, not just the final scalar error. This
+        # prevents HoughLinesP from switching between nearby pavement seams.
+        alpha = float(np.clip(self.line_smoothing_alpha, 0.0, 1.0))
+        if self.last_line_coeffs is not None and len(self.last_line_coeffs) == len(coeffs):
+            coeffs = (1.0 - alpha) * self.last_line_coeffs + alpha * coeffs
         line_x = float(np.polyval(coeffs, y_eval))
         coverage = float(np.ptp(fit_y)) / max(float(roi_height), 1.0)
         pixel_score = min(1.0, fit_x.size / max(roi_height * 0.7, 1.0))
@@ -204,8 +305,13 @@ class RoadVisionNode:
         return {
             "coeffs": coeffs,
             "line_x": line_x,
+            "angle_deg": angle_deg,
+            "raw_line_x": raw_line_x,
+            "confirmed": self.line_candidate_streak >= self.line_confirm_frames,
             "confidence": confidence,
             "coverage": coverage,
+            "fit_y_min": int(np.min(fit_y)),
+            "fit_y_max": int(np.max(fit_y)),
         }
 
     def center_line_target(self, line_result, width):
@@ -216,6 +322,8 @@ class RoadVisionNode:
             "source": "center_line",
             "target_x": target_x,
             "line_x": line_result["line_x"],
+            "coeffs": line_result["coeffs"],
+            "angle_deg": line_result["angle_deg"],
             "confidence": line_result["confidence"],
             "area_ratio": 0.0,
         }
@@ -230,6 +338,11 @@ class RoadVisionNode:
         if area_ratio < self.min_area_ratio:
             return None
 
+        _, contour_y, _, contour_h = cv2.boundingRect(largest)
+        bottom_touch_ratio = float(contour_y + contour_h) / max(float(roi_height), 1.0)
+        if bottom_touch_ratio < np.clip(self.road_min_bottom_touch_ratio, 0.5, 1.0):
+            return None
+
         filled = np.zeros_like(mask)
         cv2.drawContours(filled, [largest], -1, 255, thickness=cv2.FILLED)
         spans = []
@@ -238,7 +351,7 @@ class RoadVisionNode:
             xs = np.where(filled[y, :] > 0)[0]
             if xs.size >= 10:
                 spans.append((float(xs[0]), float(xs[-1]), float(xs[-1] - xs[0])))
-        if not spans:
+        if len(spans) < self.road_min_scanline_count:
             return None
         left_x, right_x, span = max(spans, key=lambda item: item[2])
         center_x = float(np.median([(left + right) * 0.5 for left, right, _ in spans]))
@@ -251,6 +364,7 @@ class RoadVisionNode:
             "right_x": right_x,
             "image_width": width,
             "area_ratio": area_ratio,
+            "bottom_touch_ratio": bottom_touch_ratio,
             "confidence": confidence,
         }
 
@@ -293,6 +407,8 @@ class RoadVisionNode:
             self.last_source = selected["source"]
             if selected["line_x"] is not None:
                 self.last_line_x = selected["line_x"]
+                self.last_line_angle_deg = selected.get("angle_deg", self.last_line_angle_deg)
+                self.last_line_coeffs = np.asarray(selected.get("coeffs"), dtype=np.float64)
 
         cv2.circle(debug, (int(target_x), int(y_vis)), 9, (0, 165, 255), -1)
         cv2.putText(
@@ -313,6 +429,10 @@ class RoadVisionNode:
         confidence = self.last_confidence if held else 0.0
         source = self.last_source if held else "none"
         reason = "hold_last_valid" if held else "no_visual_reference"
+        if not held:
+            self.last_line_x = None
+            self.last_line_angle_deg = None
+            self.last_line_coeffs = None
         self.error_pub.publish(Float32(error))
         self.publish_status(held, error, confidence, reason, source)
         cv2.putText(debug, "vision: {}".format(reason), (20, 40),
@@ -320,7 +440,11 @@ class RoadVisionNode:
 
     @staticmethod
     def draw_center_line(debug, result, roi_top, roi_height):
-        ys = np.linspace(0, roi_height - 1, 40)
+        y_min = max(0, int(result.get("fit_y_min", 0)))
+        y_max = min(roi_height - 1, int(result.get("fit_y_max", roi_height - 1)))
+        if y_max - y_min < 5:
+            return
+        ys = np.linspace(y_min, y_max, 40)
         xs = np.polyval(result["coeffs"], ys)
         points = []
         for x, y in zip(xs, ys):
@@ -370,6 +494,10 @@ class RoadVisionNode:
             "reason": reason,
             "mode": self.target_mode,
             "center_line_right_sign": self.center_line_right_sign,
+            "line_candidate_confidence": round(float(self.current_line_confidence), 4),
+            "line_candidate_confirmed": bool(self.current_line_confirmed),
+            "road_candidate_confidence": round(float(self.current_road_confidence), 4),
+            "road_bottom_touch_ratio": round(float(self.current_road_bottom_touch_ratio), 4),
             "metric_calibrated": False,
             "convention": "positive_error_shift_path_to_vehicle_right",
         }

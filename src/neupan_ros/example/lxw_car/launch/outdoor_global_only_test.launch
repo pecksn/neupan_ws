@@ -33,6 +33,16 @@
     <arg name="direct_tracker_straight_heading_deadband_deg" default="8.0" />
     <arg name="enable_system_log" default="true" />
 
+    <!-- Astra RGB 相机安装外参：x=0.18m, y=0m, z=0.30m, roll=0deg, pitch=+8deg(向下), yaw=0deg。 -->
+    <arg name="publish_base_camera_tf" default="true" doc="若其他节点已发布base_link->camera_link，设为false" />
+    <arg name="camera_offset_x" default="0.18" />
+    <arg name="camera_offset_y" default="0.0" />
+    <arg name="camera_offset_z" default="0.30" />
+    <arg name="camera_qx" default="0.0" />
+    <arg name="camera_qy" default="0.069756" />
+    <arg name="camera_qz" default="0.0" />
+    <arg name="camera_qw" default="0.997564" />
+
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
     <arg name="outdoor_ekf_tf_time_offset" default="0.0" />
@@ -148,6 +158,9 @@
     <!-- Sensor / odometry support -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100" />
     <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 base_link body 100" />
+    <!-- camera_link 到 camera_color_optical_frame 等内部TF由 Astra 驱动负责。 -->
+    <node if="$(arg publish_base_camera_tf)" pkg="tf" type="static_transform_publisher" name="base_to_camera"
+          args="$(arg camera_offset_x) $(arg camera_offset_y) $(arg camera_offset_z) $(arg camera_qx) $(arg camera_qy) $(arg camera_qz) $(arg camera_qw) base_link camera_link 100" />
     <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="$(arg gps_offset_x) $(arg gps_offset_y) $(arg gps_offset_z) 0 0 0 base_link $(arg gps_frame) 100" />
     <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100" />
 

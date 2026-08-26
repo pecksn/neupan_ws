@@ -10,6 +10,16 @@
     <arg name="enable_rviz"         default="true" />
     <arg name="imu_topic"           default="/livox/imu" doc="MID360原始IMU，供FAST-LIO使用；本地EKF不重复融合" />
     <arg name="indoor_map_file"     default="/home/nuc/lxw/maps/my_corridor_fastlio.yaml" />
+    <!-- Astra RGB 相机相对 base_link 的实测安装外参。正 pitch 按 ROS 右手系表示镜头向下俯视。 -->
+    <arg name="publish_base_camera_tf" default="true" doc="若URDF或其他节点已发布base_link->camera_link，设为false避免TF冲突" />
+    <arg name="camera_offset_x" default="0.18" doc="相机光心相对base_link向前距离(米)" />
+    <arg name="camera_offset_y" default="0.0" doc="相机光心相对base_link向左距离(米)" />
+    <arg name="camera_offset_z" default="0.30" doc="相机光心相对base_link向上距离(米)" />
+    <!-- roll=0deg, pitch=+8deg, yaw=0deg 对应四元数 (0, 0.069756, 0, 0.997564)。 -->
+    <arg name="camera_qx" default="0.0" />
+    <arg name="camera_qy" default="0.069756" />
+    <arg name="camera_qz" default="0.0" />
+    <arg name="camera_qw" default="0.997564" />
 
     <!-- OSM 地图原点（建议与 datum 一致） -->
     <arg name="map_origin_lat" default="23.0398" />
@@ -188,6 +198,9 @@
     <!-- 3.2 雷达机械安装外参 (请根据实车尺寸调整位置) -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100"/>
     <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 base_link body 100"/>
+    <!-- 仅发布安装外参；camera_link 到各 optical frame 由 Astra 驱动发布。 -->
+    <node if="$(arg publish_base_camera_tf)" pkg="tf" type="static_transform_publisher" name="base_to_camera"
+          args="$(arg camera_offset_x) $(arg camera_offset_y) $(arg camera_offset_z) $(arg camera_qx) $(arg camera_qy) $(arg camera_qz) $(arg camera_qw) base_link camera_link 100"/>
     <!-- GPS 天线外参，供TF显示和其他传感器对齐使用；当前GPS到map投影不再走navsat_transform。 -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="$(arg gps_offset_x) $(arg gps_offset_y) $(arg gps_offset_z) 0 0 0 base_link $(arg gps_frame) 100"/>
     <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100"/>

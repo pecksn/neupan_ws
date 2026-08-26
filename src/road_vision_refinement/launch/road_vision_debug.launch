@@ -19,6 +19,8 @@
   <arg name="target_mode" default="auto" />
   <arg name="center_line_right_offset_ratio" default="0.18" />
   <arg name="road_edge_clearance_ratio" default="0.18" />
+  <arg name="road_min_scanline_count" default="3" />
+  <arg name="road_min_bottom_touch_ratio" default="0.92" />
   <!-- +1 assumes forward motion with camera optical right = vehicle right; -1 reverses it. -->
   <arg name="center_line_right_sign" default="1.0" />
   <!-- Hold the last visual target briefly, then fade back to the map path. -->
@@ -26,6 +28,16 @@
   <arg name="invalid_decay_alpha" default="0.08" />
   <arg name="min_confidence" default="0.35" />
   <arg name="min_line_confidence" default="0.40" />
+  <arg name="center_line_requires_road" default="true" />
+  <arg name="line_max_jump_px" default="70.0" />
+  <arg name="line_max_angle_jump_deg" default="25.0" />
+  <arg name="line_smoothing_alpha" default="0.25" />
+  <arg name="line_confirm_frames" default="3" />
+  <arg name="center_line_expected_x_ratio" default="0.40" />
+  <arg name="center_line_max_offset_ratio" default="0.32" />
+  <!-- For a vehicle on the right side, the center line normally converges from left-bottom toward the image center. -->
+  <arg name="center_line_slope_sign" default="-1.0" />
+  <arg name="center_line_max_eval_x_ratio" default="0.62" />
   <arg name="white_s_max" default="75" />
   <arg name="white_v_min" default="175" />
   <arg name="yellow_h_min" default="15" />
@@ -48,10 +60,21 @@
     <param name="target_mode" value="$(arg target_mode)" />
     <param name="center_line_right_offset_ratio" value="$(arg center_line_right_offset_ratio)" />
     <param name="road_edge_clearance_ratio" value="$(arg road_edge_clearance_ratio)" />
+    <param name="road_min_scanline_count" value="$(arg road_min_scanline_count)" />
+    <param name="road_min_bottom_touch_ratio" value="$(arg road_min_bottom_touch_ratio)" />
     <param name="center_line_right_sign" value="$(arg center_line_right_sign)" />
     <param name="invalid_hold_sec" value="$(arg invalid_hold_sec)" />
     <param name="min_confidence" value="$(arg min_confidence)" />
     <param name="min_line_confidence" value="$(arg min_line_confidence)" />
+    <param name="center_line_requires_road" value="$(arg center_line_requires_road)" />
+    <param name="line_max_jump_px" value="$(arg line_max_jump_px)" />
+    <param name="line_max_angle_jump_deg" value="$(arg line_max_angle_jump_deg)" />
+    <param name="line_smoothing_alpha" value="$(arg line_smoothing_alpha)" />
+    <param name="line_confirm_frames" value="$(arg line_confirm_frames)" />
+    <param name="center_line_expected_x_ratio" value="$(arg center_line_expected_x_ratio)" />
+    <param name="center_line_max_offset_ratio" value="$(arg center_line_max_offset_ratio)" />
+    <param name="center_line_slope_sign" value="$(arg center_line_slope_sign)" />
+    <param name="center_line_max_eval_x_ratio" value="$(arg center_line_max_eval_x_ratio)" />
     <param name="white_s_max" value="$(arg white_s_max)" />
     <param name="white_v_min" value="$(arg white_v_min)" />
     <param name="yellow_h_min" value="$(arg yellow_h_min)" />
