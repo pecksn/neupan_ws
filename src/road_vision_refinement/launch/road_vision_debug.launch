@@ -1,5 +1,13 @@
 <launch>
-  <arg name="image_topic" default="/camera/rgb/image_raw" />
+  <!-- One-command debug stack. Disable either producer when it is already running elsewhere. -->
+  <arg name="start_camera" default="true" />
+  <arg name="start_image_proc" default="true" />
+  <arg name="start_debug_viewers" default="false" />
+  <arg name="echo_status" default="true" />
+  <arg name="camera_color_info_uri" default="file://$(find road_vision_refinement)/config/calibration/astra_rgb_camera.yaml" />
+  <arg name="camera_enable_depth" default="true" />
+  <arg name="image_topic" default="/camera/rgb/image_rect_color" />
+  <arg name="ipm_matrix_file" default="$(find road_vision_refinement)/config/calibration/ipm_points.json" />
   <arg name="input_path_topic" default="/osm_global_path" />
   <arg name="output_path_topic" default="/osm_global_path_refined" />
   <arg name="enable_path_refine" default="false" />
@@ -45,8 +53,22 @@
   <arg name="yellow_s_min" default="60" />
   <arg name="yellow_v_min" default="70" />
 
+  <include if="$(arg start_camera)" file="$(find astra_camera)/launch/astra_pro_plus.launch">
+    <arg name="depth_align" value="$(arg camera_enable_depth)" />
+    <arg name="enable_depth" value="$(arg camera_enable_depth)" />
+    <arg name="enable_ir" value="false" />
+    <arg name="enable_point_cloud" value="false" />
+    <arg name="color_info_uri" value="$(arg camera_color_info_uri)" />
+  </include>
+
+  <group if="$(arg start_image_proc)" ns="camera/rgb">
+    <node pkg="image_proc" type="image_proc" name="image_proc" output="screen" />
+  </group>
+
   <node pkg="road_vision_refinement" type="road_vision_node.py" name="road_vision" output="screen">
     <param name="image_topic" value="$(arg image_topic)" />
+    <param name="ipm_matrix_file" value="$(arg ipm_matrix_file)" />
+    <param name="print_status" value="$(arg echo_status)" />
     <param name="roi_top_ratio" value="$(arg roi_top_ratio)" />
     <param name="h_min" value="$(arg h_min)" />
     <param name="h_max" value="$(arg h_max)" />
@@ -82,6 +104,21 @@
     <param name="yellow_s_min" value="$(arg yellow_s_min)" />
     <param name="yellow_v_min" value="$(arg yellow_v_min)" />
   </node>
+
+  <group if="$(arg start_debug_viewers)">
+    <node pkg="image_view" type="image_view" name="road_debug_view" output="screen">
+      <remap from="image" to="/road_vision/debug_image" />
+      <param name="autosize" value="true" />
+    </node>
+    <node pkg="image_view" type="image_view" name="center_line_mask_view" output="screen">
+      <remap from="image" to="/road_vision/center_line_mask" />
+      <param name="autosize" value="true" />
+    </node>
+    <node pkg="image_view" type="image_view" name="road_mask_view" output="screen">
+      <remap from="image" to="/road_vision/road_mask" />
+      <param name="autosize" value="true" />
+    </node>
+  </group>
 
   <group if="$(arg enable_path_refine)">
     <node pkg="road_vision_refinement" type="path_refine_node.py" name="road_path_refine" output="screen">

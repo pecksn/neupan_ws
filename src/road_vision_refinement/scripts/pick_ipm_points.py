@@ -60,6 +60,8 @@ def main():
 
     result = {
         "image": args.image,
+        "image_width": int(image.shape[1]),
+        "image_height": int(image.shape[0]),
         "pixel_uv": points,
         "ground_xy_base_link": ground.tolist(),
         "image_to_base_link_ground": matrix.tolist(),

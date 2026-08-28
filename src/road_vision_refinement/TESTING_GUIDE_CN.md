@@ -41,58 +41,45 @@ center_line -> road_edge -> hold_last_valid -> no_visual_reference
 
 两种视觉参考都失效时，默认保持上一结果 `1 s`，之后按 `invalid_decay_alpha=0.08` 平滑回到原始路径。
 
-## 2. 准备
+## 2. 标定与验证
 
-```
-conda activate lxw
-cd /home/nuc/lxw/neupan_ws
-source /opt/ros/noetic/setup.bash
-source /home/nuc/lxw/neupan_ws/devel/setup.bash
-sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
-roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
-```
+### 2.1 单张图片保存工具
 
-室外主 launch 已配置 `base_link -> camera_link`：平移 `(0.18, 0, 0.30)m`，姿态为 `roll=0deg, pitch=+8deg（向下）, yaw=0deg`。相机启动后检查：
+`save_one_image.py` 会等待下一帧、保存一张图片，然后自动退出，不需要 `image_saver` 或 `rosservice call`：
 
 ```bash
-rosrun tf tf_echo base_link camera_link
-rosrun tf tf_echo base_link camera_color_optical_frame
+rosrun road_vision_refinement save_one_image.py IMAGE_TOPIC OUTPUT_FILE
 ```
 
-如果 URDF 或其他节点已经发布相同 TF，启动室外 launch 时增加 `publish_base_camera_tf:=false`，禁止两个节点同时发布相同父子变换。
+以下命令都要求相机话题已经启动；如果尚未启动，先执行第 3 节的一体化 launch。IPM 必须使用校正图 `/camera/rgb/image_rect_color`，不能使用原始图。
 
-### 获取像素坐标并计算 IPM
+### 2.2 相机内参标定（需要时执行）
 
-IPM 使用成对数据：同一个地面点的图像像素 `(u,v)`，以及它在 `base_link` 地面坐标中的 `(x,y)`。约定 `x` 向车辆前方、`y` 向车辆左侧，单位为米；所有点必须处于同一水平地面。
+如果 `/camera/rgb/camera_info` 已有正确内参，并且 `/camera/rgb/image_rect_color` 能正常输出，可跳过本节。
 
-先启动校正图：
+真正标定内参时，使用棋盘格的实际内角点数量和方格边长。例如棋盘格为 `8x6` 个内角点、方格边长 `0.108 m`：
 
 ```bash
-ROS_NAMESPACE=/camera/rgb rosrun image_proc image_proc
-rostopic hz /camera/rgb/image_rect_color
+rosrun camera_calibration cameracalibrator.py \
+  --size 8x6 --square 0.108 \
+  image:=/camera/rgb/image_raw camera:=/camera/rgb
 ```
 
-在地面贴至少 4 个、推荐 8 个标记，并用卷尺记录相对 `base_link` 的坐标。例如：
+从不同距离和角度采集棋盘格，窗口中的 `CALIBRATE` 可用后依次点击 `CALIBRATE`、`SAVE`。生成的 YAML 才是内参结果。
 
-```text
-(1.0, -0.5) (1.0, 0.5)
-(2.0, -1.0) (2.0, 1.0)
-(3.0, -1.5) (3.0, 1.5)
-(4.0, -2.0) (4.0, 2.0)
-```
-
-保存一张校正图：
+如需额外保存一张棋盘格原始图留档：
 
 ```bash
-rosrun image_view image_saver \
-  image:=/camera/rgb/image_rect_color \
-  _filename_format:=/home/nuc/lxw/neupan_ws/src/road_vision_refinement/config/calibration/images/ipm_ground_%04i.png
-rosservice call /image_saver/save
+rosrun road_vision_refinement save_one_image.py \
+  /camera/rgb/image_raw \
+  /home/nuc/lxw/neupan_ws/src/road_vision_refinement/config/calibration/images/camera_calibration.png
 ```
 
-### 当前实际使用的 4 点标定
+单张棋盘格图片只用于留档，不能替代上面的多姿态内参标定。
 
-你当前实际使用的是 4 个地面点：
+### 2.3 IPM 标定
+
+约定 `base_link` 中 `x` 向车辆前方、`y` 向车辆左侧，单位为米。保持车辆和相机不动，在同一水平地面放置以下 4 个标记：
 
 ```text
 (2.0, -0.5)
@@ -101,82 +88,102 @@ rosservice call /image_saver/save
 (3.0,  0.5)
 ```
 
-用点击工具获取像素坐标并计算 IPM。点击顺序必须与 `--ground` 完全一致：
+保存一张 IPM 校正图：
+
+```bash
+rosrun road_vision_refinement save_one_image.py \
+  /camera/rgb/image_rect_color \
+  /home/nuc/lxw/neupan_ws/src/road_vision_refinement/config/calibration/images/ipm_ground.png
+```
+
+计算 IPM 矩阵：
 
 ```bash
 python3 src/road_vision_refinement/scripts/pick_ipm_points.py \
-  /home/nuc/lxw/neupan_ws/src/road_vision_refinement/config/calibration/images/ipm_ground_0000.png \
+  src/road_vision_refinement/config/calibration/images/ipm_ground.png \
   --ground '[[2.0,-0.5],[2.0,0.5],[3.0,-0.5],[3.0,0.5]]' \
-  --output /home/nuc/lxw/neupan_ws/src/road_vision_refinement/config/calibration/ipm_points.json
+  --output src/road_vision_refinement/config/calibration/ipm_points.json
 ```
 
-程序会打开图片。按 `--ground` 的顺序依次点击地面标记中心，直接得到像素 `(u,v)`，并将矩阵保存到 `config/calibration/ipm_points.json`。
+程序打开图片后，严格按照 `--ground` 中的顺序点击 4 个标记中心。结果写入 `config/calibration/ipm_points.json`。
 
-### 当前实际使用的新点验证
+### 2.4 独立新点验证
 
-你当前使用验证图片：
+不要使用刚才参与标定的 4 个点验证。保持车辆和相机不动，把标记移到新的已知位置。当前实际验证点为：
 
 ```text
-ipm_verify_0005.png
+(1.5, 0.3)
+(1.8, 0.3)
 ```
 
-验证点为：
-
-```text
-(2.5, 0.2)
-(3.0, 0.2)
-```
-
-验证已有矩阵时，按顺序点击这两个新点，执行：
+保存新的校正图：
 
 ```bash
-python3 src/road_vision_refinement/scripts/verify_ipm_points.py src/road_vision_refinement/config/calibration/images/ipm_verify_0005.png --ground '[[2.5,0.2],[3.0,0.2]]' --matrix src/road_vision_refinement/config/calibration/ipm_points.json
+rosrun road_vision_refinement save_one_image.py \
+  /camera/rgb/image_rect_color \
+  /home/nuc/lxw/neupan_ws/src/road_vision_refinement/config/calibration/images/ipm_verify.png
 ```
 
-程序输出每个点的预测坐标和误差。由于两个验证点位于当前标定范围 `x=2~3m` 内，建议误差小于 `0.05~0.10m`；若明显超过 `0.10m`，先检查点击位置、地面坐标和相机是否在两次拍摄之间移动。
-
-## 3. 启动联合检测
-
-终端 1：
+验证矩阵：
 
 ```bash
-roscore
+python3 src/road_vision_refinement/scripts/verify_ipm_points.py \
+  src/road_vision_refinement/config/calibration/images/ipm_verify.png \
+  --ground '[[1.5,0.3],[1.8,0.3]]' \
+  --matrix src/road_vision_refinement/config/calibration/ipm_points.json
 ```
 
-终端 2：
+按 `--ground` 顺序点击两个新标记。程序会输出预测坐标、单点误差、最大误差和平均误差。
+
+### 2.5 当前状态
+
+当前 4 点 IPM 标定和两个独立新点验证已经完成，两个验证点误差均为 `0.225 m`，暂按 `max_error <= 0.25 m` 验收。矩阵保存在 `config/calibration/ipm_points.json`，无需重复执行第 2.3、2.4 节。只有相机位置或俯仰角发生变化时才重新标定。
+
+现在继续第 3 节。
+
+## 3. 下一步：静止联合检测
+
+车辆保持静止，不要启动 `full_system_run.launch`，也不要接入 NeuPAN。`road_vision_debug.launch` 现在会自动启动 Astra、`image_proc` 和视觉节点，并使用 `/camera/rgb/image_rect_color`。
+
+RGB 内参默认从 `config/calibration/astra_rgb_camera.yaml` 加载，该文件来自标定时保存的 640×480 `CameraInfo`。
+
+启动前在当前终端执行：
 
 ```bash
-roslaunch astra_camera astra_pro_plus.launch depth_align:=true enable_depth:=true
+conda activate lxw
+cd /home/nuc/lxw/neupan_ws
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
 ```
 
-确认相机：
+只启动检测，不修正路径：
 
 ```bash
-rostopic hz /camera/rgb/image_raw
-rqt_image_view /camera/rgb/image_raw
+roslaunch road_vision_refinement road_vision_debug.launch
 ```
 
-终端 3，只启动检测，不修正路径：
+`roslaunch` 会在需要时自动启动 ROS Master，不必单独运行 `roscore`。如果相机或 `image_proc` 已由其他 launch 启动，使用对应开关避免重复节点：
 
 ```bash
 roslaunch road_vision_refinement road_vision_debug.launch \
-  image_topic:=/camera/rgb/image_raw \
-  target_mode:=auto \
-  enable_path_refine:=false
+  start_camera:=false \
+  start_image_proc:=false
 ```
 
-分别查看以下话题：
+视觉节点默认每秒在当前终端输出一次状态，不需要另外执行 `rostopic echo`。需要同时打开三个调试图窗口时执行：
 
 ```bash
-rqt_image_view /road_vision/debug_image
-rqt_image_view /road_vision/center_line_mask
-rqt_image_view /road_vision/road_mask
-rostopic echo /road_vision/status
+roslaunch road_vision_refinement road_vision_debug.launch \
+  start_debug_viewers:=true
 ```
+
+当前 Conda 环境中的 `rostopic` 缺少 `Cryptodome`，`rqt_image_view` 缺少 PyQt5，因此一体化 launch 使用视觉节点自身打印状态，并使用 C++ `image_view` 显示图片，不依赖这两个 Python 工具。
 
 同一帧会同时生成中心线和道路 mask，最终使用的来源由 `/road_vision/status` 中的 `source` 表示。
 
 状态中还会显示 `line_candidate_confidence`、`line_candidate_confirmed`、`road_candidate_confidence` 和 `road_bottom_touch_ratio`，可用于区分“没检测到”和“检测到但未通过确认”。
+
+状态中 `metric_calibrated=true` 表示 IPM 已加载。`target_ground_x/y` 是橙色目标点在 `base_link` 地面坐标中的位置；`lateral_error_m` 为真实米制横向误差，正值表示路径向车辆右侧修正。当前仍保持 `enable_path_refine=false`，本节只验收检测和米制输出。
 
 ## 4. 场景验收
 
@@ -202,7 +209,7 @@ rostopic echo /road_vision/status
 ```bash
 mkdir -p /home/nuc/lxw/neupan_ws/bags/road_test
 rosbag record -O /home/nuc/lxw/neupan_ws/bags/road_test/vision_modes.bag \
-  /camera/rgb/image_raw \
+  /camera/rgb/image_rect_color \
   /camera/rgb/camera_info \
   /road_vision/debug_image \
   /road_vision/center_line_mask \
@@ -229,12 +236,10 @@ rosbag play --clock /home/nuc/lxw/neupan_ws/bags/road_test/vision_modes.bag
 
 ## 6. 路径平滑测试
 
-只有第 4 节全部通过后才执行，并保持车辆静止：
+只有第 4 节全部通过，并确认状态中 `metric_calibrated=true`、米制误差方向正确后才执行。测试时车辆仍须保持静止：
 
 ```bash
 roslaunch road_vision_refinement road_vision_debug.launch \
-  image_topic:=/camera/rgb/image_raw \
-  target_mode:=auto \
   enable_path_refine:=true \
   invalid_hold_sec:=1.0 \
   invalid_decay_alpha:=0.08
@@ -270,13 +275,13 @@ roslaunch road_vision_refinement road_vision_debug.launch \
 - `outdoor_initial_path_topic` 默认仍是 `/osm_global_path`；
 - `/osm_global_path_refined` 目前只用于调试。
 
-在完成检测验收、相机标定和米制坐标转换前，不要让 NeuPAN 订阅 `/osm_global_path_refined`。
+在完成检测和米制误差验收前，不要让 NeuPAN 订阅 `/osm_global_path_refined`。
 
 ## 8. 当前问题与后续顺序
 
 | 当前问题 | 后续解决方式 |
 |---|---|
-| `lateral_error_m` 是像素比例，不是真实米制误差 | 标定相机内参和 `base_link -> camera` 外参，增加 IPM 地面投影 |
+| IPM 验证误差约 `0.225 m` | 暂按 `0.25 m` 验收，实车低速测试时继续记录并复核系统偏差 |
 | `road_edge` 只是颜色轮廓右边缘 | 加入边缘连续性、地面几何和 Livox 路沿校验 |
 | 固定 HSV/Hough 容易受光照影响 | 用录包覆盖晴天、阴影、磨损标线并调阈值和置信度 |
 | 图像右侧被固定认为车辆右侧 | 根据局部路径方向计算右法向 |
@@ -286,9 +291,9 @@ roslaunch road_vision_refinement road_vision_debug.launch \
 建议顺序：
 
 ```text
-完成本文检测测试
--> 相机内外参和 Livox 外参
--> 视觉结果转换为 base_link 米制坐标
+IPM 标定、验证和视觉节点接入（已完成）
+-> 静止联合检测和米制误差验收（当前下一步）
+-> 相机外参和 Livox 外参复核
 -> 局部路径修正
 -> Livox 安全约束
 -> 低速接入室外 NeuPAN

@@ -16,17 +16,23 @@ class RoadVisionNode:
 
     In auto mode a visible white/yellow center line is preferred. The target is
     placed to its image-right side. If no reliable line exists, the node falls
-    back to the center of a road-color region. All outputs are diagnostic until
-    camera geometry converts the image-relative correction to metric distance.
+    back to the center of a road-color region. A calibrated image-to-ground
+    homography converts the selected image target to a metric lateral error.
     """
 
     def __init__(self):
         self.bridge = CvBridge()
-        self.image_topic = rospy.get_param("~image_topic", "/camera/rgb/image_raw")
+        self.image_topic = rospy.get_param("~image_topic", "/camera/rgb/image_rect_color")
         self.roi_top_ratio = float(rospy.get_param("~roi_top_ratio", 0.45))
         self.min_area_ratio = float(rospy.get_param("~min_area_ratio", 0.015))
         self.max_correction_m = float(rospy.get_param("~max_correction_m", 0.8))
         self.process_rate = float(rospy.get_param("~process_rate", 10.0))
+        self.print_status = bool(rospy.get_param("~print_status", False))
+        self.ipm_matrix_file = rospy.get_param("~ipm_matrix_file", "")
+        self.ipm_matrix = None
+        self.ipm_image_width = None
+        self.ipm_image_height = None
+        self.load_ipm_matrix()
 
         self.target_mode = rospy.get_param("~target_mode", "auto")
         if self.target_mode not in ("auto", "center_line", "road_edge", "road_region"):
@@ -108,6 +114,28 @@ class RoadVisionNode:
 
         rospy.loginfo("road_vision_node listening to %s (mode=%s)", self.image_topic, self.target_mode)
 
+    def load_ipm_matrix(self):
+        if not self.ipm_matrix_file:
+            rospy.logerr("ipm_matrix_file is empty; metric output is disabled")
+            return
+        try:
+            with open(self.ipm_matrix_file, "r", encoding="utf-8") as handle:
+                calibration = json.load(handle)
+            matrix = np.asarray(calibration["image_to_base_link_ground"], dtype=np.float64)
+            if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
+                raise ValueError("image_to_base_link_ground must be a finite 3x3 matrix")
+            if abs(float(np.linalg.det(matrix))) < 1e-12:
+                raise ValueError("image_to_base_link_ground is singular")
+            self.ipm_matrix = matrix
+            if calibration.get("image_width") is not None:
+                self.ipm_image_width = int(calibration["image_width"])
+            if calibration.get("image_height") is not None:
+                self.ipm_image_height = int(calibration["image_height"])
+            rospy.loginfo("Loaded IPM matrix from %s", self.ipm_matrix_file)
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            rospy.logerr("Failed to load IPM matrix %s: %s", self.ipm_matrix_file, exc)
+            self.ipm_matrix = None
+
     def image_cb(self, msg):
         now = time.time()
         if self.process_rate > 0.0 and now - self.last_process_time < 1.0 / self.process_rate:
@@ -121,6 +149,9 @@ class RoadVisionNode:
             return
 
         height, width = bgr.shape[:2]
+        if not self.ipm_dimensions_match(width, height):
+            self.publish_metric_unavailable(bgr, msg, "ipm_image_size_mismatch")
+            return
         roi_top = int(np.clip(self.roi_top_ratio, 0.0, 0.9) * height)
         roi = bgr[roi_top:height, :]
         roi_height = height - roi_top
@@ -369,8 +400,6 @@ class RoadVisionNode:
         }
 
     def road_edge_target(self, result):
-        # This is only a visual edge candidate. The ratio is not metric until
-        # IPM and camera extrinsics are added, so it remains debug-only.
         if result["right_x"] >= 0.98 * result["image_width"]:
             return None
         span = max(result["right_x"] - result["left_x"], 1.0)
@@ -395,11 +424,20 @@ class RoadVisionNode:
 
     def publish_selected(self, debug, selected, width, y_vis, now):
         target_x = selected["target_x"]
-        normalized_error = (target_x - width * 0.5) / max(width * 0.5, 1.0)
-        error_m = float(np.clip(normalized_error * self.max_correction_m,
-                                -self.max_correction_m, self.max_correction_m))
+        target_ground = self.project_image_to_ground(target_x, y_vis)
         confidence = selected["confidence"]
-        valid = confidence >= self.min_confidence
+        if target_ground is None:
+            error_m = 0.0
+            valid = False
+            reason = "ipm_projection_failed"
+            self.last_valid_time = None
+            self.last_error_m = 0.0
+        else:
+            ground_x, ground_y = target_ground
+            # base_link y is left-positive; path_refine expects right-positive.
+            error_m = float(np.clip(-ground_y, -self.max_correction_m, self.max_correction_m))
+            valid = confidence >= self.min_confidence
+            reason = "ok" if valid else "low_confidence"
         if valid:
             self.last_valid_time = now
             self.last_error_m = error_m
@@ -419,9 +457,45 @@ class RoadVisionNode:
         )
         self.error_pub.publish(Float32(error_m))
         self.publish_status(
-            valid, error_m, confidence, "ok" if valid else "low_confidence",
-            selected["source"], selected["area_ratio"], target_x, selected["line_x"],
+            valid, error_m, confidence, reason, selected["source"],
+            selected["area_ratio"], target_x, selected["line_x"], target_ground,
         )
+
+    def ipm_dimensions_match(self, width, height):
+        width_ok = self.ipm_image_width is None or width == self.ipm_image_width
+        height_ok = self.ipm_image_height is None or height == self.ipm_image_height
+        if not width_ok or not height_ok:
+            rospy.logerr_throttle(
+                2.0,
+                "IPM expects %sx%s but received %sx%s",
+                self.ipm_image_width, self.ipm_image_height, width, height,
+            )
+        return width_ok and height_ok
+
+    def project_image_to_ground(self, u, v):
+        if self.ipm_matrix is None:
+            rospy.logerr_throttle(2.0, "No valid IPM matrix; metric output is disabled")
+            return None
+        projected = self.ipm_matrix.dot(np.asarray([u, v, 1.0], dtype=np.float64))
+        if not np.all(np.isfinite(projected)) or abs(float(projected[2])) < 1e-9:
+            rospy.logwarn_throttle(2.0, "Invalid IPM projection for pixel (%.1f, %.1f)", u, v)
+            return None
+        ground = projected[:2] / projected[2]
+        if not np.all(np.isfinite(ground)):
+            return None
+        return float(ground[0]), float(ground[1])
+
+    def publish_metric_unavailable(self, debug, source_msg, reason):
+        self.last_valid_time = None
+        self.last_error_m = 0.0
+        self.error_pub.publish(Float32(0.0))
+        self.publish_status(False, 0.0, 0.0, reason, "none")
+        cv2.putText(debug, "vision: {}".format(reason), (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        height, width = debug.shape[:2]
+        roi_top = int(np.clip(self.roi_top_ratio, 0.0, 0.9) * height)
+        empty = np.zeros((height - roi_top, width), dtype=np.uint8)
+        self.publish_images(source_msg, debug, empty, empty, empty, roi_top, height, width)
 
     def publish_invalid(self, debug, now):
         held = self.last_valid_time is not None and now - self.last_valid_time <= self.invalid_hold_sec
@@ -482,7 +556,7 @@ class RoadVisionNode:
             rospy.logwarn_throttle(2.0, "Failed to publish road vision debug images: %s", exc)
 
     def publish_status(self, valid, lateral_error_m, confidence, reason, source,
-                       area_ratio=0.0, target_x=None, line_x=None):
+                       area_ratio=0.0, target_x=None, line_x=None, target_ground=None):
         status = {
             "valid": bool(valid),
             "source": source,
@@ -491,6 +565,8 @@ class RoadVisionNode:
             "area_ratio": round(float(area_ratio), 4),
             "target_x": None if target_x is None else round(float(target_x), 1),
             "center_line_x": None if line_x is None else round(float(line_x), 1),
+            "target_ground_x": None if target_ground is None else round(float(target_ground[0]), 4),
+            "target_ground_y": None if target_ground is None else round(float(target_ground[1]), 4),
             "reason": reason,
             "mode": self.target_mode,
             "center_line_right_sign": self.center_line_right_sign,
@@ -498,10 +574,14 @@ class RoadVisionNode:
             "line_candidate_confirmed": bool(self.current_line_confirmed),
             "road_candidate_confidence": round(float(self.current_road_confidence), 4),
             "road_bottom_touch_ratio": round(float(self.current_road_bottom_touch_ratio), 4),
-            "metric_calibrated": False,
+            "metric_calibrated": self.ipm_matrix is not None,
+            "ipm_matrix_file": self.ipm_matrix_file,
             "convention": "positive_error_shift_path_to_vehicle_right",
         }
-        self.status_pub.publish(String(json.dumps(status, sort_keys=True)))
+        status_json = json.dumps(status, sort_keys=True)
+        self.status_pub.publish(String(status_json))
+        if self.print_status:
+            rospy.loginfo_throttle(1.0, "road_vision status: %s", status_json)
 
 
 if __name__ == "__main__":

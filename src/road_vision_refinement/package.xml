@@ -17,6 +17,10 @@
   <depend>std_msgs</depend>
   <depend>visualization_msgs</depend>
 
+  <exec_depend>astra_camera</exec_depend>
+  <exec_depend>image_view</exec_depend>
+  <exec_depend>image_proc</exec_depend>
+
   <export>
   </export>
 </package>

@@ -1,5 +1,7 @@
 {
   "image": "src/road_vision_refinement/config/calibration/images/ipm_ground_0000.png",
+  "image_width": 640,
+  "image_height": 480,
   "pixel_uv": [
     [
       518.0,
