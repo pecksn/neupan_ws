@@ -19,6 +19,7 @@ catkin_install_python(PROGRAMS
   scripts/verify_ipm_points.py
   scripts/path_refine_node.py
   scripts/road_vision_node.py
+  scripts/clrnet_lane_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

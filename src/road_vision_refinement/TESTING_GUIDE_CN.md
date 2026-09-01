@@ -1,63 +1,152 @@
-# 中心线与道路边缘联合测试指南
+# road_vision_refinement 测试与使用指南
 
-本文档用于验证 `road_vision_refinement`：优先根据中心线生成右侧目标，中心线不可用时尝试道路右边缘；两者都不可用时短暂保持上一结果，再平滑回到原始路径。
+本文档用于验证相机车道线检测、IPM 米制投影和可选的 NeuPAN 路径修正。
+默认只观察视觉结果，不修改 NeuPAN 的原始全局路径。没有完成室外低速验收前，
+不要让 NeuPAN 订阅 `/osm_global_path_refined`。
 
-测试期间车辆保持静止，不要接入 NeuPAN。
+## 1. 当前处理链路
 
-## 1. 当前算法
-
-### 中心线检测
-
-```text
-HSV 白色/黄色阈值
--> 形态学去噪
--> HoughLinesP 线段检测
--> 长度、倾角、历史位置筛选
--> 一次/二次多项式拟合
--> 在中心线右侧生成目标
-```
-
-`center_line_mask` 显示颜色候选，调试图中的紫色曲线是已确认的中心线，橙色点是目标。默认还要求道路候选区域有效（`center_line_requires_road=true`），再通过落点范围、道路行驶方向的斜率约束、连续 `line_confirm_frames` 帧确认、跨帧位置/方向跳变拒绝和曲线指数平滑，未确认的线不会生成紫色曲线。
-
-### 道路边缘检测
+### 1.1 HSV/Hough（默认）
 
 ```text
-HSV 低饱和度道路候选
--> 形态学去噪
--> 最大连通轮廓
--> 水平扫描估计轮廓范围
--> 将轮廓右侧作为道路边缘候选
+BGR 图像
+ -> HSV 白色/黄色阈值
+ -> 形态学去噪
+ -> HoughLinesP 线段检测
+ -> 长度、斜率、位置和跨帧跳变筛选
+ -> 一次/二次曲线拟合
+ -> 连续帧确认
+ -> IPM 投影到 base_link 地面坐标
 ```
 
-当前 `road_edge` 不是严格的路沿检测，可能受墙体、车辆和阴影干扰。现在还要求候选轮廓覆盖多个水平扫描线并接触 ROI 底部，但这仍是几何启发式，必须结合 `road_mask` 人工确认。
+HSV 是颜色空间，OpenCV 是实现 BGR 转 HSV、阈值分割、形态学和 Hough 检测的
+计算机视觉库。HSV/OpenCV 不会判断车辆位于车道线哪一侧；`center_line_side_mode`
+负责根据线在图像中心的左/右位置选择目标侧。
 
-### 自动模式
-
-`target_mode=auto` 的优先级：
+`target_mode=auto` 的视觉优先级为：
 
 ```text
 center_line -> road_edge -> hold_last_valid -> no_visual_reference
 ```
 
-两种视觉参考都失效时，默认保持上一结果 `1 s`，之后按 `invalid_decay_alpha=0.08` 平滑回到原始路径。
+室内地面通常也满足“低饱和度道路”阈值，`road_candidate_confidence=1.0` 不代表
+真实道路。墙边、箱体、桌腿和地面接缝也可能通过颜色或几何筛选，室内场景只能
+用于验证节点状态和拒绝逻辑，不能用于验证道路识别精度。
 
-## 2. 标定与验证
+### 1.2 CLRNet（可选）
 
-### 2.1 单张图片保存工具
+工作区已接入独立的 `clrnet_lane_node.py`。它发布 `/road_vision/clrnet_mask`，
+主节点继续负责 Hough 几何筛选、左右侧目标、连续帧确认、IPM 和误差输出。
 
-`save_one_image.py` 会等待下一帧、保存一张图片，然后自动退出，不需要 `image_saver` 或 `rosservice call`：
-
-```bash
-rosrun road_vision_refinement save_one_image.py IMAGE_TOPIC OUTPUT_FILE
+```text
+CLRNet lane mask -> road_vision_node 几何筛选 -> IPM -> lateral_error
 ```
 
-以下命令都要求相机话题已经启动；如果尚未启动，先执行第 3 节的一体化 launch。IPM 必须使用校正图 `/camera/rgb/image_rect_color`，不能使用原始图。
+支持三种模式：
 
-### 2.2 相机内参标定（需要时执行）
+| `line_detector` | 行为 |
+|---|---|
+| `hsv` | 只使用 HSV/Hough，默认值 |
+| `clrnet` | 优先使用 CLRNet；模型未就绪或掩码为空时回退 HSV |
+| `hybrid` | 合并 CLRNet 和 HSV 掩码后再筛选 |
 
-如果 `/camera/rgb/camera_info` 已有正确内参，并且 `/camera/rgb/image_rect_color` 能正常输出，可跳过本节。
+当前默认配置是 CULane DLA-34，权重位置为：
 
-真正标定内参时，使用棋盘格的实际内角点数量和方格边长。例如棋盘格为 `8x6` 个内角点、方格边长 `0.108 m`：
+```text
+src/CLRNet/weights/culane_dla34.pth
+```
+
+该通用权重不保证适合校园道路。最终应使用本机室外图像标注后微调。
+
+## 2. 环境与一体化启动
+
+### 2.1 Python 环境
+
+不需要另建独立的 `clrnet` Conda 环境。启动 CLRNet 节点的 Python 必须同时能
+导入 `rospy`、`cv_bridge`、`torch`、`mmcv` 和 CLRNet 依赖。
+
+```bash
+conda activate lxw
+python -c "import rospy, cv_bridge, torch, mmcv; print(torch.__version__)"
+```
+
+NeuPAN 需要 `torch>=2.1.0`。不要直接安装上游 CLRNet 固定的 `torch==1.8.0`，
+否则会降级 NeuPAN。CPU 环境补充依赖：
+
+```bash
+python -m pip install \
+  mmcv==1.2.5 addict yapf pandas scikit-learn \
+  scipy tqdm imgaug Shapely==1.7.0 ujson \
+  timm pathspec ptflops pytorch_warmup
+```
+
+如果误装了 `torch==1.8.0`，恢复 NeuPAN 的 CPU 版本：
+
+```bash
+conda activate lxw
+python -m pip install --force-reinstall \
+  torch==2.4.1 torchvision==0.19.1 \
+  --index-url https://download.pytorch.org/whl/cpu
+```
+
+### 2.2 编译工作区
+
+每次修改 Python、launch 或安装新脚本后执行：
+
+```bash
+cd /home/nuc/lxw/neupan_ws
+catkin_make --pkg road_vision_refinement
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+```
+
+### 2.3 启动视觉节点
+
+默认启动 Astra、`image_proc` 和视觉节点，不启动路径修正：
+
+```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  enable_path_refine:=false
+```
+
+启用 CLRNet 和三个调试窗口：
+
+```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  start_clrnet:=true \
+  line_detector:=clrnet \
+  clrnet_device:=cpu \
+  start_debug_viewers:=true \
+  enable_path_refine:=false
+```
+
+如果相机或 `image_proc` 已由其他 launch 启动：
+
+```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  start_camera:=false start_image_proc:=false \
+  start_debug_viewers:=true
+```
+
+`start_debug_viewers` 默认是 `false`，没有图像窗口时检查是否显式设置为 `true`。
+
+## 3. 图像保存、相机标定和 IPM
+
+### 3.1 保存一张图
+
+相机话题启动后，以下命令等待一帧、保存一张图片并自动退出，不需要
+`image_saver` 或 `rosservice call`：
+
+```bash
+rosrun road_vision_refinement save_one_image.py \
+  /camera/rgb/image_rect_color OUTPUT_FILE.png
+```
+
+IPM 必须使用 `/camera/rgb/image_rect_color`，不能使用原始图。
+
+### 3.2 相机内参（需要时）
+
+如果 `/camera/rgb/camera_info` 正确且校正图正常，可跳过。重新标定示例：
 
 ```bash
 rosrun camera_calibration cameracalibrator.py \
@@ -65,236 +154,250 @@ rosrun camera_calibration cameracalibrator.py \
   image:=/camera/rgb/image_raw camera:=/camera/rgb
 ```
 
-从不同距离和角度采集棋盘格，窗口中的 `CALIBRATE` 可用后依次点击 `CALIBRATE`、`SAVE`。生成的 YAML 才是内参结果。
+### 3.3 IPM 标定
 
-如需额外保存一张棋盘格原始图留档：
-
-```bash
-rosrun road_vision_refinement save_one_image.py \
-  /camera/rgb/image_raw \
-  /home/nuc/lxw/neupan_ws/src/road_vision_refinement/config/calibration/images/camera_calibration.png
-```
-
-单张棋盘格图片只用于留档，不能替代上面的多姿态内参标定。
-
-### 2.3 IPM 标定
-
-约定 `base_link` 中 `x` 向车辆前方、`y` 向车辆左侧，单位为米。保持车辆和相机不动，在同一水平地面放置以下 4 个标记：
+坐标约定：`base_link.x` 向前，`base_link.y` 向车辆左侧，单位为米。将 4 个标记
+放在同一水平地面：
 
 ```text
-(2.0, -0.5)
-(2.0,  0.5)
-(3.0, -0.5)
-(3.0,  0.5)
+(2.0, -0.5)  (2.0, 0.5)
+(3.0, -0.5)  (3.0, 0.5)
 ```
 
-保存一张 IPM 校正图：
+保存图片并计算矩阵：
 
 ```bash
 rosrun road_vision_refinement save_one_image.py \
   /camera/rgb/image_rect_color \
-  /home/nuc/lxw/neupan_ws/src/road_vision_refinement/config/calibration/images/ipm_ground.png
-```
+  src/road_vision_refinement/config/calibration/images/ipm_ground.png
 
-计算 IPM 矩阵：
-
-```bash
 python3 src/road_vision_refinement/scripts/pick_ipm_points.py \
   src/road_vision_refinement/config/calibration/images/ipm_ground.png \
   --ground '[[2.0,-0.5],[2.0,0.5],[3.0,-0.5],[3.0,0.5]]' \
   --output src/road_vision_refinement/config/calibration/ipm_points.json
 ```
 
-程序打开图片后，严格按照 `--ground` 中的顺序点击 4 个标记中心。结果写入 `config/calibration/ipm_points.json`。
+点击顺序必须与 `--ground` 完全一致。矩阵保存在
+`config/calibration/ipm_points.json`。
 
-### 2.4 独立新点验证
+### 3.4 独立点验证
 
-不要使用刚才参与标定的 4 个点验证。保持车辆和相机不动，把标记移到新的已知位置。当前实际验证点为：
+不要使用参与标定的 4 个点。当前独立验证点为：
 
 ```text
 (1.5, 0.3)
 (1.8, 0.3)
 ```
 
-保存新的校正图：
-
 ```bash
 rosrun road_vision_refinement save_one_image.py \
   /camera/rgb/image_rect_color \
-  /home/nuc/lxw/neupan_ws/src/road_vision_refinement/config/calibration/images/ipm_verify.png
-```
+  src/road_vision_refinement/config/calibration/images/ipm_verify.png
 
-验证矩阵：
-
-```bash
 python3 src/road_vision_refinement/scripts/verify_ipm_points.py \
   src/road_vision_refinement/config/calibration/images/ipm_verify.png \
   --ground '[[1.5,0.3],[1.8,0.3]]' \
   --matrix src/road_vision_refinement/config/calibration/ipm_points.json
 ```
 
-按 `--ground` 顺序点击两个新标记。程序会输出预测坐标、单点误差、最大误差和平均误差。
+已完成的验证结果：两个点误差均为 `0.225 m`，当前暂按 `max_error<=0.25 m` 验收。
+相机位置、安装高度或俯仰角变化后必须重新标定和验证。
 
-### 2.5 当前状态
+## 4. 室内静止测试
 
-当前 4 点 IPM 标定和两个独立新点验证已经完成，两个验证点误差均为 `0.225 m`，暂按 `max_error <= 0.25 m` 验收。矩阵保存在 `config/calibration/ipm_points.json`，无需重复执行第 2.3、2.4 节。只有相机位置或俯仰角发生变化时才重新标定。
-
-现在继续第 3 节。
-
-## 3. 下一步：静止联合检测
-
-车辆保持静止，不要启动 `full_system_run.launch`，也不要接入 NeuPAN。`road_vision_debug.launch` 现在会自动启动 Astra、`image_proc` 和视觉节点，并使用 `/camera/rgb/image_rect_color`。
-
-RGB 内参默认从 `config/calibration/astra_rgb_camera.yaml` 加载，该文件来自标定时保存的 640×480 `CameraInfo`。
-
-启动前在当前终端执行：
+室内只验证程序是否安全拒绝无道路参考，不验证车道线准确率。车辆保持静止，
+不开启路径修正：
 
 ```bash
-conda activate lxw
-cd /home/nuc/lxw/neupan_ws
+roslaunch road_vision_refinement road_vision_debug.launch \
+  start_clrnet:=true line_detector:=clrnet \
+  start_debug_viewers:=true enable_path_refine:=false
+```
+
+无真实车道线时，期望最终状态为：
+
+```text
+valid=false
+source=none
+reason=no_visual_reference
+```
+
+如果室内出现 `source=center_line`、`reason=ok`，通常是 CLRNet 将箱体/门框/地面
+接缝作为候选线，或 HSV 道路掩码把地面判成道路。重点检查：
+
+```text
+line_hough_count
+line_reject_reason
+line_candidate_confidence
+road_candidate_confidence
+center_line_x
+```
+
+近垂直设备边缘现在会被斜率门限拒绝；仍然误检时不要把室内结果用于调高置信度，
+应直接停止路径联调并保存样本，后续增加室内负样本或微调 CLRNet。
+
+## 5. 室外测试、录包和离线复测
+
+### 5.1 室外静止测试
+
+第 3 节 IPM 已通过后，到室外道路保持静止：
+
+```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  start_clrnet:=true line_detector:=clrnet \
+  start_debug_viewers:=true enable_path_refine:=false
+```
+
+依次测试：中心线清晰、中心线遮挡但道路边缘清晰、两者都不可见、中心线恢复。
+期望来源变化：
+
+```text
+center_line -> road_edge -> hold_last_valid -> no_visual_reference -> center_line
+```
+
+中心线清晰时，调试图中的紫色曲线应贴在线上，橙色目标点应位于线的另一侧；
+状态中应有 `metric_calibrated=true` 和有效的 `target_ground_x/y`。
+
+### 5.2 录制室外 rosbag
+
+录包用于保存完整测试过程，至少覆盖上面的 4 段场景。建议使用系统 ROS Python：
+
+```bash
+conda deactivate
 source /opt/ros/noetic/setup.bash
-source devel/setup.bash
-```
-
-只启动检测，不修正路径：
-
-```bash
-roslaunch road_vision_refinement road_vision_debug.launch
-```
-
-`roslaunch` 会在需要时自动启动 ROS Master，不必单独运行 `roscore`。如果相机或 `image_proc` 已由其他 launch 启动，使用对应开关避免重复节点：
-
-```bash
-roslaunch road_vision_refinement road_vision_debug.launch \
-  start_camera:=false \
-  start_image_proc:=false
-```
-
-视觉节点默认每秒在当前终端输出一次状态，不需要另外执行 `rostopic echo`。需要同时打开三个调试图窗口时执行：
-
-```bash
-roslaunch road_vision_refinement road_vision_debug.launch \
-  start_debug_viewers:=true
-```
-
-当前 Conda 环境中的 `rostopic` 缺少 `Cryptodome`，`rqt_image_view` 缺少 PyQt5，因此一体化 launch 使用视觉节点自身打印状态，并使用 C++ `image_view` 显示图片，不依赖这两个 Python 工具。
-
-同一帧会同时生成中心线和道路 mask，最终使用的来源由 `/road_vision/status` 中的 `source` 表示。
-
-状态中还会显示 `line_candidate_confidence`、`line_candidate_confirmed`、`road_candidate_confidence` 和 `road_bottom_touch_ratio`，可用于区分“没检测到”和“检测到但未通过确认”。
-
-状态中 `metric_calibrated=true` 表示 IPM 已加载。`target_ground_x/y` 是橙色目标点在 `base_link` 地面坐标中的位置；`lateral_error_m` 为真实米制横向误差，正值表示路径向车辆右侧修正。当前仍保持 `enable_path_refine=false`，本节只验收检测和米制输出。
-
-## 4. 场景验收
-
-| 场景 | 图像要求 | 期望状态 |
-|---|---|---|
-| 中心线清晰 | 紫色曲线贴着中心线，橙色点在其右侧 | `source=center_line`, `valid=true` |
-| 无中心线、右边缘清晰 | `road_mask` 覆盖路面，橙色点在边缘内侧 | `source=road_edge`, `valid=true` |
-| 两者短暂丢失 | 目标和误差保持上一结果 | `reason=hold_last_valid` |
-| 两者持续丢失 | 不再输出有效视觉参考 | `valid=false`, `reason=no_visual_reference` |
-
-出现以下情况应停止，不进入路径测试：
-
-- 紫色曲线落在墙、地砖缝、桌腿或反光区域；
-- `road_mask` 覆盖墙体或几乎整幅图；
-- 道路候选右边缘就是图像最右侧；
-- 橙色目标点落到道路外；
-- `source` 在静止场景下频繁跳变。
-
-## 5. 录包与离线复测
-
-分别经过“有中心线、只有右边缘、两者都没有”的场景：
-
-```bash
+source /home/nuc/lxw/neupan_ws/devel/setup.bash
 mkdir -p /home/nuc/lxw/neupan_ws/bags/road_test
 rosbag record -O /home/nuc/lxw/neupan_ws/bags/road_test/vision_modes.bag \
-  /camera/rgb/image_rect_color \
-  /camera/rgb/camera_info \
-  /road_vision/debug_image \
-  /road_vision/center_line_mask \
-  /road_vision/road_mask \
-  /road_vision/status \
-  /road_vision/lateral_error \
-  /osm_global_path \
-  /osm_global_path_refined \
-  /scan /tf /tf_static
+  /camera/rgb/image_rect_color /camera/rgb/camera_info \
+  /road_vision/debug_image /road_vision/center_line_mask \
+  /road_vision/road_mask /road_vision/status /road_vision/lateral_error \
+  /osm_global_path /osm_global_path_refined /scan /tf /tf_static
 ```
 
-停止录制后检查：
+结束录包时只在录包终端按 `Ctrl+C`：
 
 ```bash
 rosbag info /home/nuc/lxw/neupan_ws/bags/road_test/vision_modes.bag
 ```
 
-离线播放：
+### 5.3 离线复测
+
+离线复测不启动 Astra 或 `image_proc`：
+
+终端 1：
 
 ```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  start_camera:=false start_image_proc:=false \
+  start_debug_viewers:=true enable_path_refine:=false
+```
+
+终端 2：
+
+```bash
+conda deactivate
+source /opt/ros/noetic/setup.bash
+source /home/nuc/lxw/neupan_ws/devel/setup.bash
 rosparam set use_sim_time true
 rosbag play --clock /home/nuc/lxw/neupan_ws/bags/road_test/vision_modes.bag
 ```
 
-## 6. 路径平滑测试
+重点检查 `source` 切换、`hold_last_valid`、`no_visual_reference`、IPM 状态和误差
+符号是否与实测方向一致。
 
-只有第 4 节全部通过，并确认状态中 `metric_calibrated=true`、米制误差方向正确后才执行。测试时车辆仍须保持静止：
+## 6. 路径修正与 NeuPAN 联调
+
+### 6.1 TF 和全局路径
+
+先启动整车系统，再启动视觉节点；视觉节点仍保持路径修正关闭：
+
+终端 1：
+
+```bash
+roslaunch neupan_ros full_system_run.launch \
+  outdoor_mode:=true enable_rviz:=true
+```
+
+终端 2：
 
 ```bash
 roslaunch road_vision_refinement road_vision_debug.launch \
-  enable_path_refine:=true \
-  invalid_hold_sec:=1.0 \
-  invalid_decay_alpha:=0.08
+  start_debug_viewers:=true enable_path_refine:=false
 ```
 
-在 RViz 同时显示：
+确认相机外参：
+
+```bash
+rosrun tf tf_echo base_link camera_link
+```
+
+### 6.2 静止路径修正
+
+视觉状态稳定后，车辆保持静止，才打开路径修正：
+
+```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  start_debug_viewers:=true enable_path_refine:=true
+```
+
+在 RViz 同时显示 `/osm_global_path` 和 `/osm_global_path_refined`。确认来源切换
+时路径连续，视觉失效时平滑回到原始路径，并且 `/osm_global_path` 不被修改。
+
+### 6.3 低速运动
+
+静止路径修正通过后，选择空旷路段低速直线运动并准备急停。确认修正方向、误差
+限幅、视觉失效回退、Livox 避障和急停均正常后，再单独测试转弯。
+
+## 7. 跟踪日志
+
+launch 默认将每次启动的状态写入新的文件：
 
 ```text
-/osm_global_path
-/osm_global_path_refined
+/home/nuc/lxw/neupan_ws/tracker_logs/road_vision_status_YYYYMMDD_HHMMSS_microseconds.jsonl
 ```
 
-依次测试：
+每行一个 JSON，包含时间戳、`valid`、`source`、误差、CLRNet 状态、车道线侧别、
+Hough 数量和拒绝原因。Ctrl-C 后节点关闭文件，下一次启动不会继续写旧文件。
 
-```text
-中心线可见 -> 只有道路边缘 -> 两者遮挡 -> 恢复中心线
+查看最新日志：
+
+```bash
+ls -lt /home/nuc/lxw/neupan_ws/tracker_logs/road_vision_status_*.jsonl | head
+tail -f "$(ls -t /home/nuc/lxw/neupan_ws/tracker_logs/road_vision_status_*.jsonl | head -1)"
 ```
 
-应满足：
+指定其他目录：
 
-- 来源切换时路径连续；
-- 两者失效 1 秒内保持原偏移；
-- 持续失效时平滑回到原始路径；
-- 恢复中心线时平滑重新产生偏移；
-- `/osm_global_path` 始终不被修改。
+```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  tracker_log_dir:=/绝对路径/tracker_logs
+```
 
-## 7. 室外导航接入状态
+ROS 自身的 launch 日志仍由 ROS 保存到 `~/.ros/log`；如需同时保存完整终端输出：
 
-目前**没有自动接入室外 NeuPAN**：
+```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  2>&1 | tee tracker_logs/roslaunch_$(date +%Y%m%d_%H%M%S).log
+```
 
-- `road_vision_debug.launch` 默认 `enable_path_refine=false`；
-- `full_system_run.launch` 没有启动视觉包；
-- `outdoor_initial_path_topic` 默认仍是 `/osm_global_path`；
-- `/osm_global_path_refined` 目前只用于调试。
+## 8. 故障判断顺序
 
-在完成检测和米制误差验收前，不要让 NeuPAN 订阅 `/osm_global_path_refined`。
-
-## 8. 当前问题与后续顺序
-
-| 当前问题 | 后续解决方式 |
+| 现象 | 先检查 |
 |---|---|
-| IPM 验证误差约 `0.225 m` | 暂按 `0.25 m` 验收，实车低速测试时继续记录并复核系统偏差 |
-| `road_edge` 只是颜色轮廓右边缘 | 加入边缘连续性、地面几何和 Livox 路沿校验 |
-| 固定 HSV/Hough 容易受光照影响 | 用录包覆盖晴天、阴影、磨损标线并调阈值和置信度 |
-| 图像右侧被固定认为车辆右侧 | 根据局部路径方向计算右法向 |
-| 整条全局路径统一平移 | 只修正车辆前方 `5~15 m` 的局部路径并随距离衰减 |
-| 摄像头和 Livox 尚未融合 | 两者先统一到 `base_link` 米制坐标，再做障碍/边缘安全校验 |
+| 没有图像窗口 | `start_debug_viewers:=true` |
+| CLRNet 显示 `No module named torch/mmcv` | 使用 ROS 启动的同一个 Python 安装依赖 |
+| CLRNet 出现下载进度 | 确认 checkpoint 存在；节点已关闭 backbone 二次下载 |
+| 室内 `source=center_line` | `line_hough_count`、斜率拒绝、CLRNet 负样本 |
+| 车道线左右跳变 | `line_reject_reason`、`center_line_x`、相机偏航和多线干扰 |
+| `metric_calibrated=false` | IPM 文件路径、JSON 矩阵和图像分辨率 |
+| `road_candidate_confidence=1.0` 但在室内 | 地面被低饱和度道路阈值选中，不代表真实道路 |
+| 误差方向反了 | 检查 `base_link.y` 左正约定和 `lateral_error_m` 符号 |
 
-建议顺序：
+## 9. 验收门槛
 
-```text
-IPM 标定、验证和视觉节点接入（已完成）
--> 静止联合检测和米制误差验收（当前下一步）
--> 相机外参和 Livox 外参复核
--> 局部路径修正
--> Livox 安全约束
--> 低速接入室外 NeuPAN
-```
+- IPM 独立点最大误差暂不超过 `0.25 m`；
+- 室内无道路参考时最终为 `valid=false`、`source=none`；
+- 室外静止测试完成 4 段来源切换且无明显误检；
+- 录包可正常回放，离线状态与实时状态一致；
+- 静止路径修正通过后才进行低速运动；
+- 低速运动通过后才允许 NeuPAN 订阅 `/osm_global_path_refined`。

@@ -1579,13 +1579,9 @@ mkdir build && cd build
 cmake .. && make -j4
 ```
 
-### 开启launch
+### 标定
 
-```
-
-```
-
-
+棋盘格生成：[相机校准图案生成器 – calib.io](https://calib.io/zh/pages/camera-calibration-pattern-generator)
 
 # 世界模型
 

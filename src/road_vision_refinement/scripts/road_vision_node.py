@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import math
+import os
 import time
 
 import cv2
@@ -28,6 +29,21 @@ class RoadVisionNode:
         self.max_correction_m = float(rospy.get_param("~max_correction_m", 0.8))
         self.process_rate = float(rospy.get_param("~process_rate", 10.0))
         self.print_status = bool(rospy.get_param("~print_status", False))
+        self.tracker_log_dir = rospy.get_param("~tracker_log_dir", "")
+        self.status_log = None
+        if self.tracker_log_dir:
+            try:
+                os.makedirs(self.tracker_log_dir, exist_ok=True)
+                run_stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+                run_stamp += "_%06d" % int((time.time() % 1.0) * 1000000.0)
+                log_name = "road_vision_status_%s.jsonl" % run_stamp
+                log_path = os.path.join(self.tracker_log_dir, log_name)
+                self.status_log = open(log_path, "a", encoding="utf-8", buffering=1)
+                rospy.loginfo("Writing road vision status log to %s", log_path)
+                rospy.on_shutdown(self.close_status_log)
+            except OSError as exc:
+                rospy.logerr("Failed to open tracker log directory %s: %s",
+                             self.tracker_log_dir, exc)
         self.ipm_matrix_file = rospy.get_param("~ipm_matrix_file", "")
         self.ipm_matrix = None
         self.ipm_image_width = None
@@ -38,11 +54,22 @@ class RoadVisionNode:
         if self.target_mode not in ("auto", "center_line", "road_edge", "road_region"):
             rospy.logwarn("Unknown target_mode=%s; using auto", self.target_mode)
             self.target_mode = "auto"
+        self.line_detector = rospy.get_param("~line_detector", "hsv").lower()
+        if self.line_detector not in ("hsv", "clrnet", "hybrid"):
+            rospy.logwarn("Unknown line_detector=%s; using hsv", self.line_detector)
+            self.line_detector = "hsv"
+        self.clrnet_mask_topic = rospy.get_param("~clrnet_mask_topic", "/road_vision/clrnet_mask")
+        self.latest_clrnet_mask = None
+        self.latest_clrnet_mask_stamp = None
         self.center_line_right_offset_ratio = float(
             rospy.get_param("~center_line_right_offset_ratio", 0.18)
         )
         self.center_line_right_sign = float(rospy.get_param("~center_line_right_sign", 1.0))
         self.center_line_right_sign = 1.0 if self.center_line_right_sign >= 0.0 else -1.0
+        self.center_line_side_mode = rospy.get_param("~center_line_side_mode", "auto").lower()
+        if self.center_line_side_mode not in ("auto", "left", "right"):
+            rospy.logwarn("Unknown center_line_side_mode=%s; using auto", self.center_line_side_mode)
+            self.center_line_side_mode = "auto"
         self.invalid_hold_sec = float(rospy.get_param("~invalid_hold_sec", 1.0))
         self.min_confidence = float(rospy.get_param("~min_confidence", 0.35))
         self.min_line_confidence = float(rospy.get_param("~min_line_confidence", 0.40))
@@ -54,6 +81,8 @@ class RoadVisionNode:
         )
         self.line_search_margin_px = int(rospy.get_param("~line_search_margin_px", 10))
         self.line_min_length_ratio = float(rospy.get_param("~line_min_length_ratio", 0.12))
+        self.line_min_vertical_ratio = float(rospy.get_param("~line_min_vertical_ratio", 0.20))
+        self.line_min_slope_ratio = float(rospy.get_param("~line_min_slope_ratio", 0.15))
         self.line_max_jump_px = float(rospy.get_param("~line_max_jump_px", 70.0))
         self.line_max_angle_jump_deg = float(rospy.get_param("~line_max_angle_jump_deg", 25.0))
         self.line_smoothing_alpha = float(rospy.get_param("~line_smoothing_alpha", 0.25))
@@ -101,6 +130,9 @@ class RoadVisionNode:
         self.pending_line_angle_deg = None
         self.current_line_confidence = 0.0
         self.current_line_confirmed = False
+        self.current_line_hough_count = 0
+        self.current_line_reject_reason = "not_evaluated"
+        self.current_line_side = "unknown"
         self.current_road_confidence = 0.0
         self.current_road_bottom_touch_ratio = 0.0
 
@@ -110,9 +142,28 @@ class RoadVisionNode:
         self.debug_pub = rospy.Publisher("~debug_image", Image, queue_size=1)
         self.error_pub = rospy.Publisher("~lateral_error", Float32, queue_size=1)
         self.status_pub = rospy.Publisher("~status", String, queue_size=1)
+        if self.line_detector in ("clrnet", "hybrid"):
+            self.clrnet_mask_sub = rospy.Subscriber(
+                self.clrnet_mask_topic, Image, self.clrnet_mask_cb,
+                queue_size=1, buff_size=2 ** 24)
         self.sub = rospy.Subscriber(self.image_topic, Image, self.image_cb, queue_size=1, buff_size=2 ** 24)
 
-        rospy.loginfo("road_vision_node listening to %s (mode=%s)", self.image_topic, self.target_mode)
+        rospy.loginfo("road_vision_node listening to %s (mode=%s, line_detector=%s)",
+                      self.image_topic, self.target_mode, self.line_detector)
+
+    def clrnet_mask_cb(self, msg):
+        try:
+            mask = self.bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
+            if mask.ndim == 2:
+                self.latest_clrnet_mask = np.array(mask, copy=True)
+                self.latest_clrnet_mask_stamp = msg.header.stamp
+        except CvBridgeError as exc:
+            rospy.logwarn_throttle(5.0, "Failed to convert CLRNet mask: %s", exc)
+
+    def close_status_log(self):
+        if self.status_log is not None:
+            self.status_log.close()
+            self.status_log = None
 
     def load_ipm_matrix(self):
         if not self.ipm_matrix_file:
@@ -158,7 +209,22 @@ class RoadVisionNode:
         y_eval = int(np.clip(0.82 * roi_height, 0, roi_height - 1))
 
         road_mask_roi = self.make_road_mask(roi)
-        line_mask_roi = self.make_center_line_mask(roi)
+        hsv_line_mask_roi = self.make_center_line_mask(roi)
+        line_mask_roi = hsv_line_mask_roi
+        clrnet_ready = False
+        if self.line_detector in ("clrnet", "hybrid") and self.latest_clrnet_mask is not None:
+            clrnet_mask = self.latest_clrnet_mask
+            if clrnet_mask.shape == (height, width):
+                clrnet_line_mask_roi = clrnet_mask[roi_top:height, :]
+                clrnet_ready = bool(np.count_nonzero(clrnet_line_mask_roi))
+                if self.line_detector == "clrnet":
+                    line_mask_roi = clrnet_line_mask_roi
+                elif clrnet_ready:
+                    line_mask_roi = cv2.bitwise_or(hsv_line_mask_roi, clrnet_line_mask_roi)
+        if self.line_detector == "clrnet" and not clrnet_ready:
+            # Keep the main node usable while the optional inference node is
+            # starting or when its checkpoint/dependencies are unavailable.
+            line_mask_roi = hsv_line_mask_roi
         line_result = self.detect_center_line(line_mask_roi, width, roi_height, y_eval)
         self.current_line_confidence = 0.0 if line_result is None else line_result["confidence"]
         self.current_line_confirmed = False if line_result is None else line_result["confirmed"]
@@ -233,24 +299,52 @@ class RoadVisionNode:
         return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.line_kernel, iterations=2)
 
     def detect_center_line(self, mask, width, roi_height, y_eval):
+        self.current_line_hough_count = 0
+        self.current_line_reject_reason = "no_hough_lines"
+        self.current_line_side = "unknown"
         min_length = max(12, int(roi_height * self.line_min_length_ratio))
         lines = cv2.HoughLinesP(
             mask, 1, np.pi / 180.0, threshold=20,
-            minLineLength=min_length, maxLineGap=max(15, roi_height // 12),
+            minLineLength=min_length, maxLineGap=max(15, roi_height // 10),
         )
         if lines is None:
             return None
+        self.current_line_hough_count = len(lines)
 
-        expected_x = self.last_line_x if self.last_line_x is not None else width * 0.42
+        if self.last_line_x is not None:
+            expected_x = self.last_line_x
+        elif self.center_line_side_mode == "left":
+            expected_x = width * 0.42
+        elif self.center_line_side_mode == "right":
+            expected_x = width * 0.58
+        else:
+            expected_x = width * 0.50
+        expected_slope_sign = 1.0 if self.center_line_slope_sign >= 0.0 else -1.0
         candidates = []
         for raw in lines[:, 0, :]:
             x1, y1, x2, y2 = [float(value) for value in raw]
             dx = x2 - x1
             dy = y2 - y1
             length = math.hypot(dx, dy)
-            if length < min_length or abs(dy) < 0.35 * length:
+            # Reject nearly horizontal fragments, but allow perspective lines
+            # that are less steep than the original 0.35 threshold.
+            if length < min_length or abs(dy) < np.clip(self.line_min_vertical_ratio, 0.05, 0.95) * length:
                 continue
+            # Use dx/dy, not dx alone. HoughLinesP may return either endpoint
+            # first, so dx's sign by itself is not a stable line direction.
+            slope = dx / dy
             x_eval = x1 + (y_eval - y1) * dx / dy
+            # Near-vertical edges (boxes, doors, furniture) are common in
+            # indoor scenes and are not a usable perspective lane marking.
+            if abs(slope) < max(0.0, self.line_min_slope_ratio):
+                continue
+            slope_sign = 1.0 if slope >= 0.0 else -1.0
+            if self.center_line_side_mode != "auto" and slope_sign != expected_slope_sign:
+                continue
+            if self.center_line_side_mode == "left" and x_eval > width * 0.55:
+                continue
+            if self.center_line_side_mode == "right" and x_eval < width * 0.45:
+                continue
             if x_eval < -0.15 * width or x_eval > 1.15 * width:
                 continue
             vertical_score = abs(dy) / max(length, 1.0)
@@ -259,6 +353,7 @@ class RoadVisionNode:
             candidates.append((score, x1, y1, x2, y2, x_eval, length))
 
         if not candidates:
+            self.current_line_reject_reason = "no_directional_candidate"
             return None
 
         best = max(candidates, key=lambda item: item[0])
@@ -272,27 +367,34 @@ class RoadVisionNode:
         fit_x = xx[near]
         fit_y = yy[near]
         if fit_x.size < 30:
+            self.current_line_reject_reason = "insufficient_line_pixels"
             return None
 
         degree = 2 if fit_x.size >= 120 and np.ptp(fit_y) >= roi_height * 0.35 else 1
         coeffs = np.polyfit(fit_y.astype(np.float64), fit_x.astype(np.float64), degree)
         raw_line_x = float(np.polyval(coeffs, y_eval))
         angle_deg = math.degrees(math.atan2(line_dx, line_dy))
-        slope_sign = 1.0 if line_dx >= 0.0 else -1.0
-        expected_slope_sign = 1.0 if self.center_line_slope_sign >= 0.0 else -1.0
-        if abs(line_dx) > 0.15 * abs(line_dy) and slope_sign != expected_slope_sign:
+        max_eval_ratio = self.center_line_max_eval_x_ratio
+        if self.center_line_side_mode == "auto":
+            max_eval_ratio = max(max_eval_ratio, 0.95)
+        if raw_line_x > np.clip(max_eval_ratio, 0.5, 0.98) * width:
+            self.current_line_reject_reason = "candidate_too_far_right"
             self.line_candidate_streak = 0
             self.pending_line_x = None
             self.pending_line_angle_deg = None
             return None
-        if raw_line_x > np.clip(self.center_line_max_eval_x_ratio, 0.5, 0.95) * width:
-            self.line_candidate_streak = 0
-            self.pending_line_x = None
-            self.pending_line_angle_deg = None
-            return None
-        expected_x = float(np.clip(self.center_line_expected_x_ratio, 0.0, 1.0) * width)
-        max_offset = float(np.clip(self.center_line_max_offset_ratio, 0.05, 0.9) * width)
+        if self.center_line_side_mode == "left":
+            expected_x = float(np.clip(self.center_line_expected_x_ratio, 0.0, 1.0) * width)
+        elif self.center_line_side_mode == "right":
+            expected_x = float(np.clip(1.0 - self.center_line_expected_x_ratio, 0.0, 1.0) * width)
+        else:
+            expected_x = width * 0.50
+        max_offset_ratio = self.center_line_max_offset_ratio
+        if self.center_line_side_mode == "auto":
+            max_offset_ratio = max(max_offset_ratio, 0.45)
+        max_offset = float(np.clip(max_offset_ratio, 0.05, 0.9) * width)
         if abs(raw_line_x - expected_x) > max_offset:
+            self.current_line_reject_reason = "candidate_outside_expected_x"
             self.line_candidate_streak = 0
             self.pending_line_x = None
             self.pending_line_angle_deg = None
@@ -313,6 +415,7 @@ class RoadVisionNode:
         self.pending_line_x = raw_line_x
         self.pending_line_angle_deg = angle_deg
         if self.last_line_x is not None and abs(raw_line_x - self.last_line_x) > self.line_max_jump_px:
+            self.current_line_reject_reason = "candidate_position_jump"
             self.line_candidate_streak = 0
             return None
         if self.last_line_angle_deg is not None:
@@ -320,6 +423,7 @@ class RoadVisionNode:
             # compare line orientation modulo 180 degrees.
             angle_delta = abs((angle_deg - self.last_line_angle_deg + 90.0) % 180.0 - 90.0)
             if angle_delta > self.line_max_angle_jump_deg:
+                self.current_line_reject_reason = "candidate_angle_jump"
                 self.line_candidate_streak = 0
                 return None
 
@@ -333,12 +437,19 @@ class RoadVisionNode:
         pixel_score = min(1.0, fit_x.size / max(roi_height * 0.7, 1.0))
         length_score = min(1.0, segment_length / max(roi_height * 0.55, 1.0))
         confidence = float(np.clip(0.45 * coverage + 0.30 * pixel_score + 0.25 * length_score, 0.0, 1.0))
+        confirmed = self.line_candidate_streak >= self.line_confirm_frames
+        line_side = "left" if line_x < width * 0.5 else "right"
+        self.current_line_side = line_side
+        self.current_line_reject_reason = (
+            "accepted_confirmed" if confirmed else "accepted_pending_confirmation"
+        )
         return {
             "coeffs": coeffs,
             "line_x": line_x,
             "angle_deg": angle_deg,
             "raw_line_x": raw_line_x,
-            "confirmed": self.line_candidate_streak >= self.line_confirm_frames,
+            "confirmed": confirmed,
+            "side": line_side,
             "confidence": confidence,
             "coverage": coverage,
             "fit_y_min": int(np.min(fit_y)),
@@ -347,7 +458,11 @@ class RoadVisionNode:
 
     def center_line_target(self, line_result, width):
         offset_px = float(np.clip(self.center_line_right_offset_ratio, 0.0, 0.45) * width)
-        target_x = float(np.clip(line_result["line_x"] + self.center_line_right_sign * offset_px,
+        if self.center_line_side_mode == "auto":
+            target_sign = 1.0 if line_result.get("side") == "left" else -1.0
+        else:
+            target_sign = self.center_line_right_sign
+        target_x = float(np.clip(line_result["line_x"] + target_sign * offset_px,
                                  0.0, width - 1.0))
         return {
             "source": "center_line",
@@ -355,6 +470,8 @@ class RoadVisionNode:
             "line_x": line_result["line_x"],
             "coeffs": line_result["coeffs"],
             "angle_deg": line_result["angle_deg"],
+            "side": line_result.get("side"),
+            "target_sign": target_sign,
             "confidence": line_result["confidence"],
             "area_ratio": 0.0,
         }
@@ -558,6 +675,7 @@ class RoadVisionNode:
     def publish_status(self, valid, lateral_error_m, confidence, reason, source,
                        area_ratio=0.0, target_x=None, line_x=None, target_ground=None):
         status = {
+            "wall_time": round(time.time(), 6),
             "valid": bool(valid),
             "source": source,
             "lateral_error_m": round(float(lateral_error_m), 4),
@@ -572,14 +690,25 @@ class RoadVisionNode:
             "center_line_right_sign": self.center_line_right_sign,
             "line_candidate_confidence": round(float(self.current_line_confidence), 4),
             "line_candidate_confirmed": bool(self.current_line_confirmed),
+            "center_line_side_mode": self.center_line_side_mode,
+            "center_line_side": self.current_line_side,
             "road_candidate_confidence": round(float(self.current_road_confidence), 4),
             "road_bottom_touch_ratio": round(float(self.current_road_bottom_touch_ratio), 4),
+            "line_hough_count": int(self.current_line_hough_count),
+            "line_reject_reason": self.current_line_reject_reason,
+            "line_detector": self.line_detector,
+            "clrnet_mask_ready": self.latest_clrnet_mask is not None,
             "metric_calibrated": self.ipm_matrix is not None,
             "ipm_matrix_file": self.ipm_matrix_file,
             "convention": "positive_error_shift_path_to_vehicle_right",
         }
         status_json = json.dumps(status, sort_keys=True)
         self.status_pub.publish(String(status_json))
+        if self.status_log is not None:
+            try:
+                self.status_log.write(status_json + "\n")
+            except OSError as exc:
+                rospy.logwarn_throttle(5.0, "Failed to write tracker status log: %s", exc)
         if self.print_status:
             rospy.loginfo_throttle(1.0, "road_vision status: %s", status_json)
 
