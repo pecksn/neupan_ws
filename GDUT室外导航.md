@@ -558,6 +558,28 @@ cd /home/nuc/lxw/neupan_ws && catkin_make && source devel/setup.bash
 |        | d_max                  | 障碍感知范围：仅处理 dist≤2.0m 的障碍物                      | 增大→感知范围更广、避障更提前；减小→过滤远处障碍、计算量降低 |
 |        | d_min                  | 避障代价 Cobs 中最小安全距离                                 | 增大→轨迹离障碍物更远、更保守；减小→更贴障碍物、更激进       |
 
+### 走直线左右摇摆问题
+
+1. **减小max_acce的角加速度（小于0.1）**
+
+   对 Ackermann 车辆，`max_acce` 的第二个值用于限制转向量的变化速度。数值过大时，优化器每次求解都可能快速改变转向角；当横向误差或航向误差存在噪声时，车辆容易出现“向左修正后马上向右修正”的左右摆动。
+
+   适当减小该值可以让转向变化更平滑，减少控制输出的突变。
+
+2. **增大 `receding` 或 `step_time`**
+
+   `receding` 表示预测步数，`step_time` 表示每个预测步的时间，因此预测总时长约为：
+
+   ```
+   prediction_time = receding × step_time
+   ```
+
+   参考速度降低后，如果 `receding` 不变，预测覆盖的实际距离也会变短，优化器看到的路径范围不足，容易只根据眼前的小误差反复修正，导致直线行驶左右摇摆。
+
+3. **增大 `q_s`**
+
+   `q_s` 是状态误差代价权重，用于提高车辆预测状态与参考路径之间的偏差惩罚。适当增大后，优化器会更重视横向位置和航向误差，减少车辆偏离路径后再大幅反向修正的情况。
+
 ## Neupan Limo Gazebo 仿真配置(Docker/ROS1 环境/本地虚拟机)
 
 ---
@@ -1563,6 +1585,117 @@ AT+NTRIP=120.253.239.161,8002,cndh43990,a8888507,RTCM33_GRCE
                      NeuPAN Local Planner
                             │
                        Ackermann Vehicle
+
+### 车道线检测
+
+车道线观测由 `road_vision_refinement` 提供，用于在 OSM 全局路径基础上产生局部视觉横向误差。默认只发布观测结果，不直接修改 NeuPAN 的输入路径。
+
+#### 处理链路与输出
+
+```text
+校正 RGB 图像
+-> HSV 白色/黄色候选
+-> HoughLinesP + 位置/斜率/跨帧筛选
+-> 车道线曲线与目标点
+-> IPM 投影到 base_link 地面坐标
+-> /road_vision/lateral_error
+```
+
+自动模式的回退顺序：
+
+```text
+center_line -> road_edge -> hold_last_valid -> no_visual_reference
+```
+
+主要话题：
+
+| 话题 | 作用 |
+|---|---|
+| `/road_vision/debug_image` | 紫色为确认的车道线，橙色为目标点 |
+| `/road_vision/center_line_mask` | 车道线候选掩码 |
+| `/road_vision/road_mask` | 低饱和度道路候选掩码 |
+| `/road_vision/status` | JSON 状态、误差、来源和拒绝原因 |
+| `/road_vision/lateral_error` | 经 IPM 投影后的米制横向误差 |
+
+`base_link` 坐标约定为 `x` 向前、`y` 向车辆左侧；状态中的正横向误差表示路径应向车辆右侧修正。
+
+#### IPM 标定状态
+
+IPM 矩阵保存在：
+
+```text
+src/road_vision_refinement/config/calibration/ipm_points.json
+```
+
+已使用两个独立点 `(1.5, 0.3)`、`(1.8, 0.3)` 验证，单点误差均为 `0.225 m`，当前暂按最大误差不超过 `0.25 m` 使用。相机位置、安装高度、俯仰角或图像分辨率变化后，必须重新标定。
+
+#### 启动与 CLRNet
+
+默认仅启动 HSV/Hough：
+
+```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  start_debug_viewers:=true \
+  enable_path_refine:=false
+```
+
+CLRNet 作为可选候选生成器，主节点仍执行几何筛选、连续帧确认和 IPM：
+
+```bash
+roslaunch road_vision_refinement road_vision_debug.launch \
+  start_clrnet:=true \
+  line_detector:=clrnet \
+  clrnet_device:=cpu \
+  start_debug_viewers:=true \
+  enable_path_refine:=false
+```
+
+`line_detector` 支持 `hsv`、`clrnet`、`hybrid`。CLRNet 使用现有 NeuPAN Python 环境，不应安装上游固定的 `torch==1.8.0`，否则会破坏 NeuPAN 所需的 `torch>=2.1.0`。
+
+#### 测试与安全边界
+
+室内地面、门框、桌腿、设备边缘和地面接缝可能被 HSV 或 CLRNet 误检。室内只用于确认节点能够最终输出：
+
+```text
+valid=false
+source=none
+reason=no_visual_reference
+```
+
+室外按以下顺序测试：
+
+```text
+IPM 独立点验证
+-> 静止车道线/道路边缘观察
+-> 录制 rosbag 并离线复测
+-> 静止路径修正
+-> 低速直线运动
+-> 允许 NeuPAN 使用 /osm_global_path_refined
+```
+
+只有确认紫色曲线贴合真实标线、目标点位于正确一侧、来源切换不跳变且视觉失效能平滑回退后，才可开启 `enable_path_refine:=true`。低速验收前，NeuPAN 必须继续使用 `/osm_global_path`。
+
+#### 日志与排障
+
+每次启动都会在工作空间根目录创建新日志，Ctrl-C 后关闭文件：
+
+```text
+tracker_logs/road_vision_status_YYYYMMDD_HHMMSS_microseconds.jsonl
+```
+
+查看最新日志：
+
+```bash
+tail -f "$(ls -t /home/nuc/lxw/neupan_ws/tracker_logs/road_vision_status_*.jsonl | head -1)"
+```
+
+室内误检或左右跳变时，优先检查 `line_hough_count`、`line_reject_reason`、`center_line_x`、`road_candidate_confidence` 和 `clrnet_mask_ready`。完整的标定、录包、离线复测和参数说明见：
+
+```text
+src/road_vision_refinement/TESTING_GUIDE_CN.md
+```
+
+
 
 ## 奥比中光PROPLUS
 
