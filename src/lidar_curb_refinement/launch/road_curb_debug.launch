@@ -1,0 +1,33 @@
+<launch>
+  <!-- MID360 right-curb detection. No camera, IPM, HSV, or CLRNet is started. -->
+  <arg name="cloud_topic" default="/cloud_registered_body" />
+  <arg name="base_frame" default="base_link" />
+  <arg name="start_path_refine" default="false" />
+  <arg name="input_path_topic" default="/osm_global_path" />
+  <arg name="output_path_topic" default="/osm_global_path_curb_refined" />
+  <arg name="desired_clearance_m" default="0.55" />
+  <arg name="max_correction_m" default="0.45" />
+  <arg name="confirm_frames" default="4" />
+  <arg name="min_x_bins" default="10" />
+
+  <node pkg="lidar_curb_refinement" type="lidar_curb_node.py" name="lidar_curb" output="screen">
+    <param name="cloud_topic" value="$(arg cloud_topic)" />
+    <param name="base_frame" value="$(arg base_frame)" />
+    <param name="desired_clearance_m" value="$(arg desired_clearance_m)" />
+    <param name="max_correction_m" value="$(arg max_correction_m)" />
+    <param name="confirm_frames" value="$(arg confirm_frames)" />
+    <param name="min_x_bins" value="$(arg min_x_bins)" />
+  </node>
+
+  <group if="$(arg start_path_refine)">
+    <node pkg="lidar_curb_refinement" type="path_refine_node.py" name="road_path_refine" output="screen">
+      <param name="input_path_topic" value="$(arg input_path_topic)" />
+      <param name="output_path_topic" value="$(arg output_path_topic)" />
+      <param name="error_topic" value="/road_curb/lateral_error" />
+      <param name="status_topic" value="/road_curb/status" />
+      <param name="max_shift_m" value="$(arg max_correction_m)" />
+      <param name="filter_alpha" value="0.2" />
+      <param name="invalid_decay_alpha" value="0.08" />
+    </node>
+  </group>
+</launch>

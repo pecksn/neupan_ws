@@ -1,4 +1,344 @@
-#  jeston orin nx super环境
+# GDUT 小车室外导航开发与运行手册
+
+> 工作区：`/home/nuc/lxw/neupan_ws`<br>
+> 当前主系统：ROS1 Noetic + Livox MID360 + FAST-LIO + GPS/RTK + OSM A* + NeuPAN<br>
+> 本文开头是日常运行速查；后半部分保留完整的环境部署、建图、仿真和算法调研记录。
+
+## 目录
+
+- [一、日常运行速查](#一日常运行速查)
+  - [编译与环境准备](#11-编译与环境准备)
+  - [三种室外导航模式](#12-三种室外导航模式)
+  - [MID360 右侧路缘检测与靠右行驶](#13-mid360-右侧路缘检测与靠右行驶)
+  - [Rosbag 一键录制](#14-rosbag-一键录制)
+  - [Rosbag 离线路缘测试](#15-rosbag-离线路缘测试)
+  - [实车运行检查](#16-实车运行检查)
+- [二、Jetson、Docker 与基础环境](#二jetsondocker-与基础环境)
+- [三、Livox MID360 雷达](#三livox-mid360-雷达)
+- [四、端到端模型概况](#四端到端模型概况)
+- [五、NeuPAN 部署、参数与仿真](#五neupan-部署参数与仿真)
+- [六、TEB 与其他全局算法](#六teb-与其他全局算法)
+- [七、URDF、Gazebo 与 Docker 迁移](#七urdfgazebo-与-docker-迁移)
+- [八、地图、SLAM 与全局规划](#八地图slam-与全局规划)
+- [九、点对点导航](#九点对点导航)
+- [十、跟踪算法与 Nav2](#十跟踪算法与-nav2)
+- [十一、RTK/CORS](#十一rtkcors)
+- [十二、道路视觉与相机](#十二道路视觉与相机)
+- [十三、VLM 与世界模型](#十三vlm-与世界模型)
+
+# 一、日常运行速查
+
+## 1.1 编译与环境准备
+
+以下命令都在 ROS1 Noetic 环境中执行：
+
+```bash
+cd /home/nuc/lxw/neupan_ws
+source /opt/ros/noetic/setup.bash
+catkin_make -DCMAKE_BUILD_TYPE=Release -DROS_EDITION=ROS1
+source /home/nuc/lxw/neupan_ws/devel/setup.bash
+```
+
+每个新终端至少执行：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/nuc/lxw/neupan_ws/devel/setup.bash
+```
+
+配置 NUC 雷达网口：
+
+```bash
+sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+ping 192.168.1.183
+```
+
+## 1.2 三种室外导航模式
+
+### OSM A* + 全局路径直接跟踪（不带局部避障）
+
+适合先验证 GPS、地图坐标、车辆航向和底盘控制：
+
+```bash
+roslaunch neupan_ros outdoor_global_only_test.launch \
+  direct_tracker_yaw_offset_deg:=0 \
+  direct_tracker_projected_goal_stop_tolerance:=1.0
+```
+
+### OSM A* + NeuPAN 局部规划与避障
+
+```bash
+roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
+```
+
+### OSM A* + TEB
+
+```bash
+roslaunch teb_test outdoor_teb_test.launch
+```
+
+对应关系：
+
+| 启动文件 | 全局规划 | 局部控制/避障 | 主要用途 |
+|---|---|---|---|
+| `outdoor_global_only_test.launch` | OSM A* | `global_path_tracker`，无局部避障 | 定位、航向、路径跟踪验证 |
+| `full_system_run.launch outdoor_mode:=true` | OSM A* | NeuPAN | 完整室外自主导航 |
+| `outdoor_teb_test.launch` | OSM A* | TEB | TEB 对照测试 |
+
+## 1.3 MID360 右侧路缘检测与靠右行驶
+
+参考源码位于 `src/lidar_curb_detection`。原算法依赖固定扫描线编号，适合 Velodyne 等机械式
+雷达；MID360 使用非重复扫描，因此当前系统实际运行 `src/lidar_curb_refinement`，在 FAST-LIO
+去畸变后的 `/cloud_registered_body` 上构建高程栅格并寻找车体右前方连续高度突变。
+
+处理链路：
+
+```text
+/cloud_registered_body
+  -> lidar_curb_node.py
+  -> /road_curb/lateral_error
+  -> path_refine_node.py + /osm_global_path
+  -> /osm_global_path_curb_refined
+  -> NeuPAN 或 global_path_tracker
+```
+
+`base_link` 中 x 向前、y 向左，右侧路缘 y 为负。路径修正使用路径行进方向的右法向量，车辆
+沿同一条道路反向行驶时，右侧也会随行驶方向反转，不会固定向地图某个方向偏移。
+
+### 第一步：仅启动检测，不接管车辆路径
+
+建议先在安全路段观察和标定：
+
+```bash
+roslaunch neupan_ros full_system_run.launch \
+  outdoor_mode:=true \
+  enable_lidar_curb:=true \
+  enable_lidar_curb_control:=false
+```
+
+也可以只启动路缘模块，用于 rosbag 离线测试：
+
+```bash
+roslaunch lidar_curb_refinement road_curb_debug.launch \
+  start_path_refine:=false \
+  cloud_topic:=/cloud_registered_body
+```
+
+检查输出：
+
+```bash
+rostopic echo /road_curb/status
+rostopic echo /road_curb/lateral_error
+rostopic echo /road_curb/right_edge
+rostopic hz /road_curb/status
+```
+
+`/road_curb/status` 中：
+
+- `valid=true`：已经连续确认右侧路缘；
+- `right_distance_m`：车辆原点到右侧路缘的距离；
+- `lateral_error_m`：建议路径横移量，正值向车辆右侧，负值向左；
+- `reason`：无有效结果时的原因，例如点数不足、TF 不可用或路缘跳变。
+
+默认期望右侧净距为 `0.55 m`。需要修改时：
+
+```bash
+roslaunch neupan_ros full_system_run.launch \
+  outdoor_mode:=true \
+  enable_lidar_curb:=true \
+  enable_lidar_curb_control:=false \
+  lidar_curb_desired_clearance_m:=0.60
+```
+
+### 第二步：低速确认修正路径方向
+
+单独输出修正路径供 RViz 对比：
+
+```bash
+roslaunch lidar_curb_refinement road_curb_debug.launch \
+  start_path_refine:=true \
+  input_path_topic:=/osm_global_path \
+  output_path_topic:=/osm_global_path_curb_refined
+```
+
+必须确认以下项目后才能接管控制：
+
+1. 正向和反向行驶时，修正路径都位于各自行驶方向右侧；
+2. 路缘丢失后修正量平滑回到原始 OSM 路径；
+3. 停放车辆、草坪、排水沟不会持续产生有效假路缘；
+4. 横移不超过默认 `max_correction_m=0.45 m`；
+5. 实际右侧净距小于目标值时，路径向左远离路缘，而不是继续向右。
+
+### 第三步：启用靠右闭环
+
+NeuPAN 完整系统：
+
+```bash
+roslaunch neupan_ros full_system_run.launch \
+  outdoor_mode:=true \
+  enable_lidar_curb:=true \
+  enable_lidar_curb_control:=true
+```
+
+全局路径直接跟踪测试：
+
+```bash
+roslaunch neupan_ros outdoor_global_only_test.launch \
+  enable_lidar_curb:=true \
+  enable_lidar_curb_control:=true \
+  direct_tracker_speed:=0.30
+```
+
+两个开关必须同时为 `true`。只开启 `enable_lidar_curb_control` 时没有修正路径发布者，控制器不
+会收到路径，这是有意设置的安全保护。
+
+## 1.4 Rosbag 一键录制
+
+录包功能包位于 `src/vehicle_bag_recorder`。它通过 YAML 管理话题，并调用 ROS 官方
+`rosbag record` 保留原始消息类型和时间戳。默认包含：
+
+- MID360 原始点云和 IMU；
+- FAST-LIO 车体/地图点云与里程计；
+- GPS、航向、TF 和定位保护状态；
+- 原始 OSM 路径、路缘修正路径和路缘检测结果；
+- `/scan`、NeuPAN/直跟控制指令和目标点。
+
+启动：
+
+```bash
+roslaunch vehicle_bag_recorder lidar_curb_record.launch
+```
+
+也可以直接运行 Python：
+
+```bash
+rosrun vehicle_bag_recorder bag_recorder.py \
+  --config $(rospack find vehicle_bag_recorder)/config/lidar_curb.yaml
+```
+
+临时指定输出目录和测试名称：
+
+```bash
+roslaunch vehicle_bag_recorder lidar_curb_record.launch \
+  output_directory:=/media/usb/rosbags \
+  bag_prefix:=gdut_curb_test
+```
+
+默认保存目录：
+
+```text
+/home/nuc/lxw/neupan_ws/rosbags/
+```
+
+默认使用 LZ4 压缩、每 2048 MB 自动分包，并在磁盘剩余空间低于 8 GB 时安全停止。每次录制还
+会生成同名前缀的 JSON 清单。结束时按一次 `Ctrl+C`，看到“录制结束”后再断电或拔移动硬盘。
+
+### 增加相机或其他传感器
+
+编辑：
+
+```text
+/home/nuc/lxw/neupan_ws/src/vehicle_bag_recorder/config/lidar_curb.yaml
+```
+
+只需在 `topics` 中追加真实话题，不需要修改 Python：
+
+```yaml
+topics:
+  - /camera/color/image_raw/compressed
+  - /camera/color/camera_info
+  - /camera/depth/image_raw/compressedDepth
+  - /camera/depth/camera_info
+```
+
+接入相机后先检查实际话题和带宽：
+
+```bash
+rostopic list | grep -E 'camera|image|compressed'
+rostopic hz /camera/color/image_raw/compressed
+rostopic bw /camera/color/image_raw/compressed
+```
+
+优先录制压缩图像以减少磁盘和带宽占用。如果离线算法必须使用无损原图，再录制 `image_raw`；
+同时必须录制对应的 `camera_info`、`/tf` 和 `/tf_static`。
+
+## 1.5 Rosbag 离线路缘测试
+
+查看 bag 内容：
+
+```bash
+rosbag info /home/nuc/lxw/neupan_ws/rosbags/lidar_curb_test_*.bag
+```
+
+终端 1，启动 ROS Master 并启用 bag 时间：
+
+```bash
+roscore
+```
+
+终端 2，启动路缘检测：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/nuc/lxw/neupan_ws/devel/setup.bash
+rosparam set use_sim_time true
+roslaunch lidar_curb_refinement road_curb_debug.launch \
+  start_path_refine:=true \
+  input_path_topic:=/osm_global_path \
+  output_path_topic:=/osm_global_path_curb_refined
+```
+
+终端 3，回放：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/nuc/lxw/neupan_ws/devel/setup.bash
+rosbag play --clock -d 2 /home/nuc/lxw/neupan_ws/rosbags/具体文件.bag
+```
+
+暂停、单步和慢速回放：
+
+```bash
+# 空格暂停/继续，-r 0.5 表示半速
+rosbag play --clock --pause -r 0.5 /path/to/test.bag
+```
+
+如果 bag 里已经包含 `/cloud_registered_body`，离线测试路缘时不需要再次运行 FAST-LIO；如果只
+录了 `/livox/lidar` 和 `/livox/imu`，则需要先启动 FAST-LIO，再播放原始数据。
+
+回放结束后恢复实时系统：
+
+```bash
+rosparam set use_sim_time false
+```
+
+## 1.6 实车运行检查
+
+```bash
+# 关键话题是否存在
+rostopic list | grep -E 'livox|cloud_registered_body|Odometry|gps/fix|osm_global_path|road_curb|neupan_cmd_vel'
+
+# 数据频率
+rostopic hz /livox/lidar
+rostopic hz /cloud_registered_body
+rostopic hz /gps/fix
+rostopic hz /neupan_cmd_vel
+
+# TF
+rosrun tf tf_echo base_link body
+rosrun tf tf_echo map base_link
+
+# 节点与连接
+rosnode list
+rosrun rqt_graph rqt_graph
+```
+
+建议实车测试顺序：定位静态检查 → 低速直跟 → 仅观察路缘 → RViz 对比修正路径 → 低速靠右闭环
+→ 最后启用 NeuPAN 正常速度和局部避障。
+
+---
+
+# 二、Jetson、Docker 与基础环境
 
 ## docker创建与删除
 
@@ -26,12 +366,6 @@ sudo systemctl restart docker
 [14个ROS/ROS2版本任选 | 用Docker实现一键安装ROS_哔哩哔哩_bilibili](https://www.bilibili.com/video/BV1hY411N7HF/?spm_id_from=333.337.search-card.all.click&vd_source=1aac97640b2d7f2e6ae51b4b1cac54e5)
 
 ## 文件夹权限
-
-```
-sudo chmod 777 * -R 
-```
-
-![image-20251218170756571](../mdPicture/image-20251218170756571.png)
 
 ## 挂梯子
 
@@ -152,7 +486,7 @@ sudo minicom -s
 sudo minicom
 ```
 
-# Livox激光雷达
+# 三、Livox MID360 雷达
 
 [【3D激光SLAM】Livox-mid-360激光雷达ip配置_mid360-CSDN博客](https://blog.csdn.net/Hahalim/article/details/129414327)
 
@@ -237,7 +571,7 @@ source ~/.bashrc
 catkin_make
 ```
 
-# 端到端基本概况
+# 四、端到端模型概况
 
 ## 现状
 
@@ -259,7 +593,7 @@ catkin_make
 
 ![image-20251017154959935](../mdPicture/image-20251017154959935-176546506520551.png)
 
-# Neupan
+# 五、NeuPAN 部署、参数与仿真
 
 ## 部署流程
 
@@ -726,7 +1060,7 @@ roslaunch neupan_ros neupan_gazebo_limo.launch
             action, info = self.neupan_planner(self.robot_state, obs)
 ```
 
-# TEB
+# 六、TEB 与其他全局算法
 
 ## ROS1 Noetic安装
 
@@ -738,7 +1072,7 @@ sudo apt install ros-noetic-teb-local-planner
 
 或：[rst-tu-dortmund/teb_local_planner: An optimal trajectory planner considering distinctive topologies for mobile robots based on Timed-Elastic-Bands (ROS Package)](https://github.com/rst-tu-dortmund/teb_local_planner?utm_source=chatgpt.com)
 
-# 不同地图下全局算法
+## 其他全局规划算法
 
 ## A*
 
@@ -773,7 +1107,7 @@ GlobalPlanner:
 
 使用自己写的a*算法（osm_map_handler/global_astar_node）
 
-# SW导出URDF
+# 七、URDF、Gazebo 与 Docker 迁移
 
 [solidworks导出urdf文件/导入ros详细教程_solidworks转urdf-CSDN博客](https://blog.csdn.net/hhhon/article/details/148581041)
 
@@ -787,7 +1121,7 @@ GlobalPlanner:
 
 也可以直接基于现成的模板来修改！！！
 
-# gazebo仿真
+## Gazebo 仿真
 
 ## 虚拟机
 
@@ -843,23 +1177,25 @@ sudo cp -r /home/hart2204/gazebo_models/* /root/.gazebo/models/
  
 ```
 
-# 打包docker迁移到NUC
+## 打包 Docker 迁移到 NUC
 
 
 
-# OSMmap
+# 八、地图、SLAM 与全局规划
+
+## OSM 地图
 
 [www.openstreetmap.org](https://www.openstreetmap.org/)
 
 ![image-20260302173744876](../mdPicture/image-20260302173744876.png)
 
-# 全局规划
+## 全局规划
 
-## 地图
+### 地图
 
 全局一定要有地图，可以是瓦片可以是slam地图
 
-### SLAM建图
+### SLAM 建图
 
 #### FAST_LIO2 纯雷达(nuc)
 
@@ -1323,7 +1659,7 @@ NeuPAN 默认路径跟踪权重为弱约束，无障碍环境下优化器优先�
 | 转向平滑权重   | [0.1, 0.1]      | [1.5, 3.0]      | 放大 10~15 倍，避免转向抖动  |
 | 航向跟踪权重   | [0.5, 0.5]      | [0.3, 0.5]      | 适当降低，适配阿克曼转向特性 |
 
-# 点对点导航
+# 九、点对点导航
 
 ## 一、基于栅格地图+neupan+全局规划算法（混合A*） 实现小车室内走廊的导航
 
@@ -1492,11 +1828,11 @@ sudo apt install ros-$ROS_DISTRO-mapviz ros-$ROS_DISTRO-mapviz-plugins ros-$ROS_
 roslaunch wheeltec_gps_driver mapviz_path.launch
 ```
 
-# 跟踪算法
+# 十、跟踪算法与 Nav2
 
 ![image-20260720200927233](../mdPicture/image-20260720200927233.png)
 
-# Nav2
+## Nav2
 
 [Route Server — Nav2 1.0.0 documentation](https://docs.nav2.org/configuration/packages/configuring-route-server.html?utm_source=chatgpt.com)
 
@@ -1504,7 +1840,7 @@ roslaunch wheeltec_gps_driver mapviz_path.launch
 
 在室外路网地图导航中，可将 OSM 或高精地图构建为拓扑路网（Route Graph），并结合 GPS/RTK 提供的全局定位信息，将车辆实时位置转换到地图坐标系中作为导航起点；在此基础上，引入 Nav2 Route Server 在路网图上进行全局路径规划，通过图搜索算法（如 A* 或 Dijkstra）生成符合道路约束的导航路径。该路径作为上层路由结果输入到 Nav2 的局部规划与控制模块中，由控制器（如 DWB、TEB 或自定义 MPC）结合实时感知信息生成可执行轨迹并进行动态避障，从而形成“GPS定位 + 路网级全局规划 + Nav2局部规划与控制”的分层导航体系，实现室外环境中沿合法道路行驶的自主导航。
 
-# RTK
+# 十一、RTK/CORS
 
 ## 中国移动cors
 
@@ -1544,49 +1880,11 @@ AT+NTRIP=120.253.239.161,8002,cndh43990,a8888507,RTCM33_GRCE
 
 **按一下”shift+Enter”键后再点击发送，**发送成功后会返回【OK】然后保存参数
 
-# 视觉
+# 十二、道路视觉与相机
 
-## 局部道路边界/车道线观测
+## 局部道路边界/车道线检测
 
-                    ┌────────────────────────┐
-                    │     OpenStreetMap      │
-                    │   道路拓扑 + 中心线      │
-                    └──────────┬─────────────┘
-                               │
-                    Lanelet/Graph 构建
-                               │
-                      A* / Dijkstra
-                               │
-                    Global Reference Path
-                               │
-             ┌─────────────────┴─────────────────┐
-             │                                   │
-             │                                   │
-      单目摄像头                           RTK + IMU
-             │                                   │
-             │                            车辆实时定位
-             │                                   │
-      PIDNet / DDRNet                            │
-             │                                   │
-      Road Segmentation                          │
-             │                                   │
-      Road Boundary Extraction                   │
-             │                                   │
-      IPM(Bird Eye View)                         │
-             │                                   │
-      Vision Centerline                          │
-             └──────────────┬────────────────────┘
-                            │
-                Online Centerline Refinement
-          (融合OSM中心线 + 视觉中心线 + 车辆位置)
-                            │
-                 Right-side Reference Path
-                            │
-                     NeuPAN Local Planner
-                            │
-                       Ackermann Vehicle
-
-### 车道线检测
+### 车道线检测 --HSV/CLRnet
 
 车道线观测由 `road_vision_refinement` 提供，用于在 OSM 全局路径基础上产生局部视觉横向误差。默认只发布观测结果，不直接修改 NeuPAN 的输入路径。
 
@@ -1629,77 +1927,15 @@ src/road_vision_refinement/config/calibration/ipm_points.json
 
 已使用两个独立点 `(1.5, 0.3)`、`(1.8, 0.3)` 验证，单点误差均为 `0.225 m`，当前暂按最大误差不超过 `0.25 m` 使用。相机位置、安装高度、俯仰角或图像分辨率变化后，必须重新标定。
 
-#### 启动与 CLRNet
-
-默认仅启动 HSV/Hough：
-
-```bash
-roslaunch road_vision_refinement road_vision_debug.launch \
-  start_debug_viewers:=true \
-  enable_path_refine:=false
-```
-
-CLRNet 作为可选候选生成器，主节点仍执行几何筛选、连续帧确认和 IPM：
-
-```bash
-roslaunch road_vision_refinement road_vision_debug.launch \
-  start_clrnet:=true \
-  line_detector:=clrnet \
-  clrnet_device:=cpu \
-  start_debug_viewers:=true \
-  enable_path_refine:=false
-```
-
-`line_detector` 支持 `hsv`、`clrnet`、`hybrid`。CLRNet 使用现有 NeuPAN Python 环境，不应安装上游固定的 `torch==1.8.0`，否则会破坏 NeuPAN 所需的 `torch>=2.1.0`。
-
-#### 测试与安全边界
-
-室内地面、门框、桌腿、设备边缘和地面接缝可能被 HSV 或 CLRNet 误检。室内只用于确认节点能够最终输出：
-
-```text
-valid=false
-source=none
-reason=no_visual_reference
-```
-
-室外按以下顺序测试：
-
-```text
-IPM 独立点验证
--> 静止车道线/道路边缘观察
--> 录制 rosbag 并离线复测
--> 静止路径修正
--> 低速直线运动
--> 允许 NeuPAN 使用 /osm_global_path_refined
-```
-
-只有确认紫色曲线贴合真实标线、目标点位于正确一侧、来源切换不跳变且视觉失效能平滑回退后，才可开启 `enable_path_refine:=true`。低速验收前，NeuPAN 必须继续使用 `/osm_global_path`。
-
-#### 日志与排障
-
-每次启动都会在工作空间根目录创建新日志，Ctrl-C 后关闭文件：
-
-```text
-tracker_logs/road_vision_status_YYYYMMDD_HHMMSS_microseconds.jsonl
-```
-
-查看最新日志：
-
-```bash
-tail -f "$(ls -t /home/nuc/lxw/neupan_ws/tracker_logs/road_vision_status_*.jsonl | head -1)"
-```
-
-室内误检或左右跳变时，优先检查 `line_hough_count`、`line_reject_reason`、`center_line_x`、`road_candidate_confidence` 和 `clrnet_mask_ready`。完整的标定、录包、离线复测和参数说明见：
-
-```text
-src/road_vision_refinement/TESTING_GUIDE_CN.md
-```
+### HybridNets--可行驶区域与车道线检测
 
 
 
 ## 奥比中光PROPLUS
 
-https://github.com/orbbec/ros_astra_camera.git
+ros1：https://github.com/orbbec/ros_astra_camera.git
+
+ros2：[orbbec/OrbbecSDK_ROS2: OrbbecSDK ROS2 wrapper](https://github.com/orbbec/OrbbecSDK_ROS2)
 
 ### 依赖
 
@@ -1716,6 +1952,135 @@ cmake .. && make -j4
 
 棋盘格生成：[相机校准图案生成器 – calib.io](https://calib.io/zh/pages/camera-calibration-pattern-generator)
 
-# 世界模型
+# 十三、VLM 与世界模型
+
+## jeston orin nx super
+
+### 环境配置与编译
+
+```
+cd /home/p/lxw/lxwgdutcar_ai_ws
+source /opt/ros/humble/setup.bash
+export PATH=/usr/bin:/bin:$PATH
+colcon build
+```
+
+### qwen3-vl-4b
+
+Qwen3-VL-4B-Instruct-AWQ-4bit：[Qwen3 VL 4B | Jetson AI Lab](https://www.jetson-ai-lab.com/models/qwen3-vl-4b/)
+
+**vLLM 负责把模型跑起来。 Docker 负责把运行环境打包起来。**
+
+#### 网络问题
+
+docker挂梯子
+
+```
+sudo mkdir -p /etc/systemd/system/docker.service.d
+
+sudo tee /etc/systemd/system/docker.service.d/proxy.conf >/dev/null <<'EOF'
+[Service]
+Environment="HTTP_PROXY=http://127.0.0.1:7899"
+Environment="HTTPS_PROXY=http://127.0.0.1:7899"
+Environment="http_proxy=http://127.0.0.1:7899"
+Environment="https_proxy=http://127.0.0.1:7899"
+Environment="NO_PROXY=localhost,127.0.0.1"
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+#### 官方下载模型/运行模型
+
+```bash
+# Serve command
+sudo docker run -it --rm --pull always \
+--runtime=nvidia --network host \
+ghcr.io/nvidia-ai-iot/vllm:latest-jetson-orin \
+vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit --gpu-memory-utilization 0.8
+```
+
+```bash
+sudo docker run -it --rm --pull always \
+  --runtime=nvidia \
+  --network host \
+  -e HTTP_PROXY=http://127.0.0.1:7899 \
+  -e HTTPS_PROXY=http://127.0.0.1:7899 \
+  -e http_proxy=http://127.0.0.1:7899 \
+  -e https_proxy=http://127.0.0.1:7899 \
+  -e HF_HOME=/root/.cache/huggingface \
+  -v /home/p/.cache/huggingface:/root/.cache/huggingface \
+  ghcr.io/nvidia-ai-iot/vllm:latest-jetson-orin \
+  vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
+  --gpu-memory-utilization 0.6 \
+  --max-model-len 4096
+```
+
+显存不够调整：
+
+```bash
+sudo docker run -d \
+  --name qwen3-vl-4b \
+  --restart unless-stopped \
+  --runtime=nvidia \
+  --network host \
+  --ipc=host \
+  -v /home/p/lxw/models/Qwen3-VL-4B-Instruct-AWQ-4bit:/model:ro \
+  ghcr.io/nvidia-ai-iot/vllm:latest-jetson-orin \
+  vllm serve /model \
+    --served-model-name cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
+    --gpu-memory-utilization 0.49 \
+    --kv-cache-memory-bytes 268435456 \
+    --max-model-len 1024 \
+    --max-num-batched-tokens 1024 \
+    --max-num-seqs 1 \
+    --mm-processor-cache-gb 0 \
+    --limit-mm-per-prompt '{"image":1,"video":0}' \
+    --skip-mm-profiling \
+    --enforce-eager
+```
+
+```bash
+#启动：
+/home/p/lxw/qwen3-vl.sh start
+#停止：
+/home/p/lxw/qwen3-vl.sh stop
+#重启：
+/home/p/lxw/qwen3-vl.sh restart
+#查看状态：
+/home/p/lxw/qwen3-vl.sh status
+#查看日志：
+/home/p/lxw/qwen3-vl.sh logs
+#删除旧容器并按正确参数重新创建：
+/home/p/lxw/qwen3-vl.sh recreate
+#也可以直接使用 Docker 名称：
+sudo docker stop qwen3-vl-4b
+sudo docker start qwen3-vl-4b
+sudo docker restart qwen3-vl-4b
+sudo docker logs -f qwen3-vl-4b
+```
+
+#### 测试模型
+
+```bash
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",
+    "messages": [
+      {
+        "role": "user",
+        "content": "你好，请用中文介绍一下你自己。"
+      }
+    ],
+    "max_tokens": 128,
+    "temperature": 0
+  }' | python3 -m json.tool
+```
+
+
+
+## 世界模型
 
 RSSM+雷达encoder+neupan

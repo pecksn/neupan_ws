@@ -1,0 +1,13 @@
+<launch>
+  <arg name="config_file" default="$(find vehicle_bag_recorder)/config/lidar_curb.yaml" />
+  <arg name="output_directory" default="" />
+  <arg name="bag_prefix" default="" />
+
+  <node pkg="vehicle_bag_recorder" type="bag_recorder.py" name="vehicle_bag_recorder"
+        output="screen" required="true"
+        args="--config $(arg config_file)">
+    <!-- 非空 launch 参数会覆盖 YAML；留空时使用 YAML 中的值。 -->
+    <param name="output_directory_override" value="$(arg output_directory)" />
+    <param name="bag_prefix_override" value="$(arg bag_prefix)" />
+  </node>
+</launch>

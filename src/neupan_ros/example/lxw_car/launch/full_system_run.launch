@@ -7,20 +7,13 @@
     
     <!-- 基础传感器配置 -->
     <arg name="enable_livox_driver" default="true"  doc="实车必须开启雷达驱动"/>
+    <arg name="enable_lidar_curb" default="false" doc="启动MID360右侧路沿检测"/>
+    <arg name="enable_lidar_curb_control" default="false" doc="让NeuPAN跟踪路沿修正路径；实车标定确认前保持false"/>
+    <arg name="lidar_curb_desired_clearance_m" default="0.55" />
+    <arg name="lidar_curb_refined_path_topic" default="/osm_global_path_curb_refined" />
     <arg name="enable_rviz"         default="true" />
     <arg name="imu_topic"           default="/livox/imu" doc="MID360原始IMU，供FAST-LIO使用；本地EKF不重复融合" />
     <arg name="indoor_map_file"     default="/home/nuc/lxw/maps/my_corridor_fastlio.yaml" />
-    <!-- Astra RGB 相机相对 base_link 的实测安装外参。正 pitch 按 ROS 右手系表示镜头向下俯视。 -->
-    <arg name="publish_base_camera_tf" default="true" doc="若URDF或其他节点已发布base_link->camera_link，设为false避免TF冲突" />
-    <arg name="camera_offset_x" default="0.18" doc="相机光心相对base_link向前距离(米)" />
-    <arg name="camera_offset_y" default="0.0" doc="相机光心相对base_link向左距离(米)" />
-    <arg name="camera_offset_z" default="0.30" doc="相机光心相对base_link向上距离(米)" />
-    <!-- roll=0deg, pitch=+8deg, yaw=0deg 对应四元数 (0, 0.069756, 0, 0.997564)。 -->
-    <arg name="camera_qx" default="0.0" />
-    <arg name="camera_qy" default="0.069756" />
-    <arg name="camera_qz" default="0.0" />
-    <arg name="camera_qw" default="0.997564" />
-
     <!-- OSM 地图原点（建议与 datum 一致） -->
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
@@ -104,6 +97,8 @@
     <arg name="enable_system_log" default="true" doc="Ctrl+C后生成一个包含定位、GPS、保护状态和控制指令的综合日志" />
     <arg name="outdoor_use_hybrid_astar" default="false" doc="室外是否启用 Hybrid A*；false 时 NeuPAN 直接跟踪 OSM A* 路径" />
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" doc="室外 NeuPAN 初始路径来源话题；可选 /osm_global_path 或 /sPath" />
+    <arg name="outdoor_control_path_topic" value="$(arg lidar_curb_refined_path_topic)" if="$(arg enable_lidar_curb_control)" />
+    <arg name="outdoor_control_path_topic" value="$(arg outdoor_initial_path_topic)" unless="$(arg enable_lidar_curb_control)" />
     <arg name="neupan_config_indoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_indoor.yaml" />
     <arg name="neupan_config_outdoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_outdoor.yaml" />
     <arg name="enable_adaptive_adjust" default="false" doc="是否根据最近障碍物距离动态调整 NeuPAN 权重" />
@@ -198,9 +193,6 @@
     <!-- 3.2 雷达机械安装外参 (请根据实车尺寸调整位置) -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100"/>
     <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 base_link body 100"/>
-    <!-- 仅发布安装外参；camera_link 到各 optical frame 由 Astra 驱动发布。 -->
-    <node if="$(arg publish_base_camera_tf)" pkg="tf" type="static_transform_publisher" name="base_to_camera"
-          args="$(arg camera_offset_x) $(arg camera_offset_y) $(arg camera_offset_z) $(arg camera_qx) $(arg camera_qy) $(arg camera_qz) $(arg camera_qw) base_link camera_link 100"/>
     <!-- GPS 天线外参，供TF显示和其他传感器对齐使用；当前GPS到map投影不再走navsat_transform。 -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="$(arg gps_offset_x) $(arg gps_offset_y) $(arg gps_offset_z) 0 0 0 base_link $(arg gps_frame) 100"/>
     <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100"/>
@@ -403,7 +395,7 @@
                 <param name="scan_transform_timeout" value="$(arg neupan_scan_transform_timeout)"/>
                 <param name="scan_recovery_stable_sec" value="$(arg neupan_scan_recovery_stable_sec)"/>
                 <param name="scan_filtered_empty_timeout" value="$(arg neupan_scan_filtered_empty_timeout)"/>
-                <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
+                <remap from="/initial_path" to="$(arg outdoor_control_path_topic)" />
                 <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
             </node>
         </group>
@@ -433,11 +425,20 @@
                 <param name="scan_transform_timeout" value="$(arg neupan_scan_transform_timeout)"/>
                 <param name="scan_recovery_stable_sec" value="$(arg neupan_scan_recovery_stable_sec)"/>
                 <param name="scan_filtered_empty_timeout" value="$(arg neupan_scan_filtered_empty_timeout)"/>
-                <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
+                <remap from="/initial_path" to="$(arg outdoor_control_path_topic)" />
                 <!-- <remap from="/neupan_goal"  to="/move_base_simple/goal"/> -->
             </node>
         </group>
     </group>
+
+    <include if="$(arg enable_lidar_curb)" file="$(find lidar_curb_refinement)/launch/road_curb_debug.launch">
+        <arg name="cloud_topic" value="/cloud_registered_body" />
+        <arg name="base_frame" value="base_link" />
+        <arg name="desired_clearance_m" value="$(arg lidar_curb_desired_clearance_m)" />
+        <arg name="input_path_topic" value="$(arg outdoor_initial_path_topic)" />
+        <arg name="output_path_topic" value="$(arg lidar_curb_refined_path_topic)" />
+        <arg name="start_path_refine" value="$(arg enable_lidar_curb_control)" />
+    </include>
 
     <!-- ==================== 6. 数据可视化 ==================== -->
     <group if="$(arg enable_rviz)">

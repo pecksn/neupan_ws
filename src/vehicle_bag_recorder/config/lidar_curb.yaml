@@ -1,0 +1,64 @@
+# 修改这个文件即可增删录制话题。不存在的话题不会阻止其他话题录制，
+# 因此可提前把尚未接入的传感器写在 topics 中。
+output_directory: /home/nuc/lxw/neupan_ws/rosbags
+bag_prefix: lidar_curb_test
+
+# 单个 bag 达到该大小后自动分包，单位 MB；0 表示不分包。
+split_size_mb: 2048
+compression: lz4          # 可选：none、bz2、lz4
+buffer_size_mb: 1024
+chunk_size_kb: 768
+tcp_nodelay: true
+
+# 剩余空间低于此值时安全停止录制，避免写满系统盘；0 表示关闭保护。
+min_free_space_gb: 8.0
+disk_check_period_sec: 5.0
+
+topics:
+  # MID360 原始数据和 FAST-LIO 输出
+  - /livox/lidar
+  - /livox/imu
+  - /cloud_registered_body
+  - /cloud_registered
+  - /Odometry
+
+  # 定位与 TF
+  - /tf
+  - /tf_static
+  - /odom
+  - /odometry/local
+  - /odometry/global
+  - /odometry/gps
+  - /gps/fix
+  - /gps/vel
+  - /heading
+  - /heading_deg
+  - /gps/nmea_sentence
+  - /gnss/gpgga
+  - /lio_guard/status
+  - /gps_guard/status
+  - /localization_safe
+
+  # 规划、路缘和控制
+  - /scan
+  - /osm_global_path
+  - /osm_global_path_curb_refined
+  - /move_base_simple/goal
+  - /neupan_goal
+  - /road_curb/right_edge
+  - /road_curb/lateral_error
+  - /road_curb/status
+  - /neupan_cmd_vel
+  - /global_path_tracker/status
+
+  # 后续加入相机时取消注释或直接追加真实话题即可，无需修改 Python。
+  # 对压缩图像优先录 compressed，可显著减小 bag。
+  # - /camera/color/image_raw/compressed
+  # - /camera/color/camera_info
+  # - /camera/depth/image_raw/compressedDepth
+  # - /camera/depth/camera_info
+
+# 高级用法：record_all=true 等价于 rosbag record -a，通常不建议长期使用。
+record_all: false
+# exclude_regex 仅在 record_all=true 时使用，例如排除超大的调试图像：
+exclude_regex: ""

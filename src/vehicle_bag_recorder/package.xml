@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>vehicle_bag_recorder</name>
+  <version>0.1.0</version>
+  <description>Configuration-driven rosbag recorder for vehicle offline testing.</description>
+
+  <maintainer email="user@example.com">lxw</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>rosbag</exec_depend>
+  <exec_depend>rospkg</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+</package>

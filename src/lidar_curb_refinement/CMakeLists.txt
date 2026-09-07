@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.0.2)
+project(lidar_curb_refinement)
+
+find_package(catkin REQUIRED COMPONENTS
+  geometry_msgs
+  nav_msgs
+  rospy
+  sensor_msgs
+  std_msgs
+  tf2_ros
+  tf2_sensor_msgs
+  visualization_msgs
+)
+
+catkin_package()
+
+catkin_install_python(PROGRAMS
+  scripts/path_refine_node.py
+  scripts/lidar_curb_node.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(DIRECTORY launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)

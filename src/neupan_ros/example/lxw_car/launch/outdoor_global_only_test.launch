@@ -4,12 +4,18 @@
 
     <arg name="run_fast_lio_slam" default="true" doc="Whether to run FAST-LIO for /odometry/local support" />
     <arg name="enable_livox_driver" default="true" doc="Whether to run Livox MID360 driver" />
+    <arg name="enable_lidar_curb" default="false" doc="Start MID360 right-curb detection" />
+    <arg name="enable_lidar_curb_control" default="false" doc="Track the curb-refined path; keep false until calibration is verified" />
+    <arg name="lidar_curb_desired_clearance_m" default="0.55" />
+    <arg name="lidar_curb_refined_path_topic" default="/osm_global_path_curb_refined" />
     <arg name="enable_rviz" default="true" />
     <arg name="rviz_config" default="$(find hybrid_astar)/launch/config.rviz" />
     <arg name="imu_topic" default="/livox/imu" />
     <arg name="enable_neupan_tracking" default="false" doc="Legacy option: track path with NeuPAN" />
     <arg name="enable_direct_astar_tracking" default="true" doc="Track /osm_global_path directly without NeuPAN" />
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" />
+    <arg name="outdoor_control_path_topic" value="$(arg lidar_curb_refined_path_topic)" if="$(arg enable_lidar_curb_control)" />
+    <arg name="outdoor_control_path_topic" value="$(arg outdoor_initial_path_topic)" unless="$(arg enable_lidar_curb_control)" />
     <arg name="neupan_config_outdoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_outdoor.yaml" />
     <arg name="direct_tracker_speed" default="0.8" />
     <arg name="direct_tracker_min_speed" default="0.25" />
@@ -32,16 +38,6 @@
     <arg name="direct_tracker_straight_segment_angle_deg" default="10.0" />
     <arg name="direct_tracker_straight_heading_deadband_deg" default="8.0" />
     <arg name="enable_system_log" default="true" />
-
-    <!-- Astra RGB 相机安装外参：x=0.18m, y=0m, z=0.30m, roll=0deg, pitch=+8deg(向下), yaw=0deg。 -->
-    <arg name="publish_base_camera_tf" default="true" doc="若其他节点已发布base_link->camera_link，设为false" />
-    <arg name="camera_offset_x" default="0.18" />
-    <arg name="camera_offset_y" default="0.0" />
-    <arg name="camera_offset_z" default="0.30" />
-    <arg name="camera_qx" default="0.0" />
-    <arg name="camera_qy" default="0.069756" />
-    <arg name="camera_qz" default="0.0" />
-    <arg name="camera_qw" default="0.997564" />
 
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
@@ -158,9 +154,6 @@
     <!-- Sensor / odometry support -->
     <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 base_link livox_frame 100" />
     <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 base_link body 100" />
-    <!-- camera_link 到 camera_color_optical_frame 等内部TF由 Astra 驱动负责。 -->
-    <node if="$(arg publish_base_camera_tf)" pkg="tf" type="static_transform_publisher" name="base_to_camera"
-          args="$(arg camera_offset_x) $(arg camera_offset_y) $(arg camera_offset_z) $(arg camera_qx) $(arg camera_qy) $(arg camera_qz) $(arg camera_qw) base_link camera_link 100" />
     <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="$(arg gps_offset_x) $(arg gps_offset_y) $(arg gps_offset_z) 0 0 0 base_link $(arg gps_frame) 100" />
     <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100" />
 
@@ -257,7 +250,7 @@
 
     <group if="$(arg enable_direct_astar_tracking)">
         <node pkg="robot_base_driver" type="global_path_tracker.py" name="global_path_tracker" output="screen">
-            <param name="path_topic" value="/osm_global_path" />
+            <param name="path_topic" value="$(arg outdoor_control_path_topic)" />
             <param name="odom_topic" value="/odometry/global" />
             <param name="use_tf_pose" value="true" />
             <param name="tf_map_frame" value="map" />
@@ -315,9 +308,18 @@
             <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_4/model_5000.pth" />
             <param name="refresh_initial_path" value="true" />
             <param name="include_initial_path_direction" value="true" />
-            <remap from="/initial_path" to="$(arg outdoor_initial_path_topic)" />
+            <remap from="/initial_path" to="$(arg outdoor_control_path_topic)" />
         </node>
     </group>
+
+    <include if="$(arg enable_lidar_curb)" file="$(find lidar_curb_refinement)/launch/road_curb_debug.launch">
+        <arg name="cloud_topic" value="/cloud_registered_body" />
+        <arg name="base_frame" value="base_link" />
+        <arg name="desired_clearance_m" value="$(arg lidar_curb_desired_clearance_m)" />
+        <arg name="input_path_topic" value="$(arg outdoor_initial_path_topic)" />
+        <arg name="output_path_topic" value="$(arg lidar_curb_refined_path_topic)" />
+        <arg name="start_path_refine" value="$(arg enable_lidar_curb_control)" />
+    </include>
 
     <group if="$(arg enable_rviz)">
         <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
