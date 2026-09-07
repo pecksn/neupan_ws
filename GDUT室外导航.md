@@ -312,35 +312,14 @@ rosbag play --clock --pause -r 0.5 /path/to/test.bag
 rosparam set use_sim_time false
 ```
 
-## 1.6 实车运行检查
-
-```bash
-# 关键话题是否存在
-rostopic list | grep -E 'livox|cloud_registered_body|Odometry|gps/fix|osm_global_path|road_curb|neupan_cmd_vel'
-
-# 数据频率
-rostopic hz /livox/lidar
-rostopic hz /cloud_registered_body
-rostopic hz /gps/fix
-rostopic hz /neupan_cmd_vel
-
-# TF
-rosrun tf tf_echo base_link body
-rosrun tf tf_echo map base_link
-
-# 节点与连接
-rosnode list
-rosrun rqt_graph rqt_graph
-```
-
-建议实车测试顺序：定位静态检查 → 低速直跟 → 仅观察路缘 → RViz 对比修正路径 → 低速靠右闭环
-→ 最后启用 NeuPAN 正常速度和局部避障。
-
 ---
 
 # 二、Jetson、Docker 与基础环境
 
-## docker创建与删除
+本章是首次部署或环境故障时使用的参考记录，已经部署好的实车可直接跳到第三章。
+
+
+## 2.1 Docker 创建与删除
 
 ```
 wget http://fishros.com/install -O fishros && . fishros
@@ -365,16 +344,16 @@ sudo systemctl restart docker
 
 [14个ROS/ROS2版本任选 | 用Docker实现一键安装ROS_哔哩哔哩_bilibili](https://www.bilibili.com/video/BV1hY411N7HF/?spm_id_from=333.337.search-card.all.click&vd_source=1aac97640b2d7f2e6ae51b4b1cac54e5)
 
-## 文件夹权限
+## 2.2 文件夹权限
 
-## 挂梯子
+## 2.3 代理设置
 
 ```bash
 export https_proxy=http://127.0.0.1:7890
 export https_proxy=http://127.0.0.1:7899
 ```
 
-## conda（arm）
+## 2.4 Conda（ARM）
 
 ```bash
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh -O Miniconda3.sh
@@ -385,9 +364,9 @@ source ~/.bashrc
 conda --version
 ```
 
-## docker开不了rviz
+## 2.5 Docker 无法打开 RViz
 
-### 1、屏幕权限缺少
+### X11 屏幕权限
 
  主机：
 
@@ -428,7 +407,7 @@ ls -l /tmp/.X11-unix
 
 - 应该有 `X0` 或 `X1` 套接字文件。
 
-## 串口调试助手
+## 2.6 串口调试工具
 
 **前提是要下载ch340的串口驱动！！！不用在docker里面安装，配置也是docker外就行！！！**
 
@@ -486,6 +465,7 @@ sudo minicom -s
 sudo minicom
 ```
 
+
 # 三、Livox MID360 雷达
 
 [【3D激光SLAM】Livox-mid-360激光雷达ip配置_mid360-CSDN博客](https://blog.csdn.net/Hahalim/article/details/129414327)
@@ -500,7 +480,7 @@ sudo minicom
 
 **设备码：47MDMCU0030183**
 
-## ROS1
+## 3.1 ROS1 驱动部署
 
 ### Livox-SDK2
 
@@ -513,13 +493,13 @@ cmake .. && make -j8
 sudo make install
 ```
 
-###  Livox ROS Driver 2:
+### Livox ROS Driver 2
 
 ```
 git clone https://github.com/Livox-SDK/livox_ros_driver2.git
 ```
 
-#### Build the Livox ROS Driver 2:
+#### 编译 Livox ROS Driver 2
 
 ```bash
 source /opt/ros/noetic/setup.sh
@@ -532,7 +512,7 @@ cd src/livox_ros_driver2/
 ./build.sh ROS1
 ```
 
-### 先配置一下主板ip
+### 配置主板 IP
 
 ```bash
 #nx super
@@ -541,7 +521,7 @@ sudo ifconfig enP8p1s0 192.168.1.100 netmask 255.255.255.0
 sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
 ```
 
-### Run Livox ROS Driver 2:
+### 启动 Livox ROS Driver 2
 
 ```bash
 source ../../devel/setup.sh
@@ -553,7 +533,7 @@ roslaunch livox_ros_driver2 rviz_MID360.launch
 roslaunch livox_ros_driver2 msg_MID360.launch
 ```
 
-### 问题
+### 常见问题
 
 #### 编译工作区的时候这个功能包检测为ros2
 
@@ -573,11 +553,12 @@ catkin_make
 
 # 四、端到端模型概况
 
-## 现状
+
+## 4.1 现状
 
 ![image-20250910191622464](../mdPicture/image-20250910191622464.png)
 
-## 分类
+## 4.2 分类
 
 ![image-20250910191845296](../mdPicture/image-20250910191845296.png)
 
@@ -585,7 +566,7 @@ catkin_make
 
 ![image-20250910192657481](../mdPicture/image-20250910192657481.png)
 
-## 模型部署
+## 4.3 模型部署
 
 ![image-20251017154624630](../mdPicture/image-20251017154624630.png)
 
@@ -593,9 +574,11 @@ catkin_make
 
 ![image-20251017154959935](../mdPicture/image-20251017154959935-176546506520551.png)
 
+
 # 五、NeuPAN 部署、参数与仿真
 
-## 部署流程
+## 5.1 部署流程
+
 
 **在Ubuntu22.04中采用ROS1docker运行！！！**
 
@@ -672,118 +655,39 @@ python3 -c "import neupan; print('✅ 模块存在'); print(neupan)"
 
 [NVIDIA Jetson设备上安装Python 3.10_jetson安装python 3.10-CSDN博客](https://blog.csdn.net/sennsi/article/details/145265652)
 
-##### 步骤 1: 更新系统包
+合并后的源码安装流程如下。使用 `altinstall`，避免覆盖 Ubuntu/ROS 的系统 Python：
 
 ```bash
 sudo apt update
-sudo apt upgrade -y
-```
-
-##### 步骤 2: 安装依赖项
-
-安装编译Python所需的依赖项：
-
-```
-sudo apt install -y build-essential checkinstall
-sudo apt install -y libreadline-gplv2-dev libncursesw5-dev libssl-dev libsqlite3-dev tk-dev libgdbm-dev libc6-dev libbz2-dev libffi-dev zlib1g-dev
-```
-
-##### 步骤 3: 下载Python 3.10源码
-
-从Python官网下载Python 3.10的源码：
-
-```
+sudo apt install -y build-essential checkinstall libreadline-gplv2-dev \
+  libncursesw5-dev libssl-dev libsqlite3-dev tk-dev libgdbm-dev \
+  libc6-dev libbz2-dev libffi-dev zlib1g-dev liblzma-dev
 cd /tmp
 wget https://www.python.org/ftp/python/3.10.0/Python-3.10.0.tgz
-```
-
-```
-tar xzf Python-3.10.0.tgz
-cd Python-3.10.0
-```
-
-在编译 Python 时，确保启用 LZMA 支持：
-
-```
+tar xzf Python-3.10.0.tgz && cd Python-3.10.0
 ./configure --enable-optimizations --with-lzma
-```
-
-配置编译选项并编译Python：
-
-```
-./configure --enable-optimizations
 make -j$(nproc)
-```
-
---enable-optimizations：启用优化选项，提高Python性能。
-
--j$(nproc)：使用所有可用的CPU核心加速编译。
-
-##### 步骤 4: 安装Python 3.10
-
-编译完成后，安装Python：
-
-```
 sudo make altinstall
-```
-
-使用altinstall而不是install，以避免覆盖系统默认的Python版本。
-
-##### 步骤 5: 验证安装
-
-检查Python 3.10是否安装成功：
-
-```
 python3.10 --version
-```
-
-输出应显示：
-
-```
-Python 3.10.0
-```
-
-验证 _lzma 模块
-重新编译并安装 Python 后，验证 _lzma 模块是否可用：
-
-```
 python3.10 -c "import lzma; print('LZMA module is available')"
 ```
 
-##### 步骤6: 安装pip（可选）
+缺少 pip 时执行：
 
-如果安装过程中没有自动安装pip，可以手动安装：
-
-```
+```bash
 curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
 python3.10 get-pip.py
-```
-
-验证pip是否安装成功：
-
-```
 pip3.10 --version
 ```
 
-##### 步骤 7: 设置Python 3.10为默认版本（可选）
+不建议修改 ROS 主机的系统 `python3`。确有需要时才使用：
 
-如果你希望将Python 3.10设置为默认的Python 3版本，可以使用update-alternatives：
-
-添加Python 3.10到update-alternatives：
-
-```
+```bash
 sudo update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.10 1
-```
-
-配置默认的Python 3版本：
-
-```
 sudo update-alternatives --config python3
 ```
 
-选择Python 3.10对应的编号。
-
-## 赋予neupan代码可执行
+## 设置 NeuPAN 代码权限
 
 ```
 chmod 777 * src/neupan_ros/src/neupan_core.py
@@ -793,7 +697,8 @@ chmod 777 * src/neupan_ros/src/neupan_node.py
 cd /home/nuc/lxw/neupan_ws && catkin_make && source devel/setup.bash
 ```
 
-## Neupan核心参数
+
+## 5.3 NeuPAN 核心参数
 
 ### ROS参数
 
@@ -914,38 +819,12 @@ cd /home/nuc/lxw/neupan_ws && catkin_make && source devel/setup.bash
 
    `q_s` 是状态误差代价权重，用于提高车辆预测状态与参考路径之间的偏差惩罚。适当增大后，优化器会更重视横向位置和航向误差，减少车辆偏离路径后再大幅反向修正的情况。
 
-## Neupan Limo Gazebo 仿真配置(Docker/ROS1 环境/本地虚拟机)
+## 5.4 NeuPAN Limo Gazebo 仿真配置（Docker/ROS1/本地虚拟机）
+
 
 ---
 
-### 1. 问题复盘与解决方案
-
-#### 问题 A：依赖包下载位置错误与权限问题
-
-- **现象**：运行官方脚本 `gazebo_example_setup.sh` 时，依赖包 (`limo_ros`, `rvo_ros`) 被下载到了错误的子目录 (`example/gazebo_limo/`) 下，且所有权为 root。
-- **解决**：手动将依赖包移回 `src` 根目录。
-
-#### 问题 B：CMake 缓存路径冲突
-
-- **现象**：执行 `catkin_make` 报错 `CMake Error: The current CMakeCache.txt directory ... is different than ...`。
-- **原因**：工作空间是从另一台名为 `wheeltec` 的机器拷贝过来的，`build` 文件夹里保留了旧机器的绝对路径缓存。
-- **解决**：强制删除 `build` 和 `devel` 文件夹重置构建系统。
-
-#### 问题 C：ROS1 环境中编译 ROS2 驱动报错
-
-- **现象**：编译 `livox_ros_driver2` 时报错 `Could not find ... ament_cmake_auto`。
-- **原因**：该驱动包同时包含 ROS1/2 逻辑，在当前环境下错误触发了 ROS2 (Colcon) 的构建逻辑。且仿真环境不需要真实的雷达驱动。
-- **解决**：在该包目录下添加 `CATKIN_IGNORE` 文件，跳过编译。
-
-#### 问题 D：ROS 网络连接失败 (RLException) **[新增]**
-
-- **现象**：运行 `roslaunch` 时报错 `RLException: Unable to contact my own server at [http://2204:xxxxx/]`。
-- **原因**：Docker 容器内的主机名 (`2204`) 无法被解析为本地 IP (`127.0.0.1`)，导致 ROS Master 无法启动。
-- **解决**：手动指定 `ROS_HOSTNAME` 为 `localhost`。
-
----
-
-### 2. 完整部署流程 (Step-by-Step)
+### 完整部署流程
 
 #### 第一步：整理目录结构 (修复依赖位置)
 
@@ -998,9 +877,9 @@ echo "export ROS_MASTER_URI=http://localhost:11311" >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### 3. 启动仿真
+### 启动仿真
 
-你需要开启 **两个** 终端窗口分别运行。
+开启两个终端分别运行环境与算法。
 
 #### 终端 1：启动 Gazebo 仿真环境
 
@@ -1026,7 +905,7 @@ source devel/setup.bash
 roslaunch neupan_ros neupan_gazebo_limo.launch
 ```
 
-### 4. 验证与故障排除
+### 验证与故障排除
 
 #### 验证步骤
 
@@ -1060,9 +939,11 @@ roslaunch neupan_ros neupan_gazebo_limo.launch
             action, info = self.neupan_planner(self.robot_state, obs)
 ```
 
+
 # 六、TEB 与其他全局算法
 
-## ROS1 Noetic安装
+
+## 6.1 TEB 的 ROS1 Noetic 安装
 
 Ubuntu 20.04 + ROS Noetic：
 
@@ -1072,11 +953,11 @@ sudo apt install ros-noetic-teb-local-planner
 
 或：[rst-tu-dortmund/teb_local_planner: An optimal trajectory planner considering distinctive topologies for mobile robots based on Timed-Elastic-Bands (ROS Package)](https://github.com/rst-tu-dortmund/teb_local_planner?utm_source=chatgpt.com)
 
-## 其他全局规划算法
+## 6.2 其他全局规划算法
 
-## A*
+### A*
 
-### 基于栅格地图
+#### 基于栅格地图
 
 使用GlobalPlanner的A*
 
@@ -1103,11 +984,13 @@ GlobalPlanner:
 
 ```
 
-### 基于osm
+#### 基于 OSM
 
 使用自己写的a*算法（osm_map_handler/global_astar_node）
 
+
 # 七、URDF、Gazebo 与 Docker 迁移
+
 
 [solidworks导出urdf文件/导入ros详细教程_solidworks转urdf-CSDN博客](https://blog.csdn.net/hhhon/article/details/148581041)
 
@@ -1121,9 +1004,9 @@ GlobalPlanner:
 
 也可以直接基于现成的模板来修改！！！
 
-## Gazebo 仿真
+## 7.1 Gazebo 仿真
 
-## 虚拟机
+### 虚拟机
 
 [Ubuntu20.04+ROS1+PX4+Gazebo仿真（三）环境配置 - 哔哩哔哩](https://www.bilibili.com/opus/934654041226477571)
 
@@ -1177,21 +1060,22 @@ sudo cp -r /home/hart2204/gazebo_models/* /root/.gazebo/models/
  
 ```
 
-## 打包 Docker 迁移到 NUC
+## 7.2 打包 Docker 迁移到 NUC
+
 
 
 
 # 八、地图、SLAM 与全局规划
 
-## OSM 地图
+## 8.1 OSM 地图
 
 [www.openstreetmap.org](https://www.openstreetmap.org/)
 
 ![image-20260302173744876](../mdPicture/image-20260302173744876.png)
 
-## 全局规划
+## 8.2 SLAM 建图与地图转换
 
-### 地图
+### 地图说明
 
 全局一定要有地图，可以是瓦片可以是slam地图
 
@@ -1310,6 +1194,7 @@ rosrun map_server map_saver -f my_indoor_map
 ```
 
 ****
+
 
 #### FAST_LIVO2 雷达+视觉(nuc)
 
@@ -1449,6 +1334,7 @@ savePCDDirectory: "/Downloads/LOAM/"
 savePCDDirectory: "/home/nuc/lxw/lio_sam_ws/src/LIO-SAM-MID360/PCD" 
 ```
 
+
 #### Mid360离线建图与生成栅格地图流程
 
 记录了如何使用真实的 Livox Mid360 雷达收集数据，利用 FAST_LIO 算法进行离线建图，并最终将 3D 点云转换为适用于 ROS Navigation (导航栈) 的 2D 栅格地图（`.pgm` + `.yaml`）。
@@ -1567,7 +1453,7 @@ savePCDDirectory: "/home/nuc/lxw/lio_sam_ws/src/LIO-SAM-MID360/PCD"
 
 执行完毕后，` /home/nuc/lxw/maps` 文件夹下便会生成 `my_corridor.pgm` 和 `my_corridor.yaml`，此文件可直接被加载进导航配置中。
 
-## 局部Neupan+全局算法
+## 8.3 NeuPAN 与全局规划的关系
 
 neupan做的是局部的规划和避障
 
@@ -1582,7 +1468,7 @@ neupan做的是局部的规划和避障
 
 ![image-20260121122150811](../mdPicture/image-20260121122150811.png)
 
-## Hybrid-A*
+## 8.4 Hybrid A*
 
 1、[teddyluo/hybrid-a-star-annotation: Hybrid A*路径规划器的代码注释](https://github.com/teddyluo/hybrid-a-star-annotation?tab=readme-ov-file)
 
@@ -1661,7 +1547,7 @@ NeuPAN 默认路径跟踪权重为弱约束，无障碍环境下优化器优先�
 
 # 九、点对点导航
 
-## 一、基于栅格地图+neupan+全局规划算法（混合A*） 实现小车室内走廊的导航
+## 9.1 栅格地图 + NeuPAN + Hybrid A*：室内走廊导航
 
 ```bash
 conda activate lxw
@@ -1700,7 +1586,7 @@ rosnode list
 rosrun rqt_graph rqt_graph   # 可视化节点/话题连接（需图形界面）
 ```
 
-## 二、基于OpenStreetMap瓦片地图+GPS经纬度+neupan+全局规划算法（混合A*\A*） 实现小车户外点到点导航
+## 9.2 OSM + GPS + NeuPAN/A*：室外点到点导航
 
 `TEB` 测试指令是：
 
@@ -1741,7 +1627,7 @@ roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
 - `neupan_ros/outdoor_global_only_test.launch`：`OSM A* + 不带局部避障，仅直接跟踪`
 - `neupan_ros/full_system_run.launch`：`OSM A* + NeuPAN 局部规划`
 
-## 三、基于高德车道级地图+GPS经纬度+neupan+全局规划算法（混合A*） 实现小车户外点到点导航
+## 9.3 高德车道级地图 + GPS + NeuPAN：室外点到点导航
 
 [路径规划-基础 API 文档-开发指南-Web服务 API | 高德地图API](https://lbs.amap.com/api/webservice/guide/api/direction)
 
@@ -1795,7 +1681,7 @@ MPC控制
 /vehicle_interface_node（底盘）
 ```
 
-## 四、开源地图api--天地图
+## 9.4 开源地图 API：天地图
 
 [天地图API](http://lbs.tianditu.gov.cn/server/MapService.html)
 
@@ -1832,7 +1718,7 @@ roslaunch wheeltec_gps_driver mapviz_path.launch
 
 ![image-20260720200927233](../mdPicture/image-20260720200927233.png)
 
-## Nav2
+## 10.1 Nav2
 
 [Route Server — Nav2 1.0.0 documentation](https://docs.nav2.org/configuration/packages/configuring-route-server.html?utm_source=chatgpt.com)
 
@@ -1842,7 +1728,7 @@ roslaunch wheeltec_gps_driver mapviz_path.launch
 
 # 十一、RTK/CORS
 
-## 中国移动cors
+## 11.1 中国移动 CORS
 
 卡号：cndh43990
 密码：a8888507
@@ -1882,9 +1768,43 @@ AT+NTRIP=120.253.239.161,8002,cndh43990,a8888507,RTCM33_GRCE
 
 # 十二、道路视觉与相机
 
-## 局部道路边界/车道线检测
+本章汇总道路边界感知。当前实车优先使用 MID360 路缘检测；相机车道线内容作为后续融合方案保留。
 
-### 车道线检测 --HSV/CLRnet
+## 12.1 MID360 激光雷达路缘检测（当前方案）
+
+激光雷达路缘检测已经存在，并且分为两个包：
+
+| 路径 | 定位 | 是否直接用于当前 MID360 系统 |
+|---|---|---|
+| `src/lidar_curb_detection` | 上游固定扫描线算法参考源码 | 否；MID360 没有可直接套用的固定线束排列 |
+| `src/lidar_curb_refinement` | MID360 高程栅格检测、误差滤波、路径修正 | 是 |
+
+主要文件：
+
+| 文件 | 作用 |
+|---|---|
+| `lidar_curb_refinement/scripts/lidar_curb_node.py` | 从右前方点云检测连续高度台阶，输出右侧路缘和横向误差 |
+| `lidar_curb_refinement/scripts/path_refine_node.py` | 沿路径行驶方向的右法向量修正 OSM 路径 |
+| `lidar_curb_refinement/launch/road_curb_debug.launch` | 单独检测及离线调试入口 |
+| `lidar_curb_refinement/TESTING_GUIDE_CN.md` | 低速标定与验收步骤 |
+
+主要话题：
+
+| 话题 | 消息类型 | 作用 |
+|---|---|---|
+| `/cloud_registered_body` | `sensor_msgs/PointCloud2` | FAST-LIO 去畸变后的车体点云输入 |
+| `/road_curb/right_edge` | `geometry_msgs/PointStamped` | 检测到的右侧路缘代表点 |
+| `/road_curb/lateral_error` | `std_msgs/Float32` | 路径横向修正量 |
+| `/road_curb/status` | `std_msgs/String` | JSON 格式的有效性、置信度和拒绝原因 |
+| `/osm_global_path_curb_refined` | `nav_msgs/Path` | 供 NeuPAN 或直跟控制器使用的靠右路径 |
+
+启动、标定、靠右闭环和 rosbag 回放命令统一放在本文 [1.3](#13-mid360-右侧路缘检测与靠右行驶)、
+[1.4](#14-rosbag-一键录制) 和 [1.5](#15-rosbag-离线路缘测试)，这里不再重复。
+
+## 12.2 相机道路边界/车道线检测（历史与后续方案）
+
+
+### 车道线检测：HSV/CLRNet
 
 车道线观测由 `road_vision_refinement` 提供，用于在 OSM 全局路径基础上产生局部视觉横向误差。默认只发布观测结果，不直接修改 NeuPAN 的输入路径。
 
@@ -1927,11 +1847,11 @@ src/road_vision_refinement/config/calibration/ipm_points.json
 
 已使用两个独立点 `(1.5, 0.3)`、`(1.8, 0.3)` 验证，单点误差均为 `0.225 m`，当前暂按最大误差不超过 `0.25 m` 使用。相机位置、安装高度、俯仰角或图像分辨率变化后，必须重新标定。
 
-### HybridNets--可行驶区域与车道线检测
+### HybridNets：可行驶区域与车道线检测
 
 
 
-## 奥比中光PROPLUS
+## 12.3 奥比中光 Pro Plus
 
 ros1：https://github.com/orbbec/ros_astra_camera.git
 
@@ -1952,9 +1872,13 @@ cmake .. && make -j4
 
 棋盘格生成：[相机校准图案生成器 – calib.io](https://calib.io/zh/pages/camera-calibration-pattern-generator)
 
+
 # 十三、VLM 与世界模型
 
-## jeston orin nx super
+本章为后续多模态与世界模型调研，不参与当前室外导航主链路。
+
+
+## 13.1 Jetson Orin NX Super
 
 ### 环境配置与编译
 
@@ -2081,6 +2005,6 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
 
 
 
-## 世界模型
+## 13.2 世界模型
 
 RSSM+雷达encoder+neupan
