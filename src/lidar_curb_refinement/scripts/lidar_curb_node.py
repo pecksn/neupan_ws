@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Detect a continuous right-side curb from MID360 PointCloud2 data.
 
 The input cloud is transformed to base_link first.  Unlike the reference

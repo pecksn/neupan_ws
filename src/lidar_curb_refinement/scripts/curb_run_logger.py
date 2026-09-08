@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Continuously log MID360 curb observations until the ROS launch stops."""
 
 import json
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import rospy
 from geometry_msgs.msg import PointStamped
@@ -28,6 +28,8 @@ class CurbRunLogger:
         )
         self.sample_rate = max(1.0, float(rospy.get_param("~sample_rate", 10.0)))
         self.flush_interval = max(0.1, float(rospy.get_param("~flush_interval", 1.0)))
+        self.timezone_offset_hours = float(rospy.get_param("~timezone_offset_hours", 8.0))
+        self.local_timezone = timezone(timedelta(hours=self.timezone_offset_hours))
         self.max_bytes = max(
             1024, int(float(rospy.get_param("~max_file_size_mb", 256.0)) * 1024 * 1024)
         )
@@ -50,13 +52,14 @@ class CurbRunLogger:
         self.file = None
 
         os.makedirs(self.log_dir, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.now(self.local_timezone).strftime("%Y%m%d_%H%M%S")
         self.log_path = os.path.join(self.log_dir, "lidar_curb_{}.jsonl".format(stamp))
         self.file = open(self.log_path, "w", buffering=1)
         self.write(
             {
                 "record_type": "metadata",
                 "created_at_local": self.local_time(),
+                "timezone_offset_hours": self.timezone_offset_hours,
                 "sample_rate_hz": self.sample_rate,
                 "max_file_size_mb": self.max_bytes / (1024.0 * 1024.0),
                 "topics": {
@@ -79,9 +82,8 @@ class CurbRunLogger:
         rospy.on_shutdown(self.shutdown)
         rospy.loginfo("curb_run_logger: writing %.1f Hz log to %s", self.sample_rate, self.log_path)
 
-    @staticmethod
-    def local_time():
-        return datetime.now().astimezone().isoformat(timespec="milliseconds")
+    def local_time(self):
+        return datetime.now(self.local_timezone).isoformat(timespec="milliseconds")
 
     @staticmethod
     def msg_stamp(header):

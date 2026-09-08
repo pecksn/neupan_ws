@@ -10,6 +10,7 @@ import signal
 import socket
 import subprocess
 import sys
+from datetime import timedelta, timezone
 
 import rospkg
 import rospy
@@ -31,12 +32,24 @@ class BagRecorder:
         self.bag_prefix = self._safe_name(bag_prefix)
         self.min_free_gb = max(0.0, float(self.config.get("min_free_space_gb", 5.0)))
         self.check_period = max(1.0, float(self.config.get("disk_check_period_sec", 5.0)))
+        self.timezone_offset_hours = float(self.config.get("timezone_offset_hours", 8.0))
+        self.local_timezone = timezone(timedelta(hours=self.timezone_offset_hours))
+        required_topics = self.config.get("required_topics", [])
+        if not isinstance(required_topics, list):
+            raise RuntimeError("required_topics 必须是列表")
+        self.required_topics = [
+            str(topic).strip() for topic in required_topics if str(topic).strip()
+        ]
+        self.seen_required_topics = set()
 
         os.makedirs(self.output_dir, exist_ok=True)
         self._check_initial_space()
         self.output_prefix = os.path.join(
             self.output_dir,
-            "{}_{}".format(self.bag_prefix, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")),
+            "{}_{}".format(
+                self.bag_prefix,
+                datetime.datetime.now(self.local_timezone).strftime("%Y%m%d_%H%M%S"),
+            ),
         )
         self.command = self._build_command()
         self._write_manifest()
@@ -98,7 +111,8 @@ class BagRecorder:
 
     def _write_manifest(self):
         manifest = {
-            "created_at": datetime.datetime.now().isoformat(),
+            "created_at": datetime.datetime.now(self.local_timezone).isoformat(),
+            "timezone_offset_hours": self.timezone_offset_hours,
             "hostname": socket.gethostname(),
             "config_file": self.config_path,
             "output_prefix": self.output_prefix,
@@ -112,7 +126,12 @@ class BagRecorder:
         rospy.loginfo("rosbag 输出前缀: %s", self.output_prefix)
         rospy.loginfo("磁盘剩余 %.2f GB；停止阈值 %.2f GB", self._free_gb(), self.min_free_gb)
         rospy.loginfo("执行: %s", " ".join(self.command))
-        self.process = subprocess.Popen(self.command, preexec_fn=os.setsid)
+        process_env = os.environ.copy()
+        process_env["TZ"] = "Asia/Shanghai"
+        self.process = subprocess.Popen(
+            self.command, preexec_fn=os.setsid, env=process_env
+        )
+        self._check_required_topics()
         rospy.Timer(rospy.Duration(self.check_period), self._monitor)
 
     def _monitor(self, _event):
@@ -127,6 +146,27 @@ class BagRecorder:
         if self.min_free_gb > 0.0 and free_gb <= self.min_free_gb:
             rospy.logerr("磁盘仅剩 %.2f GB，正在安全停止录制", free_gb)
             rospy.signal_shutdown("low disk space")
+            return
+        self._check_required_topics()
+
+    def _check_required_topics(self):
+        if not self.required_topics:
+            return
+        try:
+            published = {name for name, _type in rospy.get_published_topics()}
+        except rospy.ROSException as exc:
+            rospy.logwarn_throttle(5.0, "无法查询必录话题: %s", exc)
+            return
+        self.seen_required_topics.update(published.intersection(self.required_topics))
+        missing_now = [topic for topic in self.required_topics if topic not in published]
+        if missing_now:
+            rospy.logwarn_throttle(
+                5.0,
+                "录包继续，但以下必录话题当前没有发布者: %s",
+                ", ".join(missing_now),
+            )
+        else:
+            rospy.loginfo_throttle(30.0, "所有必录点云/RTK话题均有发布者")
 
     def stop(self):
         if self.stopping:
@@ -141,6 +181,11 @@ class BagRecorder:
                 rospy.logwarn("rosbag 关闭超时，发送 SIGTERM")
                 os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
                 self.process.wait(timeout=5.0)
+        never_seen = [
+            topic for topic in self.required_topics if topic not in self.seen_required_topics
+        ]
+        if never_seen:
+            rospy.logerr("本次录制从未发现以下必录话题: %s", ", ".join(never_seen))
         rospy.loginfo("录制结束: %s", self.output_prefix)
 
 

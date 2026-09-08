@@ -5,6 +5,20 @@
 `nScanRings`。因此本包使用 FAST-LIO 去畸变后的 `/cloud_registered_body`，先转换到
 `base_link`，再在车体右前方的高程栅格中检测连续上台阶。
 
+## Python/ROS 依赖
+
+NeuPAN 可以继续使用 `conda activate lxw`。路缘 launch 会通过 `launch-prefix` 强制三个路缘
+节点使用 `/usr/bin/python3`，避免 `tf2_sensor_msgs` 在 Conda 中找不到系统安装的 `PyKDL`。
+在 ROS1 Noetic 容器中安装并验证：
+
+```bash
+sudo apt update
+sudo apt install python3-pykdl ros-noetic-tf2-sensor-msgs
+/usr/bin/python3 -c "import PyKDL, rospy, tf2_sensor_msgs; print('curb ROS Python OK')"
+```
+
+修改脚本后需要重新 `catkin_make` 并重新 source 工作区。
+
 ## 数据流
 
 ```text

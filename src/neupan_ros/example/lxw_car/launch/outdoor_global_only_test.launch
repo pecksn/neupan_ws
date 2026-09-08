@@ -293,6 +293,7 @@
         <param name="sample_rate" value="10.0" />
         <param name="flush_interval" value="1.0" />
         <param name="max_file_size_mb" value="256.0" />
+        <param name="timezone_offset_hours" value="8.0" />
         <param name="print_to_screen" value="false" />
     </node>
 

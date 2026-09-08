@@ -42,14 +42,10 @@ source /home/nuc/lxw/neupan_ws/devel/setup.bash
 每个新终端至少执行：
 
 ```bash
+cd /home/nuc/lxw/neupan_ws
 conda activate lxw
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
-```
-
-配置 NUC 雷达网口：
-
-```bash
 sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
 ```
 
@@ -86,6 +82,28 @@ roslaunch teb_test outdoor_teb_test.launch
 | `outdoor_teb_test.launch` | OSM A* | TEB | TEB 对照测试 |
 
 ## 1.3 MID360 右侧路缘检测与靠右行驶
+
+### 首次依赖检查
+
+`tf2_sensor_msgs` 依赖系统 Python 的 `PyKDL`。可以正常执行 `conda activate lxw` 运行
+NeuPAN；路缘 launch 使用 `launch-prefix=/usr/bin/python3`，三个路缘节点会单独使用系统
+Python，不受当前 Conda 环境影响。首次在 ROS1 Noetic 容器执行：
+
+```bash
+sudo apt update
+sudo apt install python3-pykdl ros-noetic-tf2-sensor-msgs
+/usr/bin/python3 -c "import PyKDL, rospy, tf2_sensor_msgs; print('curb ROS Python OK')"
+cd /home/nuc/lxw/neupan_ws
+catkin_make
+source devel/setup.bash
+```
+
+如果仍出现 `ModuleNotFoundError: PyKDL`，检查实际解释器：
+
+```bash
+head -1 /home/nuc/lxw/neupan_ws/src/lidar_curb_refinement/scripts/lidar_curb_node.py
+/usr/bin/python3 -c "import PyKDL; print(PyKDL.__file__)"
+```
 
 参考源码位于 `src/lidar_curb_detection`。原算法依赖固定扫描线编号，适合 Velodyne 等机械式
 雷达；MID360 使用非重复扫描，因此当前系统实际运行 `src/lidar_curb_refinement`，在 FAST-LIO
@@ -140,7 +158,12 @@ tail -f "$(ls -1t /home/nuc/lxw/neupan_ws/tracker_logs/lidar_curb_*.jsonl | head
 ```
 
 按 `Ctrl+C` 结束 launch 时，日志会写入汇总并执行 `flush + fsync` 后关闭，不需要另外启动
-`rostopic echo`。默认单文件上限为 256 MB。
+`rostopic echo`。默认单文件上限为 256 MB，文件名和 `local_time` 明确使用北京时间 UTC+8，
+不受 Docker 内部 UTC 时区影响。
+
+项目自定义日志已统一使用北京时间 UTC+8，包括综合导航日志 `system_run_*.jsonl`、路缘日志
+`lidar_curb_*.jsonl`、开环标定日志以及 rosbag 文件名和 JSON 清单。日志中保留的 `ros_time`、
+`stamp` 和传感器消息时间戳不做时区换算，用于保证多传感器同步。
 
 `/road_curb/status` 中：
 
@@ -220,7 +243,7 @@ roslaunch neupan_ros full_system_run.launch \
 联调，包含：
 
 - MID360 原始点云和 IMU；
-- FAST-LIO 车体/地图点云与里程计；
+- FAST-LIO 车体/地图点云与里程计，其中 `/cloud_registered_body` 是路缘离线复现的必录点云；
 - GPS、航向、TF 和定位保护状态；
 - 原始 OSM 路径、路缘修正路径和路缘检测结果；
 - `/scan`、NeuPAN/直跟控制指令和目标点。
@@ -228,8 +251,17 @@ roslaunch neupan_ros full_system_run.launch \
 启动：
 
 ```bash
+sudo apt install python3-yaml
+python3 -c "import yaml; print('PyYAML OK')"
 roslaunch vehicle_bag_recorder record.launch
 ```
+
+`python3-yaml` 只需安装一次。如果出现 `ModuleNotFoundError: yaml`，说明它没有安装在当前 ROS1
+容器实际使用的 Python 环境中。
+
+录制器会检查 `/cloud_registered_body`、`/tf`、`/gps/fix`、`/gnss/gpgga` 和
+`/heading` 是否真的存在。缺失时终端每 5 秒告警，但不会中断其他话题；`Ctrl+C` 结束时还会
+列出本次从未出现的必录话题。因此不能只看录包程序已经启动，还要确认没有关键话题缺失告警。
 
 也可以直接运行 Python：
 

@@ -4,7 +4,7 @@ import json
 import math
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import rospy
 from geometry_msgs.msg import QuaternionStamped, Twist
@@ -25,6 +25,8 @@ class OpenLoopDataLogger:
         self.flush_interval = max(0.1, float(rospy.get_param("~flush_interval", 1.0)))
         self.require_packet_sources = bool(rospy.get_param("~require_packet_sources", True))
         self.skip_zero_speed_packets = bool(rospy.get_param("~skip_zero_speed_packets", True))
+        self.timezone_offset_hours = float(rospy.get_param("~timezone_offset_hours", 8.0))
+        self.local_timezone = timezone(timedelta(hours=self.timezone_offset_hours))
         self.warned_waiting_packet_sources = False
 
         self.latest = {
@@ -40,7 +42,7 @@ class OpenLoopDataLogger:
         self.last_flush_time = time.monotonic()
 
         os.makedirs(self.log_dir, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.now(self.local_timezone).strftime("%Y%m%d_%H%M%S")
         self.log_path = os.path.join(self.log_dir, "{}_{}.jsonl".format(self.label, stamp))
         self.log_file = open(self.log_path, "w", buffering=1)
         self.packet_pub = rospy.Publisher(
@@ -60,11 +62,12 @@ class OpenLoopDataLogger:
         rospy.on_shutdown(self.on_shutdown)
         rospy.loginfo("open_loop_data_logger: writing synchronized samples to %s", self.log_path)
 
-    @staticmethod
-    def local_time_string(timestamp=None):
+    def local_time_string(self, timestamp=None):
         if timestamp is None:
             timestamp = time.time()
-        return datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="milliseconds")
+        return datetime.fromtimestamp(timestamp, tz=self.local_timezone).isoformat(
+            timespec="milliseconds"
+        )
 
     @staticmethod
     def message_stamp(header):
@@ -204,6 +207,8 @@ class OpenLoopDataLogger:
             self.packet_pub.publish(packet)
             self.write_record(
                 {
+                    "ros_time": rospy.Time.now().to_sec(),
+                    "local_time": self.local_time_string(),
                     "lat": int(packet.lat),
                     "lon": int(packet.lon),
                     "alt": int(packet.alt),

@@ -79,9 +79,12 @@
     <param name="sample_rate" value="$(arg sync_log_rate)" />
     <param name="require_packet_sources" value="$(arg require_packet_sources)" />
     <param name="skip_zero_speed_packets" value="$(arg skip_zero_speed_packets)" />
+    <param name="timezone_offset_hours" value="8.0" />
   </node>
 
   <node if="$(arg record_bag)" pkg="rosbag" type="record" name="open_loop_motion_bag" output="screen"
         args="-o $(arg bag_prefix)
-              /open_loop_motion/packet" />
+              /open_loop_motion/packet">
+    <env name="TZ" value="Asia/Shanghai" />
+  </node>
 </launch>

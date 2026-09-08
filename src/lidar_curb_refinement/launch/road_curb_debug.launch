@@ -13,8 +13,10 @@
   <arg name="log_dir" default="/home/nuc/lxw/neupan_ws/tracker_logs" />
   <arg name="log_sample_rate" default="10.0" />
   <arg name="log_max_file_size_mb" default="256.0" />
+  <arg name="log_timezone_offset_hours" default="8.0" />
 
-  <node pkg="lidar_curb_refinement" type="lidar_curb_node.py" name="lidar_curb" output="screen">
+  <node pkg="lidar_curb_refinement" type="lidar_curb_node.py" name="lidar_curb"
+        launch-prefix="/usr/bin/python3" output="screen">
     <param name="cloud_topic" value="$(arg cloud_topic)" />
     <param name="base_frame" value="$(arg base_frame)" />
     <param name="desired_clearance_m" value="$(arg desired_clearance_m)" />
@@ -24,7 +26,8 @@
   </node>
 
   <group if="$(arg start_path_refine)">
-    <node pkg="lidar_curb_refinement" type="path_refine_node.py" name="road_path_refine" output="screen">
+    <node pkg="lidar_curb_refinement" type="path_refine_node.py" name="road_path_refine"
+          launch-prefix="/usr/bin/python3" output="screen">
       <param name="input_path_topic" value="$(arg input_path_topic)" />
       <param name="output_path_topic" value="$(arg output_path_topic)" />
       <param name="error_topic" value="/road_curb/lateral_error" />
@@ -36,7 +39,7 @@
   </group>
 
   <node if="$(arg enable_log)" pkg="lidar_curb_refinement" type="curb_run_logger.py"
-        name="curb_run_logger" output="screen">
+        name="curb_run_logger" launch-prefix="/usr/bin/python3" output="screen">
     <param name="edge_topic" value="/road_curb/right_edge" />
     <param name="error_topic" value="/road_curb/lateral_error" />
     <param name="status_topic" value="/road_curb/status" />
@@ -45,5 +48,6 @@
     <param name="log_dir" value="$(arg log_dir)" />
     <param name="sample_rate" value="$(arg log_sample_rate)" />
     <param name="max_file_size_mb" value="$(arg log_max_file_size_mb)" />
+    <param name="timezone_offset_hours" value="$(arg log_timezone_offset_hours)" />
   </node>
 </launch>

@@ -8,6 +8,11 @@
 编译并 source 工作区后：
 
 ```bash
+sudo apt install python3-yaml
+python3 -c "import yaml; print('PyYAML OK')"
+cd /home/nuc/lxw/neupan_ws
+catkin_make
+source devel/setup.bash
 roslaunch vehicle_bag_recorder record.launch
 ```
 
@@ -20,6 +25,9 @@ rosrun vehicle_bag_recorder bag_recorder.py \
 
 按 `Ctrl+C` 后程序会向 rosbag 发送 `SIGINT`，等待它完成索引写入。每次输出包括带日期时间的
 bag（达到配置大小后自动分包）以及同名前缀的 JSON 清单。默认保存到工作区的 `rosbags/`。
+
+默认必录检查包含 `/cloud_registered_body`、`/tf`、GPS Fix、GGA 和航向。关键话题没有发布者时
+终端每 5 秒告警，但其他话题仍继续录制；结束时会再次列出整次录制从未出现的话题。
 
 临时改变保存目录或名称：
 

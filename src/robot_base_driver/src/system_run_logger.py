@@ -4,7 +4,7 @@ import json
 import math
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import rospy
 from geometry_msgs.msg import QuaternionStamped, Twist
@@ -48,6 +48,8 @@ class SystemRunLogger:
             1, int(float(rospy.get_param("~max_file_size_mb", 256.0)) * 1024 * 1024)
         )
         self.print_to_screen = bool(rospy.get_param("~print_to_screen", False))
+        self.timezone_offset_hours = float(rospy.get_param("~timezone_offset_hours", 8.0))
+        self.local_timezone = timezone(timedelta(hours=self.timezone_offset_hours))
 
         self.latest = {
             "gps_fix": None,
@@ -116,16 +118,17 @@ class SystemRunLogger:
             "safety": self.safety_topic,
         }
 
-    @staticmethod
-    def local_time_string(timestamp=None):
+    def local_time_string(self, timestamp=None):
         if timestamp is None:
             timestamp = time.time()
-        return datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="milliseconds")
+        return datetime.fromtimestamp(timestamp, tz=self.local_timezone).isoformat(
+            timespec="milliseconds"
+        )
 
     def open_log_file(self):
         try:
             os.makedirs(self.log_dir, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            stamp = datetime.now(self.local_timezone).strftime("%Y%m%d_%H%M%S")
             self.log_path = os.path.join(
                 self.log_dir, "{}_{}.jsonl".format(self.label, stamp)
             )
@@ -136,6 +139,7 @@ class SystemRunLogger:
                     "label": self.label,
                     "created_at": rospy.Time.now().to_sec(),
                     "created_at_local": self.local_time_string(),
+                    "timezone_offset_hours": self.timezone_offset_hours,
                     "sample_rate": self.sample_rate,
                     "max_file_size_mb": self.max_file_size_bytes / (1024.0 * 1024.0),
                     "topics": self.topic_map(),
@@ -354,6 +358,7 @@ class SystemRunLogger:
                 {
                     "record_type": "summary",
                     "closed_at": rospy.Time.now().to_sec(),
+                    "closed_at_local": self.local_time_string(),
                     "sample_count": self.sample_count,
                     "size_bytes": self.log_size_bytes,
                     "size_limit_reached": self.log_capped,

@@ -1,4 +1,4 @@
-src/road_vision_refinement/config/calibration/
+rosbags/
 tracker_logs/
 devel/
 logs/

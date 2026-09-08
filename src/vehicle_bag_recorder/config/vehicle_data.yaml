@@ -2,6 +2,7 @@
 # 因此可提前把尚未接入的传感器写在 topics 中。
 output_directory: /home/nuc/lxw/neupan_ws/rosbags
 bag_prefix: vehicle_data
+timezone_offset_hours: 8.0  # 文件名和 JSON 清单使用北京时间 UTC+8
 
 # 单个 bag 达到该大小后自动分包，单位 MB；0 表示不分包。
 split_size_mb: 2048
@@ -14,8 +15,17 @@ tcp_nodelay: true
 min_free_space_gb: 8.0
 disk_check_period_sec: 5.0
 
+# 这些话题必须在录制期间实际出现。缺失时录包仍继续，但终端会周期告警。
+# /cloud_registered_body 是路缘检测离线复现的核心点云；其余为 RTK 和坐标对齐数据。
+required_topics:
+  - /cloud_registered_body
+  - /tf
+  - /gps/fix
+  - /gnss/gpgga
+  - /heading
+
 topics:
-  # MID360 原始数据和 FAST-LIO 输出
+  # MID360 原始数据和 FAST-LIO 输出（路缘离线测试必须保留 cloud_registered_body）
   - /livox/lidar
   - /livox/imu
   - /cloud_registered_body
