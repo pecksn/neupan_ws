@@ -9,6 +9,7 @@
   <arg name="max_correction_m" default="0.45" />
   <arg name="confirm_frames" default="4" />
   <arg name="min_x_bins" default="10" />
+  <arg name="publish_debug_clouds" default="true" />
   <arg name="enable_log" default="true" />
   <arg name="log_dir" default="/home/nuc/lxw/neupan_ws/tracker_logs" />
   <arg name="log_sample_rate" default="10.0" />
@@ -23,6 +24,7 @@
     <param name="max_correction_m" value="$(arg max_correction_m)" />
     <param name="confirm_frames" value="$(arg confirm_frames)" />
     <param name="min_x_bins" value="$(arg min_x_bins)" />
+    <param name="publish_debug_clouds" value="$(arg publish_debug_clouds)" />
   </node>
 
   <group if="$(arg start_path_refine)">

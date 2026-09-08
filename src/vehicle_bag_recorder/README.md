@@ -29,6 +29,9 @@ bag（达到配置大小后自动分包）以及同名前缀的 JSON 清单。�
 默认必录检查包含 `/cloud_registered_body`、`/tf`、GPS Fix、GGA 和航向。关键话题没有发布者时
 终端每 5 秒告警，但其他话题仍继续录制；结束时会再次列出整次录制从未出现的话题。
 
+默认话题列表还会保存 `/road_curb/roi_cloud` 和 `/road_curb/candidate_cloud`，用于在 RViz
+中把路缘检测区域、候选高度突变点与原始点云叠加分析。
+
 临时改变保存目录或名称：
 
 ```bash

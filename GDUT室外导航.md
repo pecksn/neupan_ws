@@ -165,6 +165,10 @@ tail -f "$(ls -1t /home/nuc/lxw/neupan_ws/tracker_logs/lidar_curb_*.jsonl | head
 `lidar_curb_*.jsonl`、开环标定日志以及 rosbag 文件名和 JSON 清单。日志中保留的 `ros_time`、
 `stamp` 和传感器消息时间戳不做时区换算，用于保证多传感器同步。
 
+路缘节点还会发布 `/road_curb/roi_cloud`（右前方检测区域）和
+`/road_curb/candidate_cloud`（高度突变候选点）。一键 rosbag 默认录制这两个话题，可在 RViz
+中分别设为绿色和红色，与 `/cloud_registered_body` 叠加检查。
+
 `/road_curb/status` 中：
 
 - `valid=true`：已经连续确认右侧路缘；
@@ -1855,6 +1859,8 @@ AT+NTRIP=120.253.239.161,8002,cndh87282,a8888858,RTCM33_GRCE
 | `/road_curb/right_edge` | `geometry_msgs/PointStamped` | 检测到的右侧路缘代表点 |
 | `/road_curb/lateral_error` | `std_msgs/Float32` | 路径横向修正量 |
 | `/road_curb/status` | `std_msgs/String` | JSON 格式的有效性、置信度和拒绝原因 |
+| `/road_curb/roi_cloud` | `sensor_msgs/PointCloud2` | 进入右前方检测范围的调试点云，默认录入 rosbag |
+| `/road_curb/candidate_cloud` | `sensor_msgs/PointCloud2` | 满足高度突变阈值的候选点云，默认录入 rosbag |
 | `/osm_global_path_curb_refined` | `nav_msgs/Path` | 供 NeuPAN 或直跟控制器使用的靠右路径 |
 
 启动、标定、靠右闭环和 rosbag 回放命令统一放在本文 [1.3](#13-mid360-右侧路缘检测与靠右行驶)、

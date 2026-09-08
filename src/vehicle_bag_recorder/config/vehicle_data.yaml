@@ -58,6 +58,8 @@ topics:
   - /road_curb/right_edge
   - /road_curb/lateral_error
   - /road_curb/status
+  - /road_curb/roi_cloud
+  - /road_curb/candidate_cloud
   - /neupan_cmd_vel
   - /global_path_tracker/status
 

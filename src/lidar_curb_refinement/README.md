@@ -45,6 +45,10 @@ tail -f "$(ls -1t /home/nuc/lxw/neupan_ws/tracker_logs/lidar_curb_*.jsonl | head
 
 正常测试不需要运行 `rostopic echo`。
 
+节点默认同时发布 `/road_curb/roi_cloud`（右前方检测区域点云）和
+`/road_curb/candidate_cloud`（满足高度突变条件的候选点云）。可在 RViz 中与
+`/cloud_registered_body` 叠加查看；一键 rosbag 配置也会录制这两个话题。
+
 ## 系统接入
 
 仅检测、暂不影响控制：

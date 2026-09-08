@@ -39,6 +39,7 @@ class LidarCurbNode:
         self.max_edge_jump_m = float(rospy.get_param("~max_edge_jump_m", 0.35))
         self.filter_alpha = float(rospy.get_param("~filter_alpha", 0.25))
         self.tf_timeout = float(rospy.get_param("~tf_timeout", 0.08))
+        self.publish_debug_clouds = bool(rospy.get_param("~publish_debug_clouds", True))
 
         self.edge_history = deque(maxlen=max(1, self.confirm_frames))
         self.filtered_edge_y = None
@@ -47,6 +48,12 @@ class LidarCurbNode:
         self.edge_pub = rospy.Publisher("/road_curb/right_edge", PointStamped, queue_size=1)
         self.error_pub = rospy.Publisher("/road_curb/lateral_error", Float32, queue_size=1)
         self.status_pub = rospy.Publisher("/road_curb/status", String, queue_size=1)
+        self.roi_cloud_pub = rospy.Publisher(
+            "/road_curb/roi_cloud", PointCloud2, queue_size=1
+        )
+        self.candidate_cloud_pub = rospy.Publisher(
+            "/road_curb/candidate_cloud", PointCloud2, queue_size=1
+        )
         self.cloud_sub = rospy.Subscriber(self.cloud_topic, PointCloud2, self.cloud_cb, queue_size=1)
         rospy.loginfo("lidar_curb_node: %s -> right curb in %s", self.cloud_topic, self.base_frame)
 
@@ -74,14 +81,17 @@ class LidarCurbNode:
             return
 
         cells = defaultdict(list)
+        roi_points = []
         res = self.grid_resolution
         for x, y, z in point_cloud2.read_points(cloud, field_names=("x", "y", "z"), skip_nans=True):
             if not (self.x_min <= x <= self.x_max and self.y_min <= y <= self.y_max and
                     self.z_min <= z <= self.z_max):
                 continue
+            roi_points.append((x, y, z))
             cells[(int((x - self.x_min) / res), int((y - self.y_min) / res))].append(z)
 
         candidates = []
+        candidate_points = []
         x_cell_count = int(math.ceil((self.x_max - self.x_min) / res))
         y_cell_count = int(math.ceil((self.y_max - self.y_min) / res))
         for ix in range(x_cell_count):
@@ -100,8 +110,18 @@ class LidarCurbNode:
                 outer_h = heights[iy]
                 step = outer_h - inner_h
                 if self.min_step_height <= step <= self.max_step_height:
-                    candidates.append((self.x_min + (ix + 0.5) * res,
-                                       self.y_min + (iy + 1.0) * res, step))
+                    candidate_x = self.x_min + (ix + 0.5) * res
+                    candidate_y = self.y_min + (iy + 1.0) * res
+                    candidates.append((candidate_x, candidate_y, step))
+                    candidate_points.append((candidate_x, candidate_y, outer_h))
+
+        if self.publish_debug_clouds:
+            self.roi_cloud_pub.publish(
+                point_cloud2.create_cloud_xyz32(cloud.header, roi_points)
+            )
+            self.candidate_cloud_pub.publish(
+                point_cloud2.create_cloud_xyz32(cloud.header, candidate_points)
+            )
 
         if len(candidates) < self.min_x_bins:
             self.edge_history.clear()
