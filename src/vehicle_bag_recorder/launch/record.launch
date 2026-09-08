@@ -1,5 +1,5 @@
 <launch>
-  <arg name="config_file" default="$(find vehicle_bag_recorder)/config/lidar_curb.yaml" />
+  <arg name="config_file" default="$(find vehicle_bag_recorder)/config/vehicle_data.yaml" />
   <arg name="output_directory" default="" />
   <arg name="bag_prefix" default="" />
 

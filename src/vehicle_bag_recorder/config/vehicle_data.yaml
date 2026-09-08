@@ -1,7 +1,7 @@
 # 修改这个文件即可增删录制话题。不存在的话题不会阻止其他话题录制，
 # 因此可提前把尚未接入的传感器写在 topics 中。
 output_directory: /home/nuc/lxw/neupan_ws/rosbags
-bag_prefix: lidar_curb_test
+bag_prefix: vehicle_data
 
 # 单个 bag 达到该大小后自动分包，单位 MB；0 表示不分包。
 split_size_mb: 2048
@@ -39,7 +39,7 @@ topics:
   - /gps_guard/status
   - /localization_safe
 
-  # 规划、路缘和控制
+  # 规划、环境感知和控制（按实际用途增删）
   - /scan
   - /osm_global_path
   - /osm_global_path_curb_refined

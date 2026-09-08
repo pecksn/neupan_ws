@@ -146,7 +146,7 @@ class BagRecorder:
 
 def default_config_path():
     package_dir = rospkg.RosPack().get_path("vehicle_bag_recorder")
-    return os.path.join(package_dir, "config", "lidar_curb.yaml")
+    return os.path.join(package_dir, "config", "vehicle_data.yaml")
 
 
 def main():

@@ -17,6 +17,7 @@ catkin_package()
 catkin_install_python(PROGRAMS
   scripts/path_refine_node.py
   scripts/lidar_curb_node.py
+  scripts/curb_run_logger.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

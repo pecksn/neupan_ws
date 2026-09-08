@@ -9,6 +9,10 @@
   <arg name="max_correction_m" default="0.45" />
   <arg name="confirm_frames" default="4" />
   <arg name="min_x_bins" default="10" />
+  <arg name="enable_log" default="true" />
+  <arg name="log_dir" default="/home/nuc/lxw/neupan_ws/tracker_logs" />
+  <arg name="log_sample_rate" default="10.0" />
+  <arg name="log_max_file_size_mb" default="256.0" />
 
   <node pkg="lidar_curb_refinement" type="lidar_curb_node.py" name="lidar_curb" output="screen">
     <param name="cloud_topic" value="$(arg cloud_topic)" />
@@ -30,4 +34,16 @@
       <param name="invalid_decay_alpha" value="0.08" />
     </node>
   </group>
+
+  <node if="$(arg enable_log)" pkg="lidar_curb_refinement" type="curb_run_logger.py"
+        name="curb_run_logger" output="screen">
+    <param name="edge_topic" value="/road_curb/right_edge" />
+    <param name="error_topic" value="/road_curb/lateral_error" />
+    <param name="status_topic" value="/road_curb/status" />
+    <param name="input_path_topic" value="$(arg input_path_topic)" />
+    <param name="output_path_topic" value="$(arg output_path_topic)" />
+    <param name="log_dir" value="$(arg log_dir)" />
+    <param name="sample_rate" value="$(arg log_sample_rate)" />
+    <param name="max_file_size_mb" value="$(arg log_max_file_size_mb)" />
+  </node>
 </launch>

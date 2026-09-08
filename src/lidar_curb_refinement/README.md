@@ -20,6 +20,17 @@
 的右法向量 `(tangent_y, -tangent_x)`，因此同一条道路正向、反向行驶时都会偏向各自行驶方向的
 右侧，而不是固定向地图的某个方向偏移。
 
+启动本包时默认同时运行 `curb_run_logger.py`，以 10 Hz 将状态、横向误差、右侧边缘点及路径
+概况持续写入 `/home/nuc/lxw/neupan_ws/tracker_logs/lidar_curb_时间.jsonl`。按 `Ctrl+C` 后自动
+刷新并关闭文件。临时关闭日志可传入 `enable_log:=false`。
+
+```bash
+roslaunch lidar_curb_refinement road_curb_debug.launch
+tail -f "$(ls -1t /home/nuc/lxw/neupan_ws/tracker_logs/lidar_curb_*.jsonl | head -1)"
+```
+
+正常测试不需要运行 `rostopic echo`。
+
 ## 系统接入
 
 仅检测、暂不影响控制：

@@ -42,6 +42,7 @@ source /home/nuc/lxw/neupan_ws/devel/setup.bash
 每个新终端至少执行：
 
 ```bash
+conda activate lxw
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
 ```
@@ -50,7 +51,6 @@ source /home/nuc/lxw/neupan_ws/devel/setup.bash
 
 ```bash
 sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
-ping 192.168.1.183
 ```
 
 ## 1.2 三种室外导航模式
@@ -124,14 +124,23 @@ roslaunch lidar_curb_refinement road_curb_debug.launch \
   cloud_topic:=/cloud_registered_body
 ```
 
-检查输出：
+#### 自动日志（默认，无需 rostopic）
+
+只要启用了路缘检测，系统就会同时运行 `curb_run_logger.py`，以 10 Hz 持续写入：
+
+```text
+/home/nuc/lxw/neupan_ws/tracker_logs/lidar_curb_YYYYMMDD_HHMMSS.jsonl
+```
+
+日志包含 `/road_curb/status`、横向误差、右侧边缘点、原始路径及修正路径概况。运行中查看最新
+日志可以使用：
 
 ```bash
-rostopic echo /road_curb/status
-rostopic echo /road_curb/lateral_error
-rostopic echo /road_curb/right_edge
-rostopic hz /road_curb/status
+tail -f "$(ls -1t /home/nuc/lxw/neupan_ws/tracker_logs/lidar_curb_*.jsonl | head -1)"
 ```
+
+按 `Ctrl+C` 结束 launch 时，日志会写入汇总并执行 `flush + fsync` 后关闭，不需要另外启动
+`rostopic echo`。默认单文件上限为 256 MB。
 
 `/road_curb/status` 中：
 
@@ -192,10 +201,23 @@ roslaunch neupan_ros outdoor_global_only_test.launch \
 两个开关必须同时为 `true`。只开启 `enable_lidar_curb_control` 时没有修正路径发布者，控制器不
 会收到路径，这是有意设置的安全保护。
 
+路缘日志默认开启。需要关闭或更换目录时：
+
+```bash
+roslaunch neupan_ros full_system_run.launch \
+  outdoor_mode:=true enable_lidar_curb:=true \
+  enable_lidar_curb_log:=false
+
+roslaunch neupan_ros full_system_run.launch \
+  outdoor_mode:=true enable_lidar_curb:=true \
+  lidar_curb_log_dir:=/media/usb/tracker_logs
+```
+
 ## 1.4 Rosbag 一键录制
 
-录包功能包位于 `src/vehicle_bag_recorder`。它通过 YAML 管理话题，并调用 ROS 官方
-`rosbag record` 保留原始消息类型和时间戳。默认包含：
+通用录包功能包位于 `src/vehicle_bag_recorder`。它不绑定某个检测或导航算法，通过 YAML
+管理话题，并调用 ROS 官方 `rosbag record` 保留原始消息类型和时间戳。当前默认配置面向整车
+联调，包含：
 
 - MID360 原始点云和 IMU；
 - FAST-LIO 车体/地图点云与里程计；
@@ -206,22 +228,22 @@ roslaunch neupan_ros outdoor_global_only_test.launch \
 启动：
 
 ```bash
-roslaunch vehicle_bag_recorder lidar_curb_record.launch
+roslaunch vehicle_bag_recorder record.launch
 ```
 
 也可以直接运行 Python：
 
 ```bash
 rosrun vehicle_bag_recorder bag_recorder.py \
-  --config $(rospack find vehicle_bag_recorder)/config/lidar_curb.yaml
+  --config $(rospack find vehicle_bag_recorder)/config/vehicle_data.yaml
 ```
 
 临时指定输出目录和测试名称：
 
 ```bash
-roslaunch vehicle_bag_recorder lidar_curb_record.launch \
+roslaunch vehicle_bag_recorder record.launch \
   output_directory:=/media/usb/rosbags \
-  bag_prefix:=gdut_curb_test
+  bag_prefix:=gdut_navigation_test
 ```
 
 默认保存目录：
@@ -229,6 +251,10 @@ roslaunch vehicle_bag_recorder lidar_curb_record.launch \
 ```text
 /home/nuc/lxw/neupan_ws/rosbags/
 ```
+
+默认文件前缀为 `vehicle_data`，实际文件名包含启动时间；启用分包后类似
+`vehicle_data_20260908_091500_0.bag`。可以通过 `bag_prefix` 按建图、导航、控制器测试等用途临时
+命名，不需要修改 launch 文件。
 
 默认使用 LZ4 压缩、每 2048 MB 自动分包，并在磁盘剩余空间低于 8 GB 时安全停止。每次录制还
 会生成同名前缀的 JSON 清单。结束时按一次 `Ctrl+C`，看到“录制结束”后再断电或拔移动硬盘。
@@ -238,7 +264,7 @@ roslaunch vehicle_bag_recorder lidar_curb_record.launch \
 编辑：
 
 ```text
-/home/nuc/lxw/neupan_ws/src/vehicle_bag_recorder/config/lidar_curb.yaml
+/home/nuc/lxw/neupan_ws/src/vehicle_bag_recorder/config/vehicle_data.yaml
 ```
 
 只需在 `topics` 中追加真实话题，不需要修改 Python：
@@ -267,7 +293,7 @@ rostopic bw /camera/color/image_raw/compressed
 查看 bag 内容：
 
 ```bash
-rosbag info /home/nuc/lxw/neupan_ws/rosbags/lidar_curb_test_*.bag
+rosbag info /home/nuc/lxw/neupan_ws/rosbags/vehicle_data_*.bag
 ```
 
 终端 1，启动 ROS Master 并启用 bag 时间：
@@ -1730,8 +1756,8 @@ roslaunch wheeltec_gps_driver mapviz_path.launch
 
 ## 11.1 中国移动 CORS
 
-卡号：cndh43990
-密码：a8888507
+卡号：cndh87282
+密码：a8888858
 
 【cors账号配置方法】
 CORS设置方式：
@@ -1762,7 +1788,7 @@ AT+NTRIP=addr,port,user,password,mount
 
 如：AT+NTRIP=120.253.239.161,8002,csar10154,a8888168,AUTO
 
-AT+NTRIP=120.253.239.161,8002,cndh43990,a8888507,RTCM33_GRCE
+AT+NTRIP=120.253.239.161,8002,cndh87282,a8888858,RTCM33_GRCE
 
 **按一下”shift+Enter”键后再点击发送，**发送成功后会返回【OK】然后保存参数
 
@@ -1785,6 +1811,7 @@ AT+NTRIP=120.253.239.161,8002,cndh43990,a8888507,RTCM33_GRCE
 |---|---|
 | `lidar_curb_refinement/scripts/lidar_curb_node.py` | 从右前方点云检测连续高度台阶，输出右侧路缘和横向误差 |
 | `lidar_curb_refinement/scripts/path_refine_node.py` | 沿路径行驶方向的右法向量修正 OSM 路径 |
+| `lidar_curb_refinement/scripts/curb_run_logger.py` | 持续写入路缘状态、误差、边缘点和路径概况 |
 | `lidar_curb_refinement/launch/road_curb_debug.launch` | 单独检测及离线调试入口 |
 | `lidar_curb_refinement/TESTING_GUIDE_CN.md` | 低速标定与验收步骤 |
 
@@ -1800,6 +1827,9 @@ AT+NTRIP=120.253.239.161,8002,cndh43990,a8888507,RTCM33_GRCE
 
 启动、标定、靠右闭环和 rosbag 回放命令统一放在本文 [1.3](#13-mid360-右侧路缘检测与靠右行驶)、
 [1.4](#14-rosbag-一键录制) 和 [1.5](#15-rosbag-离线路缘测试)，这里不再重复。
+
+路缘 launch 默认启用独立日志，文件名为 `tracker_logs/lidar_curb_时间.jsonl`，`Ctrl+C` 时自动
+刷新关闭。它和 `system_run_logger` 的综合导航日志互不覆盖，可以用时间戳对齐分析。
 
 ## 12.2 相机道路边界/车道线检测（历史与后续方案）
 

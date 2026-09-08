@@ -6,6 +6,8 @@
     <arg name="enable_livox_driver" default="true" doc="Whether to run Livox MID360 driver" />
     <arg name="enable_lidar_curb" default="false" doc="Start MID360 right-curb detection" />
     <arg name="enable_lidar_curb_control" default="false" doc="Track the curb-refined path; keep false until calibration is verified" />
+    <arg name="enable_lidar_curb_log" default="true" doc="Write a dedicated curb JSONL log while curb detection runs" />
+    <arg name="lidar_curb_log_dir" default="/home/nuc/lxw/neupan_ws/tracker_logs" />
     <arg name="lidar_curb_desired_clearance_m" default="0.55" />
     <arg name="lidar_curb_refined_path_topic" default="/osm_global_path_curb_refined" />
     <arg name="enable_rviz" default="true" />
@@ -319,6 +321,8 @@
         <arg name="input_path_topic" value="$(arg outdoor_initial_path_topic)" />
         <arg name="output_path_topic" value="$(arg lidar_curb_refined_path_topic)" />
         <arg name="start_path_refine" value="$(arg enable_lidar_curb_control)" />
+        <arg name="enable_log" value="$(arg enable_lidar_curb_log)" />
+        <arg name="log_dir" value="$(arg lidar_curb_log_dir)" />
     </include>
 
     <group if="$(arg enable_rviz)">
