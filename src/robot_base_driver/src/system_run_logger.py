@@ -12,6 +12,7 @@ from nav_msgs.msg import Odometry, Path
 from nmea_msgs.msg import Gpgga
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Bool, String
+from robot_base_driver.msg import MotorStatus
 
 
 class SystemRunLogger:
@@ -37,6 +38,7 @@ class SystemRunLogger:
             "~scan_health_topic", "/neupan/scan_health"
         )
         self.safety_topic = rospy.get_param("~safety_topic", "/localization_safe")
+        self.motor_status_topic = rospy.get_param("~motor_status_topic", "/motor/status")
 
         self.label = rospy.get_param("~label", "system_run_full")
         self.log_dir = rospy.get_param(
@@ -65,6 +67,7 @@ class SystemRunLogger:
             "tracker_status": None,
             "scan_health": None,
             "localization_safe": None,
+            "motor": None,
         }
         self.received_at = {key: None for key in self.latest}
         self.previous_heading_deg = None
@@ -92,6 +95,9 @@ class SystemRunLogger:
         )
         rospy.Subscriber(self.scan_health_topic, String, self.scan_health_cb, queue_size=20)
         rospy.Subscriber(self.safety_topic, Bool, self.safety_cb, queue_size=20)
+        rospy.Subscriber(
+            self.motor_status_topic, MotorStatus, self.motor_status_cb, queue_size=50
+        )
         rospy.Timer(rospy.Duration(1.0 / self.sample_rate), self.timer_cb)
         rospy.on_shutdown(self.on_shutdown)
 
@@ -116,6 +122,7 @@ class SystemRunLogger:
             "tracker_status": self.tracker_status_topic,
             "scan_health": self.scan_health_topic,
             "safety": self.safety_topic,
+            "motor": self.motor_status_topic,
         }
 
     def local_time_string(self, timestamp=None):
@@ -318,6 +325,22 @@ class SystemRunLogger:
 
     def safety_cb(self, msg):
         self.update("localization_safe", bool(msg.data))
+
+    def motor_status_cb(self, msg):
+        self.update(
+            "motor",
+            {
+                "msg_stamp": self.message_stamp(msg.header),
+                "left_torque_nm": float(msg.left_torque),
+                "right_torque_nm": float(msg.right_torque),
+                "left_mos_temperature_c": float(msg.left_mos_temperature),
+                "left_coil_temperature_c": float(msg.left_coil_temperature),
+                "right_mos_temperature_c": float(msg.right_mos_temperature),
+                "right_coil_temperature_c": float(msg.right_coil_temperature),
+                "alarm": bool(msg.alarm),
+                "alarm_reason": msg.alarm_reason,
+            },
+        )
 
     def timer_cb(self, _event):
         now = rospy.Time.now().to_sec()

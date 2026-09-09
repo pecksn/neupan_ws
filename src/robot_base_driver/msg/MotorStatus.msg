@@ -1,0 +1,9 @@
+std_msgs/Header header
+float32 left_torque
+float32 right_torque
+float32 left_mos_temperature
+float32 left_coil_temperature
+float32 right_mos_temperature
+float32 right_coil_temperature
+bool alarm
+string alarm_reason
