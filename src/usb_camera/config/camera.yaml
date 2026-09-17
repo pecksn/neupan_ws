@@ -1,0 +1,10 @@
+# ROS 1 usb_cam parameters for USB Camera3.
+video_device: "/dev/video0"
+framerate: 30
+io_method: "mmap"
+pixel_format: "mjpeg"
+image_width: 1920
+image_height: 1080
+camera_frame_id: "camera_optical_frame"
+camera_name: "usb_camera"
+camera_info_url: "package://usb_camera/config/usb_camera.yaml"

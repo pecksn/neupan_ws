@@ -1,0 +1,20 @@
+<launch>
+  <!-- size is the number of INTERNAL chessboard corners, not squares. -->
+  <arg name="size" default="8x12" />
+  <!-- Physical chessboard square side length in metres. -->
+  <arg name="square" default="0.020" />
+  <arg name="start_camera" default="true" />
+
+  <!-- Start the image source by default, so calibration needs one command. -->
+  <include if="$(arg start_camera)"
+           file="$(find usb_camera)/launch/camera.launch">
+    <arg name="preview" value="false" />
+  </include>
+
+  <node pkg="camera_calibration" type="cameracalibrator.py"
+        name="camera_calibrator" output="screen"
+        args="--size $(arg size) --square $(arg square)">
+    <remap from="image" to="/camera/image_raw" />
+    <remap from="camera" to="/camera" />
+  </node>
+</launch>

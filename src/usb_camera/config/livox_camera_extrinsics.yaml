@@ -1,0 +1,24 @@
+# Mechanical initial guess only. Do not use as the final calibrated TF.
+status: "initial_guess"
+
+# Camera optical center position expressed in livox_frame coordinates.
+# ROS vehicle convention: x forward, y left, z up.
+parent_frame: "livox_frame"
+mount_frame: "camera_link"
+translation_livox_to_camera_link: [0.07, 0.0, -0.05]
+rotation_rpy_livox_to_camera_link: [0.0, 0.0, 0.0]
+
+# Initial transform for an optimizer using the rotated image and
+# p_camera = R_camera_lidar * p_lidar + t_camera_lidar.
+# Assumes the physical camera points straight forward with zero mount error.
+rotated_optical_frame: "camera_optical_frame"
+R_camera_lidar_initial:
+  rows: 3
+  cols: 3
+  data: [0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0,
+         1.0, 0.0, 0.0]
+t_camera_lidar_initial: [0.0, 0.05, -0.07]
+
+# Replace the initial values with optimized results only after checking
+# point-cloud reprojection on several independent scenes.

@@ -55,8 +55,8 @@
     </include>
 
     <!-- 3. 静态 TF -->
-    <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.25 0 0 0 $(arg base_frame) $(arg msg_frame_id) 100"/>
-    <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.25 0 0 0 $(arg base_frame) body 100"/>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.35 0 0 0 $(arg base_frame) $(arg msg_frame_id) 100"/>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.35 0 0 0 $(arg base_frame) body 100"/>
     <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 $(arg odom_frame) camera_init 100"/>
 
     <!-- 4. 点云转 LaserScan: 使用 FAST-LIO 提取并去畸变后的 body 坐标系点云 -->

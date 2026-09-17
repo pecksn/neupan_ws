@@ -1,7 +1,7 @@
 # mpc
 receding: 50 # 空旷直线不要看太远，避免被远处轻微误差带着左右修正。
 step_time: 0.1 # 模拟步长(秒)。MPC 内部计算模型的时间间隔。
-ref_speed: 0.5 # 先保守保持 0.5m/s，把直线稳定性调顺后再提速。
+ref_speed: 0.8 # 先保守保持 0.5m/s，把直线稳定性调顺后再提速。
 device: 'cpu' # 计算设备。作者确认只能用 CPU。
 time_print: False # 是否打印每一步的计算耗时。
 collision_threshold: 0.001 # 碰撞阈值。离障碍物多近认为会发生碰撞（单位：米）。
