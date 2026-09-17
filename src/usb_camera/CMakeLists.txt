@@ -11,6 +11,7 @@ catkin_package()
 
 catkin_install_python(PROGRAMS
   scripts/rotate_image.py
+  scripts/calibrate_lidar_camera.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

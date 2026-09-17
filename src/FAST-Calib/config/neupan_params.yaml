@@ -1,0 +1,37 @@
+# Neupan MID360 + 180-degree rotated USB-camera calibration.
+# Camera intrinsics come from src/usb_camera/config/usb_camera.yaml.
+fx: 1102.837297249009
+fy: 1104.805244636163
+cx: 929.1071103499039
+cy: 716.3749386027972
+k1: -0.3440482313019139
+k2: 0.08610560344908336
+p1: -0.003154023779031887
+p2: -0.004847752761592449
+
+# FAST-Calib standard target dimensions (metres).
+marker_size: 0.20
+delta_width_qr_center: 0.55
+delta_height_qr_center: 0.35
+delta_width_circles: 0.50
+delta_height_circles: 0.40
+circle_radius: 0.12
+min_detected_markers: 4
+
+# MID360 sampling at about 2.2 m is sparser than the repository defaults.
+solid_normal_radius: 0.06
+solid_boundary_radius: 0.06
+solid_cluster_tolerance: 0.06
+solid_cluster_min_size: 20
+solid_cluster_max_size: 2000
+
+lidar_topic: "/livox/lidar"
+output_path: "/home/nuc/lxw/neupan_ws/calibration_data/fast_calib_output"
+
+# Defaults can be overridden from neupan_calib.launch.
+x_min: 1.5
+x_max: 2.8
+y_min: -1.5
+y_max: 1.5
+z_min: 0.1
+z_max: 1.8

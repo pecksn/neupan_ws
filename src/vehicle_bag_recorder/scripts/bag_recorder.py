@@ -166,7 +166,7 @@ class BagRecorder:
                 ", ".join(missing_now),
             )
         else:
-            rospy.loginfo_throttle(30.0, "所有必录点云/RTK话题均有发布者")
+            rospy.loginfo_throttle(30.0, "所有必录传感器/定位话题均有发布者")
 
     def stop(self):
         if self.stopping:

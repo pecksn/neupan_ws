@@ -302,6 +302,34 @@ yaw pitch roll
 
 ```text
 src/usb_camera/config/livox_camera_extrinsics.yaml
+
+## 本次 `pose_01.bag` 标定结果
+
+原始 bag 已按静止区间拆分到：
+
+```text
+calibration_data/fast_calib_scenes/
+```
+
+离线联合标定命令（需要进入 Neupan 的 ROS1 环境，并激活 `lxw`）：
+
+```bash
+cd /home/nuc/lxw/neupan_ws
+source devel/setup.bash
+python src/usb_camera/scripts/calibrate_lidar_camera.py \
+  calibration_data/fast_calib_scenes \
+  --output calibration_data/fast_calib_output/extrinsics.json
+```
+
+本次四场景联合圆心 RMSE 为 `0.0100 m`。最终参数已经写入
+`config/livox_camera_extrinsics.yaml`。启动相机—雷达静态 TF：
+
+```bash
+roslaunch usb_camera livox_camera_tf.launch
+```
+
+这里发布的是 `livox_frame -> camera_optical_frame`。不要再同时发布另一个
+同名父子坐标系的静态 TF，否则 TF 树会发生冲突。
 ```
 
 该文件标记为 `initial_guess`，在完成点云投影验证之前不作为最终静态 TF

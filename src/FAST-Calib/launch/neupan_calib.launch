@@ -1,0 +1,27 @@
+<launch>
+  <arg name="rviz" default="false" />
+  <arg name="bag_path" />
+  <arg name="image_path" />
+  <arg name="x_min" default="1.5" />
+  <arg name="x_max" default="2.8" />
+  <arg name="y_min" default="-1.5" />
+  <arg name="y_max" default="1.5" />
+  <arg name="z_min" default="0.1" />
+  <arg name="z_max" default="1.8" />
+
+  <rosparam file="$(find fast_calib)/config/neupan_params.yaml" command="load" />
+  <param name="bag_path" value="$(arg bag_path)" />
+  <param name="image_path" value="$(arg image_path)" />
+  <param name="x_min" value="$(arg x_min)" />
+  <param name="x_max" value="$(arg x_max)" />
+  <param name="y_min" value="$(arg y_min)" />
+  <param name="y_max" value="$(arg y_max)" />
+  <param name="z_min" value="$(arg z_min)" />
+  <param name="z_max" value="$(arg z_max)" />
+
+  <node pkg="fast_calib" type="fast_calib" name="fast_calib" output="screen" />
+  <group if="$(arg rviz)">
+    <node pkg="rviz" type="rviz" name="fast_calib_rviz"
+          args="-d $(find fast_calib)/rviz_cfg/fast_livo2.rviz" />
+  </group>
+</launch>

@@ -1,0 +1,5 @@
+<launch>
+  <rosparam file="$(find fast_calib)/config/neupan_params.yaml" command="load" />
+  <node pkg="fast_calib" type="multi_fast_calib"
+        name="multi_fast_calib" output="screen" />
+</launch>

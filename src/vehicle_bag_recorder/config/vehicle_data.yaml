@@ -16,13 +16,16 @@ min_free_space_gb: 8.0
 disk_check_period_sec: 5.0
 
 # 这些话题必须在录制期间实际出现。缺失时录包仍继续，但终端会周期告警。
-# /cloud_registered_body 是路缘检测离线复现的核心点云；其余为 RTK 和坐标对齐数据。
+# /cloud_registered_body 是路缘检测离线复现的核心点云；
+# /camera/image_raw 和 /camera/camera_info 用于回放后向 HybridNets 提供彩色图像及标定信息。
 required_topics:
   - /cloud_registered_body
   - /tf
   - /gps/fix
   - /gnss/gpgga
   - /heading
+  - /camera/image_raw
+  - /camera/camera_info
 
 topics:
   # MID360 原始数据和 FAST-LIO 输出（路缘离线测试必须保留 cloud_registered_body）
@@ -63,12 +66,11 @@ topics:
   - /neupan_cmd_vel
   - /global_path_tracker/status
 
-  # 后续加入相机时取消注释或直接追加真实话题即可，无需修改 Python。
-  # 对压缩图像优先录 compressed，可显著减小 bag。
-  # - /camera/color/image_raw/compressed
-  # - /camera/color/camera_info
-  # - /camera/depth/image_raw/compressedDepth
-  # - /camera/depth/camera_info
+  # USB Camera3 输出。录制旋转 180° 后的原始彩色 Image，可在 rosbag
+  # 回放时由 cv_bridge 直接转成 OpenCV RGB/BGR 图像供 HybridNets 推理。
+  # 不录 /camera/image_raw_unrotated，避免重复占用空间和图像方向错误。
+  - /camera/image_raw
+  - /camera/camera_info
 
 # 高级用法：record_all=true 等价于 rosbag record -a，通常不建议长期使用。
 record_all: false

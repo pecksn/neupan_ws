@@ -26,7 +26,8 @@ rosrun vehicle_bag_recorder bag_recorder.py \
 按 `Ctrl+C` 后程序会向 rosbag 发送 `SIGINT`，等待它完成索引写入。每次输出包括带日期时间的
 bag（达到配置大小后自动分包）以及同名前缀的 JSON 清单。默认保存到工作区的 `rosbags/`。
 
-默认必录检查包含 `/cloud_registered_body`、`/tf`、GPS Fix、GGA 和航向。关键话题没有发布者时
+默认必录检查包含 `/cloud_registered_body`、`/tf`、GPS Fix、GGA、航向、
+`/camera/image_raw` 和 `/camera/camera_info`。关键话题没有发布者时
 终端每 5 秒告警，但其他话题仍继续录制；结束时会再次列出整次录制从未出现的话题。
 
 默认话题列表还会保存 `/road_curb/roi_cloud` 和 `/road_curb/candidate_cloud`，用于在 RViz
@@ -39,24 +40,36 @@ roslaunch vehicle_bag_recorder record.launch \
   output_directory:=/media/usb/rosbags bag_prefix:=bridge_test
 ```
 
-## 添加相机或其他传感器
+## 相机图像与 HybridNets
 
-编辑 [config/vehicle_data.yaml](config/vehicle_data.yaml) 的 `topics`，增加相机实际话题即可，Python
-不需要修改。建议先用以下命令确认名称和带宽：
+默认配置会把 USB Camera3 的 `/camera/image_raw` (`sensor_msgs/Image`) 和
+`/camera/camera_info` 直接录入 bag，不会额外导出 JPG/PNG。`/camera/image_raw` 是相机节点
+经 180° 旋转后的彩色帧，回放时可由 ROS 适配节点通过 `cv_bridge` 转为 OpenCV
+图像，再送入 HybridNets。HybridNets 本身不直接读 rosbag，因此推理端仍需订阅这个话题。
+
+录制前可确认话题类型、编码和带宽：
 
 ```bash
-rostopic list | grep camera
-rostopic bw /camera/color/image_raw
+rostopic type /camera/image_raw
+rostopic echo -n 1 /camera/image_raw/encoding
+rostopic bw /camera/image_raw
 ```
 
-相机优先录制 `image_raw/compressed`；如果离线算法必须使用无损原图，再录 `image_raw`。务必同时
-录制对应的 `camera_info`、`/tf` 和 `/tf_static`。
+默认不同时录制 `/camera/image_raw/compressed`，避免同一帧图像重复占用磁盘。Bag 的
+LZ4 压缩仍会对原始 `Image` 消息生效。如果以后更换相机，修改
+[config/vehicle_data.yaml](config/vehicle_data.yaml) 中 `topics` 和 `required_topics` 的话题名即可。
 
 回放示例：
 
 ```bash
 rosbag info /home/nuc/lxw/neupan_ws/rosbags/vehicle_data_*.bag
 rosbag play --clock /home/nuc/lxw/neupan_ws/rosbags/vehicle_data_*.bag
+```
+
+回放后可先确认 RGB 帧已正常恢复：
+
+```bash
+rosrun image_view image_view image:=/camera/image_raw
 ```
 
 使用仿真时间的离线节点应设置：
