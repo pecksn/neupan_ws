@@ -2,7 +2,7 @@
   <!-- Calibrated livox_frame -> camera_optical_frame transform. -->
   <node pkg="tf" type="static_transform_publisher"
         name="livox_to_camera_optical"
-        args="-0.10787826 -0.06989143 -0.15097890
-              0.49022237 -0.50484861 0.51385478 -0.49067625
+        args="-0.07839851 -0.03829111 -0.19346425
+              0.47861205 -0.50932718 0.51209976 -0.49926963
               livox_frame camera_optical_frame 100" />
 </launch>

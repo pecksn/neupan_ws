@@ -54,7 +54,7 @@ livox_frame -> camera_optical_frame
 ```xml
 <node pkg="tf" type="static_transform_publisher"
       name="base_to_livox"
-      args="0.1 0 0.25 0 0 0 base_link livox_frame 100"/>
+      args="0.1 0 0.35 0 0 0 base_link livox_frame 100"/>
 ```
 
 所以代码当前假定 MID360 相对 `base_link`：
@@ -321,7 +321,9 @@ python src/usb_camera/scripts/calibrate_lidar_camera.py \
   --output calibration_data/fast_calib_output/extrinsics.json
 ```
 
-本次四场景联合圆心 RMSE 为 `0.0100 m`。最终参数已经写入
+当前 65.1 秒 bag 共提取五个静止场景；场景 02 的单场景几何残差为
+`0.0719 m`，被自动拒绝，其余四场景参与联合求解。联合圆心 RMSE 为
+`0.00698 m`。最终参数已经写入
 `config/livox_camera_extrinsics.yaml`。启动相机—雷达静态 TF：
 
 ```bash

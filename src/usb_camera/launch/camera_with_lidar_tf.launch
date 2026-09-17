@@ -1,0 +1,8 @@
+<launch>
+  <arg name="preview" default="false" />
+
+  <include file="$(find usb_camera)/launch/camera.launch">
+    <arg name="preview" value="$(arg preview)" />
+  </include>
+  <include file="$(find usb_camera)/launch/livox_camera_tf.launch" />
+</launch>

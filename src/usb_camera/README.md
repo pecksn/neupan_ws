@@ -22,6 +22,13 @@ roslaunch usb_camera camera.launch preview:=true
 The image and camera-info topics are `/camera/image_raw` and
 `/camera/camera_info`. Headless operation uses `preview:=false` (the default).
 
+After LiDAR-camera calibration, start the camera and the calibrated
+`livox_frame -> camera_optical_frame` TF together with:
+
+```bash
+roslaunch usb_camera camera_with_lidar_tf.launch preview:=true
+```
+
 ## Calibrate
 
 After entering the Neupan ROS 1 container, activate the `lxw` Conda environment

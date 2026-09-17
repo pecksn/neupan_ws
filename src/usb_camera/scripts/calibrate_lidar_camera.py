@@ -2,6 +2,7 @@
 """Offline MID360/camera extrinsic calibration from FAST-Calib target scenes."""
 
 import argparse
+import glob
 import itertools
 import json
 import os
@@ -180,7 +181,14 @@ def main():
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    scene_names = ["scene_01", "scene_02", "scene_03", "scene_04"]
+    bag_paths = sorted(glob.glob(os.path.join(args.scene_dir, "scene_*.bag")))
+    scene_names = [os.path.splitext(os.path.basename(path))[0]
+                   for path in bag_paths
+                   if os.path.isfile(os.path.join(
+                       args.scene_dir,
+                       os.path.splitext(os.path.basename(path))[0] + ".jpg"))]
+    if len(scene_names) < 3:
+        raise RuntimeError("at least three scene_*.bag/.jpg pairs are required")
     lidar_sets = []
     camera_sets = []
     diagnostics = []
@@ -194,20 +202,35 @@ def main():
                             "fitted_radii_m": radii.tolist()})
 
     # Select the rectangle symmetry using the measured mechanical initial guess.
-    # Optical axes: camera right/down/forward = -LiDAR left/-up/forward.
-    # Rotating the published image and calibrating that image does not change
-    # the physical optical-frame axis convention.
-    initial_rotation = np.array([[0., -1., 0.], [0., 0., -1.], [1., 0., 0.]])
-    initial_translation = np.array([0., -0.05, -0.07])
+    # Use the previously verified calibration as a correspondence prior. The
+    # four-hole rectangle has a 180-degree symmetry, so a coarse axis-only
+    # prior can choose the wrong labeling for strongly angled scenes.
+    initial_rotation = np.array([
+        [-0.0433206851, -0.9988919685, -0.0183889513],
+        [0.0238114494, 0.0173686795, -0.9995655776],
+        [0.9987774192, -0.0437397332, 0.0230326425],
+    ])
+    initial_translation = np.array([-0.0452025599, -0.1908483615,
+                                    0.0810838093])
     ordered_lidar = []
-    for lidar, camera in zip(lidar_sets, camera_sets):
+    used_camera = []
+    for index, (lidar, camera) in enumerate(zip(lidar_sets, camera_sets)):
         predicted = (initial_rotation @ lidar.T).T + initial_translation
         permutation = min(itertools.permutations(range(4)),
                           key=lambda p: np.sum((predicted[list(p)] - camera) ** 2))
-        ordered_lidar.append(lidar[list(permutation)])
+        candidate = lidar[list(permutation)]
+        _, _, geometry_rmse = rigid_transform(candidate, camera)
+        diagnostics[index]["single_scene_geometry_rmse_m"] = float(geometry_rmse)
+        diagnostics[index]["used"] = bool(geometry_rmse <= 0.02)
+        if geometry_rmse <= 0.02:
+            ordered_lidar.append(candidate)
+            used_camera.append(camera)
+
+    if len(ordered_lidar) < 3:
+        raise RuntimeError("fewer than three geometrically valid scenes")
 
     all_lidar = np.vstack(ordered_lidar)
-    all_camera = np.vstack(camera_sets)
+    all_camera = np.vstack(used_camera)
     rotation, translation, rmse = rigid_transform(all_lidar, all_camera)
     result = {"convention": "p_camera = R_camera_lidar * p_lidar + t_camera_lidar",
               "R_camera_lidar": rotation.tolist(),

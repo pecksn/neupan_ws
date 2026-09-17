@@ -1,13 +1,11 @@
-# Calibrated from four static portions of calibration_data/pose_01.bag.
-# Target hole spacing: 0.50 m x 0.40 m; joint center RMSE: 0.0100 m.
+# Calibrated from the current 65.1 s calibration_data/pose_01.bag.
+# Four accepted static scenes (01, 03, 04, 05); scene 02 was rejected.
+# Target hole spacing: 0.50 m x 0.40 m; joint center RMSE: 0.00698 m.
 status: "calibrated"
 
-# Camera optical center position expressed in livox_frame coordinates.
 # ROS vehicle convention: x forward, y left, z up.
 parent_frame: "livox_frame"
-mount_frame: "camera_link"
-translation_livox_to_camera_link: [0.07, 0.0, -0.05]
-rotation_rpy_livox_to_camera_link: [0.0, 0.0, 0.0]
+child_frame: "camera_optical_frame"
 
 # Final transform using the rotated image and
 # p_camera = R_camera_lidar * p_lidar + t_camera_lidar.
@@ -15,16 +13,16 @@ rotated_optical_frame: "camera_optical_frame"
 R_camera_lidar:
   rows: 3
   cols: 3
-  data: [-0.0378377023, -0.9992488287,  0.0083717707,
-          0.0092965136, -0.0087294059, -0.9999186828,
-          0.9992406533, -0.0377567971,  0.0096198310]
-t_camera_lidar: [-0.0726568351, -0.1505738376, 0.1066098576]
+  data: [-0.0433206851, -0.9988919685, -0.0183889513,
+          0.0238114494,  0.0173686795, -0.9995655776,
+          0.9987774192, -0.0437397332,  0.0230326425]
+t_camera_lidar: [-0.0452025599, -0.1908483615, 0.0810838093]
 
 # Inverse transform used by ROS TF (camera pose expressed in livox_frame).
-translation_livox_to_camera_optical: [-0.10787826, -0.06989143, -0.15097890]
+translation_livox_to_camera_optical: [-0.07839851, -0.03829111, -0.19346425]
 quaternion_livox_to_camera_optical_xyzw:
-  [0.49022237, -0.50484861, 0.51385478, -0.49067625]
+  [0.47861205, -0.50932718, 0.51209976, -0.49926963]
 rotation_rpy_livox_to_camera_optical:
-  [-1.56117601, -0.00837187, -1.60864439]
-joint_rmse_m: 0.01000317
+  [-1.54775775, 0.01838999, -1.61413791]
+joint_rmse_m: 0.00697892
 source_bag: "/home/nuc/lxw/neupan_ws/calibration_data/pose_01.bag"
