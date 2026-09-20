@@ -19,6 +19,7 @@
     <arg name="odom_frame" default="odom"/>
     <arg name="wheelbase" default="0.67"/>
     <arg name="wheel_radius" default="0.1275"/>
+    <arg name="cmd_topic" default="/neupan_cmd_vel"/>
     <arg name="gps_frame" default="gps_link"/>
     <arg name="gps_port" default="/dev/wheeltec_gnss" />
     <arg name="gps_baud" default="115200" />
@@ -68,6 +69,7 @@
         <arg name="odom_frame" value="$(arg odom_frame)"/>
         <arg name="wheelbase" value="$(arg wheelbase)"/>
         <arg name="wheel_radius" value="$(arg wheel_radius)"/>
+        <arg name="cmd_topic" value="$(arg cmd_topic)"/>
         <arg name="publish_tf" value="false" />
         <arg name="enable_localization_safety_stop" value="$(arg enable_localization_safety_stop)" />
         <arg name="motor_torque_limit" value="$(arg motor_torque_limit)" />

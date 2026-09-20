@@ -1,6 +1,7 @@
 <launch>
   <!-- size is the number of INTERNAL chessboard corners, not squares. -->
-  <arg name="size" default="8x12" />
+  <!-- The physical target has 8x12 squares, therefore 7x11 internal corners. -->
+  <arg name="size" default="7x11" />
   <!-- Physical chessboard square side length in metres. -->
   <arg name="square" default="0.020" />
   <arg name="start_camera" default="true" />

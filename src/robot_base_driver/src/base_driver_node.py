@@ -30,6 +30,7 @@ class RobotBaseDriver:
         )
         self.localization_safe = not self.enable_localization_safety_stop
         self.print_sent_command = rospy.get_param('~print_sent_command', False)
+        self.cmd_topic = rospy.get_param('~cmd_topic', '/neupan_cmd_vel')
 
         # 电机保护阈值（应按电机/控制器手册调整）
         self.motor_torque_limit = rospy.get_param('~motor_torque_limit', 7.0)
@@ -55,8 +56,8 @@ class RobotBaseDriver:
             self.send_serial_command(0.0, 0.0)
             rospy.logwarn("Localization safety gate enabled; holding stop until localization is ready")
 
-        # 订阅上层规划器的速度指令
-        rospy.Subscriber('/neupan_cmd_vel', Twist, self.cmd_vel_callback)
+        # 订阅上层选定的最终速度指令
+        rospy.Subscriber(self.cmd_topic, Twist, self.cmd_vel_callback)
         if self.enable_localization_safety_stop:
             rospy.Subscriber(
                 self.localization_safety_topic, Bool, self.localization_safety_callback
@@ -95,7 +96,7 @@ class RobotBaseDriver:
 
     def cmd_vel_callback(self, msg):
         """
-        接收 /neupan_cmd_vel，转换为下位机指令并通过串口发送
+        接收选定的最终速度，转换为下位机指令并通过串口发送
         协议格式: CMD,<油门>,<转向>
         油门 (Throttle): rad/s
         转向 (Steering): deg

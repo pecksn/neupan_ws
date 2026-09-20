@@ -97,9 +97,10 @@
     <arg name="gps_marker_timeout" default="2.0" />
     <arg name="enable_gps_goal_bridge" default="true" />
     <arg name="enable_system_log" default="true" doc="Ctrl+C后生成一个包含定位、GPS、保护状态和控制指令的综合日志" />
-    <!-- 0=STOP, 1=AUTO, 2=REMOTE -->
-    <arg name="default_control_mode" default="1" />
-    <arg name="control_command_timeout" default="0.5" />
+    <!-- 0=AUTO, 1=MANUAL -->
+    <arg name="default_control_mode" default="0" />
+    <arg name="auto_command_timeout" default="0.5" />
+    <arg name="remote_command_timeout" default="1.0" />
     <arg name="outdoor_use_hybrid_astar" default="false" doc="室外是否启用 Hybrid A*；false 时 NeuPAN 直接跟踪 OSM A* 路径" />
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" doc="室外 NeuPAN 初始路径来源话题；可选 /osm_global_path 或 /sPath" />
     <arg name="outdoor_control_path_topic" value="$(arg lidar_curb_refined_path_topic)" if="$(arg enable_lidar_curb_control)" />
@@ -121,6 +122,7 @@
 
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
+        <arg name="cmd_topic" value="/cmd_vel/selected" />
         <arg name="outdoor_mode" value="$(arg outdoor_mode)" />
         <arg name="datum_lat" value="$(arg map_origin_lat)" />
         <arg name="datum_lon" value="$(arg map_origin_lon)" />
@@ -233,11 +235,11 @@
         <param name="mode_topic" value="/vehicle/control_mode" />
         <param name="auto_topic" value="/cmd_vel/auto" />
         <param name="remote_topic" value="/cmd_vel/remote" />
-        <param name="output_topic" value="/neupan_cmd_vel" />
+        <param name="output_topic" value="/cmd_vel/selected" />
         <param name="status_topic" value="/vehicle/control_mode/status" />
         <param name="default_mode" value="$(arg default_control_mode)" />
-        <param name="auto_timeout" value="$(arg control_command_timeout)" />
-        <param name="remote_timeout" value="$(arg control_command_timeout)" />
+        <param name="auto_timeout" value="$(arg auto_command_timeout)" />
+        <param name="remote_timeout" value="$(arg remote_command_timeout)" />
     </node>
 
     <!-- 仅用于RViz显示：将点云投影到 map 坐标，便于和室外全局标记对齐观察 -->
@@ -326,7 +328,7 @@
         <param name="heading_topic" value="/heading" />
         <param name="global_odom_topic" value="/odometry/global" />
         <param name="local_odom_topic" value="/odometry/local" />
-        <param name="command_topic" value="/neupan_cmd_vel" />
+        <param name="command_topic" value="/cmd_vel/selected" />
         <param name="gps_guard_topic" value="/gps_guard/status" />
         <param name="lio_guard_topic" value="/lio_guard/status" />
         <param name="tracker_status_topic" value="/global_path_tracker/status" />

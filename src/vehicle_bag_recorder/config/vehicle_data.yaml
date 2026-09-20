@@ -63,7 +63,9 @@ topics:
   - /road_curb/status
   - /road_curb/roi_cloud
   - /road_curb/candidate_cloud
-  - /neupan_cmd_vel
+  - /cmd_vel/auto
+  - /cmd_vel/remote
+  - /cmd_vel/selected
   - /global_path_tracker/status
 
   # USB Camera3 输出。录制旋转 180° 后的原始彩色 Image，可在 rosbag

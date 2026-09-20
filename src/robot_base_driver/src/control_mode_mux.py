@@ -7,24 +7,24 @@ from std_msgs.msg import String, UInt8
 
 
 class ControlModeMux:
-    STOP = 0
-    AUTO = 1
-    REMOTE = 2
-    MODE_NAMES = {STOP: "STOP", AUTO: "AUTO", REMOTE: "REMOTE"}
+    AUTO = 0
+    MANUAL = 1
+    MODE_NAMES = {AUTO: "AUTO", MANUAL: "MANUAL"}
 
     def __init__(self):
         rospy.init_node("control_mode_mux")
         self.mode_topic = rospy.get_param("~mode_topic", "/vehicle/control_mode")
         self.auto_topic = rospy.get_param("~auto_topic", "/cmd_vel/auto")
         self.remote_topic = rospy.get_param("~remote_topic", "/cmd_vel/remote")
-        self.output_topic = rospy.get_param("~output_topic", "/neupan_cmd_vel")
+        self.output_topic = rospy.get_param("~output_topic", "/cmd_vel/selected")
         self.status_topic = rospy.get_param("~status_topic", "/vehicle/control_mode/status")
         self.publish_rate = max(1.0, float(rospy.get_param("~publish_rate", 20.0)))
         self.auto_timeout = max(0.05, float(rospy.get_param("~auto_timeout", 0.5)))
         self.remote_timeout = max(0.05, float(rospy.get_param("~remote_timeout", 0.5)))
         self.mode = int(rospy.get_param("~default_mode", self.AUTO))
         if self.mode not in self.MODE_NAMES:
-            self.mode = self.STOP
+            rospy.logwarn("Invalid default control mode %d; falling back to AUTO", self.mode)
+            self.mode = self.AUTO
 
         self.last_auto = None
         self.last_auto_time = rospy.Time(0)
@@ -43,13 +43,13 @@ class ControlModeMux:
     def mode_callback(self, msg):
         requested = int(msg.data)
         if requested not in self.MODE_NAMES:
-            rospy.logwarn_throttle(1.0, "Ignoring invalid control mode %d (valid: 0, 1, 2)", requested)
+            rospy.logwarn_throttle(1.0, "Ignoring invalid control mode %d (valid: 0=AUTO, 1=MANUAL)", requested)
             return
 
         if requested != self.mode:
             previous = self.MODE_NAMES[self.mode]
             self.mode = requested
-            # NeuPAN remains active in REMOTE mode. Switching back to AUTO
+            # NeuPAN remains active in MANUAL mode. Switching back to AUTO
             # immediately uses its latest command without restarting the node.
             command, reason = self.selected_command(rospy.Time.now())
             self.output_pub.publish(command)
@@ -65,8 +65,6 @@ class ControlModeMux:
         self.last_remote_time = rospy.Time.now()
 
     def selected_command(self, now):
-        if self.mode == self.STOP:
-            return Twist(), "stop_mode"
         if self.mode == self.AUTO:
             if self.last_auto is None or (now - self.last_auto_time).to_sec() > self.auto_timeout:
                 return Twist(), "auto_timeout"
