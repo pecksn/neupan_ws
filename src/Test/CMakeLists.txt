@@ -23,5 +23,6 @@ catkin_install_python(PROGRAMS
   scripts/open_loop_data_logger.py
   scripts/open_loop_motion.py
   scripts/motor_side_mapping_test.py
+  scripts/daily_rosbag_record.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

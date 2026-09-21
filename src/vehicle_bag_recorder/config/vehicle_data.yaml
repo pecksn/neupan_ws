@@ -3,6 +3,7 @@
 output_directory: /home/nuc/lxw/neupan_ws/rosbags
 bag_prefix: vehicle_data
 timezone_offset_hours: 8.0  # 文件名和 JSON 清单使用北京时间 UTC+8
+session_subdirectory: true  # 每次录制保存到 rosbagYYYYMMDD_HHMMSS 子目录
 
 # 单个 bag 达到该大小后自动分包，单位 MB；0 表示不分包。
 split_size_mb: 2048

@@ -34,6 +34,17 @@ class BagRecorder:
         self.check_period = max(1.0, float(self.config.get("disk_check_period_sec", 5.0)))
         self.timezone_offset_hours = float(self.config.get("timezone_offset_hours", 8.0))
         self.local_timezone = timezone(timedelta(hours=self.timezone_offset_hours))
+        self.use_session_subdirectory = bool(
+            self.config.get(
+                "session_subdirectory",
+                self.config.get("daily_subdirectory", True),
+            )
+        )
+        if self.use_session_subdirectory:
+            session_name = "rosbag{}".format(
+                datetime.datetime.now(self.local_timezone).strftime("%Y%m%d_%H%M%S")
+            )
+            self.output_dir = os.path.join(self.output_dir, session_name)
         required_topics = self.config.get("required_topics", [])
         if not isinstance(required_topics, list):
             raise RuntimeError("required_topics 必须是列表")

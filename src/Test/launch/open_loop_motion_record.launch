@@ -30,7 +30,8 @@
   <arg name="gps_rotation" default="90.0" />
   <arg name="gps_heading_source_is_north_cw" default="true" />
   <arg name="record_bag" default="true" />
-  <arg name="bag_prefix" default="/home/nuc/lxw/neupan_ws/tracker_logs/open_loop_$(arg mode)" />
+  <arg name="bag_root" default="/home/nuc/lxw/neupan_ws/rosbags" />
+  <arg name="bag_prefix" default="open_loop_$(arg mode)" />
   <arg name="record_sync_log" default="true" />
   <arg name="sync_log_dir" default="/home/nuc/lxw/neupan_ws/tracker_logs" />
   <arg name="sync_log_rate" default="20.0" />
@@ -82,9 +83,9 @@
     <param name="timezone_offset_hours" value="8.0" />
   </node>
 
-  <node if="$(arg record_bag)" pkg="rosbag" type="record" name="open_loop_motion_bag" output="screen"
-        args="-o $(arg bag_prefix)
-              /open_loop_motion/packet">
+  <node if="$(arg record_bag)" pkg="test_motion_tools" type="daily_rosbag_record.py"
+        name="open_loop_motion_bag" output="screen"
+        args="--base-dir $(arg bag_root) --prefix $(arg bag_prefix) /open_loop_motion/packet">
     <env name="TZ" value="Asia/Shanghai" />
   </node>
 </launch>

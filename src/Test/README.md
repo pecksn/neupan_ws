@@ -45,7 +45,9 @@ Before sending non-zero speed, the motion node waits for valid `/gps/fix`, `/hea
 
 ## Rosbag Topic
 
-The launch files start `rosbag record` automatically. Bag files are written under `/home/nuc/lxw/neupan_ws/tracker_logs`.
+The launch files start `rosbag record` automatically. Bag files are grouped by
+Beijing time under `/home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/`; timestamped
+filenames sort in recording order.
 
 The rosbag records only one compact topic:
 

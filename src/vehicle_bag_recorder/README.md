@@ -24,7 +24,8 @@ rosrun vehicle_bag_recorder bag_recorder.py \
 ```
 
 按 `Ctrl+C` 后程序会向 rosbag 发送 `SIGINT`，等待它完成索引写入。每次输出包括带日期时间的
-bag（达到配置大小后自动分包）以及同名前缀的 JSON 清单。默认保存到工作区的 `rosbags/`。
+bag（达到配置大小后自动分包）以及同名前缀的 JSON 清单。每次录制默认按北京时间保存到
+独立的 `rosbags/rosbagYYYYMMDD_HHMMSS/` 目录。
 
 默认必录检查包含 `/cloud_registered_body`、`/tf`、GPS Fix、GGA、航向、
 `/camera/image_raw` 和 `/camera/camera_info`。关键话题没有发布者时
@@ -62,8 +63,8 @@ LZ4 压缩仍会对原始 `Image` 消息生效。如果以后更换相机，修�
 回放示例：
 
 ```bash
-rosbag info /home/nuc/lxw/neupan_ws/rosbags/vehicle_data_*.bag
-rosbag play --clock /home/nuc/lxw/neupan_ws/rosbags/vehicle_data_*.bag
+rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbag*/vehicle_data_*.bag
+rosbag play --clock /home/nuc/lxw/neupan_ws/rosbags/rosbag*/vehicle_data_*.bag
 ```
 
 回放后可先确认 RGB 帧已正常恢复：

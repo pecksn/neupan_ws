@@ -1,7 +1,8 @@
 <launch>
   <arg name="speed" default="0.4" />
   <arg name="duration" default="20.0" />
-  <arg name="bag_prefix" default="/home/nuc/lxw/neupan_ws/tracker_logs/straight_motion" />
+  <arg name="bag_root" default="/home/nuc/lxw/neupan_ws/rosbags" />
+  <arg name="bag_prefix" default="straight_motion" />
 
   <include file="$(find test_motion_tools)/launch/open_loop_motion_record.launch">
     <arg name="mode" value="straight" />
@@ -9,5 +10,6 @@
     <arg name="duration" value="$(arg duration)" />
     <arg name="steer_amplitude_deg" value="0.0" />
     <arg name="bag_prefix" value="$(arg bag_prefix)" />
+    <arg name="bag_root" value="$(arg bag_root)" />
   </include>
 </launch>
