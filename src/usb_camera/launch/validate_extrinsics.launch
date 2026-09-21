@@ -1,0 +1,41 @@
+<launch>
+  <arg name="start_camera" default="true" />
+  <arg name="cloud_topic" default="/cloud_registered_body" />
+  <arg name="show" default="true" />
+  <arg name="min_depth" default="0.5" />
+  <arg name="max_depth" default="15.0" />
+  <arg name="point_stride" default="1" />
+  <arg name="point_radius" default="3" />
+  <!-- FAST-LIO publishes /cloud_registered_body in the IMU body frame.
+       mid360.yaml uses p_body = p_lidar + [-0.011,-0.02329,0.04412], so the
+       body-frame origin expressed in livox_frame is the negative vector. Set
+       this false only when another launch publishes the same calibrated TF. -->
+  <arg name="publish_body_tf" default="true" />
+
+  <include if="$(arg start_camera)"
+           file="$(find usb_camera)/launch/camera_with_lidar_tf.launch">
+    <arg name="preview" value="false" />
+  </include>
+
+  <node if="$(arg publish_body_tf)" pkg="tf" type="static_transform_publisher"
+        name="validation_livox_to_body"
+        args="0.011 0.02329 -0.04412 0 0 0 livox_frame body 100" />
+
+  <node pkg="usb_camera" type="lidar_camera_overlay.py"
+        name="lidar_camera_overlay" output="screen">
+    <remap from="image" to="/camera/image_raw" />
+    <remap from="camera_info" to="/camera/camera_info" />
+    <remap from="cloud" to="$(arg cloud_topic)" />
+    <remap from="overlay" to="/camera/lidar_overlay" />
+    <param name="min_depth" value="$(arg min_depth)" />
+    <param name="max_depth" value="$(arg max_depth)" />
+    <param name="point_stride" value="$(arg point_stride)" />
+    <param name="point_radius" value="$(arg point_radius)" />
+    <param name="max_rate" value="5.0" />
+  </node>
+
+  <node if="$(arg show)" pkg="image_view" type="image_view"
+        name="lidar_overlay_view" output="screen">
+    <remap from="image" to="/camera/lidar_overlay" />
+  </node>
+</launch>

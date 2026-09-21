@@ -8,6 +8,57 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from robot_base_driver.msg import MotorStatus
 import serial # 需要安装 pyserial
 import math
+import re
+
+
+MOTOR_STATE_TEXT = {
+    '0': 'DISABLED',
+    '1': 'ENABLED',
+    '8': 'OVER_VOLTAGE',
+    '9': 'UNDER_VOLTAGE',
+    'A': 'OVER_CURRENT',
+    'B': 'MOS_OVER_TEMP',
+    'C': 'COIL_OVER_TEMP',
+    'D': 'COMM_LOST',
+    'E': 'OVERLOAD',
+}
+
+MOTOR_VALUE_FIELDS = ('LT', 'RT', 'LMOS', 'LCOIL', 'RMOS', 'RCOIL')
+MOTOR_STATE_RE = re.compile(r'^([0-9A-Fa-f]+)(?:\(([^)]*)\))?$')
+
+
+def parse_motor_telemetry(line):
+    """Parse the labelled MCU MOTOR line and return values plus both states."""
+    parts = [part.strip() for part in line.split(',')]
+    if not parts or parts[0] != 'MOTOR':
+        raise ValueError('not a MOTOR line')
+
+    fields = {}
+    for part in parts[1:]:
+        if ':' not in part:
+            raise ValueError('unlabelled MOTOR field: %s' % part)
+        key, value = part.split(':', 1)
+        fields[key.strip().upper()] = value.strip()
+
+    required = set(MOTOR_VALUE_FIELDS + ('LSTATE', 'RSTATE'))
+    missing = sorted(required.difference(fields))
+    if missing:
+        raise ValueError('missing MOTOR fields: %s' % ','.join(missing))
+
+    values = [float(fields[name]) for name in MOTOR_VALUE_FIELDS]
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError('non-finite MOTOR value')
+
+    states = []
+    for name in ('LSTATE', 'RSTATE'):
+        match = MOTOR_STATE_RE.match(fields[name])
+        if not match:
+            raise ValueError('invalid %s: %s' % (name, fields[name]))
+        code = match.group(1).upper()
+        # Use the documented meaning for known codes; retain MCU text for unknowns.
+        text = MOTOR_STATE_TEXT.get(code, match.group(2) or 'UNKNOWN')
+        states.append((code, text))
+    return values, states
 
 class RobotBaseDriver:
     def __init__(self):
@@ -156,33 +207,36 @@ class RobotBaseDriver:
                 rospy.logerr(f"Serial write failed: {e}")
 
     def handle_motor_line(self, line):
-        """解析 MOTOR,左扭矩,右扭矩,左MOS温度,左线圈温度,右MOS温度,右线圈温度。"""
-        parts = [part.strip() for part in line.split(',')]
-        if len(parts) != 7:
-            rospy.logwarn_throttle(2.0, "Invalid MOTOR field count: %s", line)
-            return
-
+        """解析带标签的左右电机扭矩、温度和状态。"""
         try:
-            values = [float(value) for value in parts[1:]]
+            values, states = parse_motor_telemetry(line)
         except ValueError:
-            rospy.logwarn_throttle(2.0, "Invalid MOTOR numeric data: %s", line)
-            return
-        if not all(math.isfinite(value) for value in values):
-            rospy.logwarn_throttle(2.0, "Non-finite MOTOR data: %s", line)
+            rospy.logwarn_throttle(2.0, "Invalid MOTOR data: %s", line)
             return
 
         left_torque, right_torque, left_mos, left_coil, right_mos, right_coil = values
+        (left_state_code, left_state_text), (right_state_code, right_state_text) = states
         torque_peak = max(abs(left_torque), abs(right_torque))
         mos_peak = max(left_mos, right_mos)
         coil_peak = max(left_coil, right_coil)
 
         reasons = []
-        if torque_peak >= self.motor_torque_limit:
-            reasons.append("torque %.2f >= %.2f" % (torque_peak, self.motor_torque_limit))
-        if mos_peak >= self.motor_mos_temp_limit:
-            reasons.append("MOS temp %.1f >= %.1f C" % (mos_peak, self.motor_mos_temp_limit))
-        if coil_peak >= self.motor_coil_temp_limit:
-            reasons.append("coil temp %.1f >= %.1f C" % (coil_peak, self.motor_coil_temp_limit))
+        if left_state_code != '1':
+            reasons.append("LEFT state %s (%s)" % (left_state_code, left_state_text))
+        if right_state_code != '1':
+            reasons.append("RIGHT state %s (%s)" % (right_state_code, right_state_text))
+        if abs(left_torque) >= self.motor_torque_limit:
+            reasons.append("LEFT torque %.2f >= %.2f" % (abs(left_torque), self.motor_torque_limit))
+        if abs(right_torque) >= self.motor_torque_limit:
+            reasons.append("RIGHT torque %.2f >= %.2f" % (abs(right_torque), self.motor_torque_limit))
+        if left_mos >= self.motor_mos_temp_limit:
+            reasons.append("LEFT MOS temp %.1f >= %.1f C" % (left_mos, self.motor_mos_temp_limit))
+        if right_mos >= self.motor_mos_temp_limit:
+            reasons.append("RIGHT MOS temp %.1f >= %.1f C" % (right_mos, self.motor_mos_temp_limit))
+        if left_coil >= self.motor_coil_temp_limit:
+            reasons.append("LEFT coil temp %.1f >= %.1f C" % (left_coil, self.motor_coil_temp_limit))
+        if right_coil >= self.motor_coil_temp_limit:
+            reasons.append("RIGHT coil temp %.1f >= %.1f C" % (right_coil, self.motor_coil_temp_limit))
 
         if reasons:
             alarm = True
@@ -192,6 +246,8 @@ class RobotBaseDriver:
                 torque_peak < self.motor_torque_limit - self.motor_torque_hysteresis
                 and mos_peak < self.motor_mos_temp_limit - self.motor_temp_hysteresis
                 and coil_peak < self.motor_coil_temp_limit - self.motor_temp_hysteresis
+                and left_state_code == '1'
+                and right_state_code == '1'
             )
             if alarm:
                 reasons.append("recovering (hysteresis)")
@@ -206,6 +262,10 @@ class RobotBaseDriver:
         status.left_coil_temperature = left_coil
         status.right_mos_temperature = right_mos
         status.right_coil_temperature = right_coil
+        status.left_state_code = left_state_code
+        status.left_state_text = left_state_text
+        status.right_state_code = right_state_code
+        status.right_state_text = right_state_text
         status.alarm = alarm
         status.alarm_reason = '; '.join(reasons)
         self.motor_status_pub.publish(status)
@@ -225,9 +285,13 @@ class RobotBaseDriver:
         diagnostic.message = status.alarm_reason if alarm else 'OK'
         names = ('left_torque', 'right_torque', 'left_mos_temperature',
                  'left_coil_temperature', 'right_mos_temperature',
-                 'right_coil_temperature')
+                 'right_coil_temperature', 'left_state_code', 'left_state_text',
+                 'right_state_code', 'right_state_text')
+        diagnostic_data = values + [left_state_code, left_state_text,
+                                    right_state_code, right_state_text]
         diagnostic.values = [
-            KeyValue(key=name, value=str(value)) for name, value in zip(names, values)
+            KeyValue(key=name, value=str(value))
+            for name, value in zip(names, diagnostic_data)
         ]
         array = DiagnosticArray()
         array.header.stamp = status.header.stamp

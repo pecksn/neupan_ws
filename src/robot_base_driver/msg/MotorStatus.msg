@@ -5,5 +5,9 @@ float32 left_mos_temperature
 float32 left_coil_temperature
 float32 right_mos_temperature
 float32 right_coil_temperature
+string left_state_code
+string left_state_text
+string right_state_code
+string right_state_text
 bool alarm
 string alarm_reason

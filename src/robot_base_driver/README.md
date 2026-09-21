@@ -5,7 +5,7 @@
 下位机可按行发送：
 
 ```text
-MOTOR,左电机扭矩,右电机扭矩,左MOS温度,左线圈温度,右MOS温度,右线圈温度\r\n
+MOTOR,LT:<左扭矩>,RT:<右扭矩>,LMOS:<左MOS温度>,LCOIL:<左线圈温度>,RMOS:<右MOS温度>,RCOIL:<右线圈温度>,LSTATE:<左状态码>(<含义>),RSTATE:<右状态码>(<含义>)\r\n
 ```
 
 节点发布：
@@ -32,6 +32,11 @@ roslaunch robot_base_driver driver.launch \
 rostopic echo /motor/status
 rostopic echo /motor/alarm
 ```
+
+状态码：`0 DISABLED`、`1 ENABLED`、`8 OVER_VOLTAGE`、`9 UNDER_VOLTAGE`、
+`A OVER_CURRENT`、`B MOS_OVER_TEMP`、`C COIL_OVER_TEMP`、`D COMM_LOST`、
+`E OVERLOAD`；其他值显示为 `UNKNOWN`。任一侧状态不为 `1` 时，总报警会包含
+明确的 `LEFT state ...` 或 `RIGHT state ...` 原因。
 
 启用 `system_run_logger.py` 时，每条 JSONL sample 的 `data.motor` 会记录六项实时值、
 报警状态、报警原因以及该数据的接收时延。

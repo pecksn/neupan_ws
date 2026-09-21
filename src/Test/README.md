@@ -1,5 +1,18 @@
 # test_motion_tools
 
+## 左右电机映射测试
+
+MCU 命令 `CMD,<throttle>,<steering>` 只有统一油门，不能独立驱动左右电机。
+在 Neupan 容器中，可以通过转动架空车轮并测量 `LT/RT` 扭矩响应来判断映射：
+
+```bash
+cd /home/nuc/lxw/neupan_ws
+python3 src/Test/scripts/motor_side_mapping_test.py
+```
+
+运行前停止 `robot_base_driver`，并将两个驱动轮可靠架空。程序会保持零油门，依次
+提示转动物理左轮和物理右轮，最后输出左右映射是否颠倒。
+
 Open-loop motion tests for recording straight-line and S-curve vehicle data.
 
 These tests do not use global planning, local planning, or obstacle avoidance. They only publish `geometry_msgs/Twist` to `/neupan_cmd_vel`:
