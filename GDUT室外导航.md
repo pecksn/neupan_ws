@@ -158,6 +158,15 @@ roslaunch vehicle_bag_recorder record.launch \
   config_file:=$(rospack find vehicle_bag_recorder)/config/hybridnets_data.yaml
 ```
 
+其中 `/camera/remote_image_raw` 是 GPU 板摄像头实时发送、NUC 解码后的彩色画面；`/camera/remote_camera_info` 是相机内参。摄像头保持插在 GPU 板上即可。录制器每次在 `rosbags/` 下新建 `rosbagYYYYMMDD_HHMMSS/`，并把同一次录制的 bag 按 **2048 MB** 自动分包，例如：
+
+```text
+rosbags/rosbagYYYYMMDD_HHMMSS/
+├── hybridnets_vehicle_data_YYYYMMDD_HHMMSS.json
+├── hybridnets_vehicle_data_YYYYMMDD_HHMMSS_0.bag
+└── hybridnets_vehicle_data_YYYYMMDD_HHMMSS_1.bag
+```
+
 录制前检查：
 
 ```bash
@@ -166,6 +175,14 @@ rostopic echo -n 1 /camera/remote_camera_info
 rostopic hz /hybridnets/result_json
 rostopic echo /hybridnets/valid
 ```
+
+结束时按一次 `Ctrl+C`，等待 `.bag.active` 完成写入，再对实际生成的文件检查：
+
+```bash
+rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.bag
+```
+
+确认 `/camera/remote_image_raw`、`/hybridnets/result_json`、`/cloud_registered_body` 均有非零消息数。配置中列有话题只代表准备录制，实际有无画面仍以 bag 的消息数为准。
 
 `/hybridnets/debug_image` 是可以回放重建的重复图像，专用配置有意不记录它，以减少磁盘占用。NUC 本地相机独立调试时才使用默认 `vehicle_data.yaml` 中的 `/camera/image_raw` 和 `/camera/camera_info`，两类相机话题不要混写。
 

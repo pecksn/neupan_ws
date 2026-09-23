@@ -1,6 +1,10 @@
 output_directory: /home/nuc/lxw/neupan_ws/rosbags
 bag_prefix: hybridnets_vehicle_data
 timezone_offset_hours: 8.0
+# 每次录制新建 rosbagYYYYMMDD_HHMMSS 子目录，与 vehicle_data.yaml 一致。
+session_subdirectory: true
+
+# 单个 bag 达到 2048 MB 后自动分包；分包仍保存在同一次录制的子目录中。
 split_size_mb: 2048
 compression: lz4
 buffer_size_mb: 1024
@@ -12,7 +16,7 @@ disk_check_period_sec: 5.0
 required_topics:
   - /livox/lidar
   - /cloud_registered_body
-  - /camera/remote_image_raw
+  - /camera/remote_image_raw  # GPU 板发送、NUC 解码后的实时彩色画面
   - /camera/remote_camera_info
   - /hybridnets/result_json
   - /hybridnets/valid
