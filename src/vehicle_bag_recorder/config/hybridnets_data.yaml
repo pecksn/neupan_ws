@@ -1,0 +1,47 @@
+output_directory: /home/nuc/lxw/neupan_ws/rosbags
+bag_prefix: hybridnets_vehicle_data
+timezone_offset_hours: 8.0
+split_size_mb: 2048
+compression: lz4
+buffer_size_mb: 1024
+chunk_size_kb: 768
+tcp_nodelay: true
+min_free_space_gb: 8.0
+disk_check_period_sec: 5.0
+
+required_topics:
+  - /livox/lidar
+  - /cloud_registered_body
+  - /camera/remote_image_raw
+  - /camera/remote_camera_info
+  - /hybridnets/result_json
+  - /hybridnets/valid
+  - /tf
+
+topics:
+  - /livox/lidar
+  - /livox/imu
+  - /cloud_registered_body
+  - /cloud_registered
+  - /Odometry
+  - /tf
+  - /tf_static
+  - /camera/remote_image_raw
+  - /camera/remote_camera_info
+  - /hybridnets/result_json
+  - /hybridnets/valid
+  - /hybridnets/inference_hz
+  - /hybridnets/network_age_ms
+  - /hybridnets/capture_header
+  - /odom
+  - /gps/fix
+  - /heading
+  - /osm_global_path
+  - /osm_global_path_curb_refined
+  - /road_curb/status
+  - /cmd_vel/selected
+
+# /hybridnets/debug_image is deliberately omitted because it duplicates the
+# received image and can greatly increase bag size. Recreate it during replay.
+record_all: false
+exclude_regex: ""

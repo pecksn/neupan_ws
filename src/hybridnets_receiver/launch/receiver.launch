@@ -1,0 +1,31 @@
+<launch>
+  <arg name="config" default="$(find hybridnets_receiver)/config/receiver.yaml" />
+  <arg name="start_video" default="true" />
+  <arg name="start_overlay" default="true" />
+  <arg name="show_overlay" default="true" />
+
+  <!-- GI/GStreamer is supplied by Ubuntu, so this node deliberately uses
+       system Python. Other Python packages remain in the lxw Conda env. -->
+  <node if="$(arg start_video)" pkg="hybridnets_receiver"
+        type="rtp_camera_receiver.py" name="rtp_camera_receiver"
+        launch-prefix="/usr/bin/python3" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+
+  <node pkg="hybridnets_receiver" type="hybridnets_json_receiver.py"
+        name="hybridnets_json_receiver" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+
+  <node if="$(arg start_overlay)" pkg="hybridnets_receiver"
+        type="hybridnets_overlay.py" name="hybridnets_overlay" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="max_age" value="0.8" />
+    <param name="debug_image_topic" value="/hybridnets/debug_image" />
+  </node>
+
+  <node if="$(arg show_overlay)" pkg="image_view" type="image_view"
+        name="hybridnets_debug_view" output="screen">
+    <remap from="image" to="/hybridnets/debug_image" />
+  </node>
+</launch>

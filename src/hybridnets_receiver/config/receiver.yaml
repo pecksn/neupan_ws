@@ -1,0 +1,25 @@
+# GPU board -> NUC network receiver settings.
+video_port: 5000
+result_port: 6000
+bind_ip: "0.0.0.0"          # NUC USB NIC is 192.168.10.21; this also permits startup while unplugged.
+allowed_sender_ip: "192.168.10.20"
+
+image_topic: "/camera/remote_image_raw"
+camera_info_topic: "/camera/remote_camera_info"
+camera_frame_id: "camera_optical_frame"
+camera_info_file: "/home/nuc/lxw/neupan_ws/src/usb_camera/config/usb_camera.yaml"
+image_width: 1920
+image_height: 1080
+
+result_json_topic: "/hybridnets/result_json"
+valid_topic: "/hybridnets/valid"
+inference_hz_topic: "/hybridnets/inference_hz"
+network_age_topic: "/hybridnets/network_age_ms"
+capture_header_topic: "/hybridnets/capture_header"
+
+result_timeout_sec: 0.8
+max_source_age_ms: 800.0
+max_polygon_points: 20000
+rtp_latency_ms: 100
+virtual_video_device: "/dev/video0"
+virtual_video_fps: 30
