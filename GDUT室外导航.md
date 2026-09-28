@@ -245,7 +245,7 @@ rosparam set use_sim_time false
 
 ## 2.1 Docker 创建与删除
 
-```
+```bash
 wget http://fishros.com/install -O fishros && . fishros
 ```
 
@@ -253,7 +253,7 @@ ros1,ros1_neupan
 
 [一键安装过程中拉取镜像出现问题 | 鱼香ROS](https://fishros.org.cn/forum/topic/3085/一键安装过程中拉取镜像出现问题/2)
 
-```
+```bash
 sudo mkdir -p /etc/docker
 sudo tee /etc/docker/daemon.json <<-'EOF'
 {
@@ -341,7 +341,7 @@ ls -l /tmp/.X11-unix
 
 [ubuntu cutecom串口调试工具使用方法（图形界面）-CSDN博客](https://blog.csdn.net/Dontla/article/details/134557362)
 
-```
+```bash
 sudo dmesg | grep tty
 sudo cutecom
 ```
@@ -384,7 +384,7 @@ ls -l /dev/ttyCH341USB*
 
 *退出 minicom 的正确姿势是：先按 `Ctrl+A`，松开后按 `X`，然后选 `Yes`)*
 
-```
+```bash
 sudo minicom -s
 sudo minicom
 ```
@@ -408,7 +408,7 @@ sudo minicom
 
 ### Livox-SDK2
 
-```
+```bash
 git clone https://github.com/Livox-SDK/Livox-SDK2.git
 cd ./Livox-SDK2/
 mkdir build
@@ -419,7 +419,7 @@ sudo make install
 
 ### Livox ROS Driver 2
 
-```
+```bash
 git clone https://github.com/Livox-SDK/livox_ros_driver2.git
 ```
 
@@ -431,7 +431,7 @@ source /opt/ros/noetic/setup.sh
 
 在 Livox ROS Driver 2文件夹下
 
-```
+```bash
 cd src/livox_ros_driver2/
 ./build.sh ROS1
 ```
@@ -463,13 +463,13 @@ roslaunch livox_ros_driver2 msg_MID360.launch
 
 ##### 方法一
 
-```
+```bash
 catkin_make -DCMAKE_BUILD_TYPE=Release -DROS_EDITION=ROS1
 ```
 
 ##### 方法二
 
-```
+```bash
 echo 'export ROS_EDITION=ROS1' >> ~/.bashrc
 source ~/.bashrc
 catkin_make
@@ -554,7 +554,7 @@ catkin_make
 
 **要在ros1 docker里面进行pip安装！！！**
 
-```
+```bash
 python3 -c "import neupan; print('OK')"
 ```
 
@@ -562,7 +562,7 @@ python3 -c "import neupan; print('OK')"
 
 如果你想用python3.8在没有虚拟环境的情况下运行这个项目，可以安装NeuPAN规划器的py38分支：https://github.com/hanruihua/NeuPAN/tree/py38
 
-```
+```bash
 #主板上
 git clone -b py38 https://github.com/hanruihua/NeuPAN.git /home/hart2204/RoutePlanning/NeuPAN
 #nuc上
@@ -613,7 +613,7 @@ sudo update-alternatives --config python3
 
 ## 设置 NeuPAN 代码权限
 
-```
+```bash
 chmod 777 * src/neupan_ros/src/neupan_core.py
 chmod 777 * src/neupan_ros/src/neupan_node.py
 
@@ -733,7 +733,7 @@ cd /home/nuc/lxw/neupan_ws && catkin_make && source devel/setup.bash
 
    `receding` 表示预测步数，`step_time` 表示每个预测步的时间，因此预测总时长约为：
 
-   ```
+   ```text
    prediction_time = receding × step_time
    ```
 
@@ -770,7 +770,7 @@ rosdep install --from-paths src --ignore-src -r -y
 
 清理旧缓存，并忽略不需要的真实硬件驱动。
 
-```
+```bash
 cd /home/hart2204/RoutePlanning/neupan_ws
 
 # 1. 彻底清理旧的编译缓存 (关键：解决 CMake 路径错误)
@@ -789,7 +789,7 @@ catkin_make
 
 为了让 Gazebo 动态障碍物生效，必须设置插件路径；为了解决网络报错，建议绑定 host。
 
-```
+```bash
 # 建议写入 ~/.bashrc 以永久生效
 echo "export GAZEBO_PLUGIN_PATH=\${GAZEBO_PLUGIN_PATH}:/home/hart2204/neupan_ws/devel/lib" >> ~/.bashrc
 
@@ -809,7 +809,7 @@ source ~/.bashrc
 
 加载 Limo 小车模型和包含动态障碍物的世界地图
 
-```
+```bash
 cd /home/hart2204/RoutePlanning/neupan_ws
 source devel/setup.bash
 
@@ -821,7 +821,7 @@ roslaunch neupan_ros gazebo_limo_env_complex_20.launch
 
 启动核心规划算法、Rviz 可视化界面。
 
-```
+```bash
 cd /home/hart2204/RoutePlanning/neupan_ws
 source devel/setup.bash
 
@@ -885,7 +885,7 @@ sudo apt install ros-noetic-teb-local-planner
 
 使用GlobalPlanner的A*
 
-```html
+```yaml
 base_global_planner: global_planner/GlobalPlanner
 base_local_planner: teb_local_planner/TebLocalPlannerROS
 
@@ -936,7 +936,7 @@ GlobalPlanner:
 
 [【实战教程】Ubuntu20.04 下 PX4+Gazebo+Mid360+Tare Planner 全流程搭建_px4连gazebo-CSDN博客](https://blog.csdn.net/AresMHT/article/details/157025477)
 
-```
+```bash
 git clone --recurse-submodules --branch v1.12.3 https://github.com/PX4/PX4-Autopilot.git
 
 #进入PX4-Autopilot根目录
@@ -953,7 +953,7 @@ bash ./PX4-Autopilot/Tools/setup/ubuntu.sh
 
 ### 更新 ROS GPG 密钥
 
-```
+```bash
 # 1. 删除旧的 ROS 源列表（如果存在）
 sudo rm /etc/apt/sources.list.d/ros*.list
 
@@ -973,7 +973,7 @@ bash ./Tools/setup/ubuntu.sh
 
 ### 使用教程
 
-```
+```bash
 #模型下载
 git clone https://gitee.com/bingda-robot/gazebo_models.git
 
@@ -1171,7 +1171,7 @@ git clone https://github.com/xuankuzcr/rpg_vikit.git
 
 请找到 CMakeLists.txt 大约第 79 行的 `find_package` 部分，将它加上一行 `livox_ros_driver2`：
 
-```
+```cmake
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   nav_msgs
@@ -1321,7 +1321,7 @@ savePCDDirectory: "/home/nuc/lxw/lio_sam_ws/src/LIO-SAM-MID360/PCD"
 
    或lio_sam：
 
-   ```
+   ```bash
    conda activate lxw
    cd /home/nuc/lxw/lio_sam_ws
    source /home/nuc/lxw/lio_sam_ws/devel/setup.bash
@@ -1358,7 +1358,7 @@ savePCDDirectory: "/home/nuc/lxw/lio_sam_ws/src/LIO-SAM-MID360/PCD"
    roslaunch pcd2pgm run.launch
    ```
 
-   ```yaml
+   ```xml
    <!--param name="file_directory" value= "/home/nuc/lxw/fast_lio_ws/src/FAST_LIO/PCD/" /-->
    <param name="file_directory" value= "/home/nuc/lxw/lio_sam_ws/src/LIO-SAM-MID360/PCD/" /-->
    <!-- 原始pcd文件的名字，比如 scans.pcd;GlobalMap.pcd >
@@ -1410,7 +1410,7 @@ cd /home/nuc/lxw/neupan_ws/src
 git clone https://github.com/teddyluo/hybrid-a-star-annotation.git
 ```
 
-```bash
+```cmake
 #修改1中功能包的cmakelist文件的ompl查找如下
 # 查找 OMPL（支持大小写不同的配置文件名）
 find_package(ompl QUIET)
@@ -1514,7 +1514,7 @@ rosrun rqt_graph rqt_graph   # 可视化节点/话题连接（需图形界面）
 
 `TEB` 测试指令是：
 
-```
+```bash
 conda activate lxw
 cd /home/nuc/lxw/neupan_ws
 source /opt/ros/noetic/setup.bash
@@ -1525,7 +1525,7 @@ roslaunch teb_test outdoor_teb_test.launch
 
 “不带任何局部规划”的全局直跟测试，也就是你之前一直在跑的 direct tracker，是：
 
-```
+```bash
 conda activate lxw
 cd /home/nuc/lxw/neupan_ws
 source /opt/ros/noetic/setup.bash
@@ -1536,7 +1536,7 @@ roslaunch neupan_ros outdoor_global_only_test.launch direct_tracker_yaw_offset_d
 
 如果你想测带局部避障的 `NeuPAN` 全系统，则是：
 
-```
+```bash
 conda activate lxw
 cd /home/nuc/lxw/neupan_ws
 source /opt/ros/noetic/setup.bash
@@ -1563,7 +1563,7 @@ key：<AMAP_KEY>
 
 私钥：<AMAP_SECRET>
 
-```
+```text
 高德地图
    ↓
 A*全局路径
@@ -1583,7 +1583,7 @@ NeuPAN
 MPC控制
 ```
 
-```
+```text
 /osm_map_node          （加载高德/OSM路网）
         ↓
 /global_planner_node   （A*）
@@ -1611,7 +1611,7 @@ MPC控制
 
 [swri-robotics/mapviz: Modular ROS visualization tool for 2D data.](https://github.com/swri-robotics/mapviz)
 
-```
+```text
 http://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.
 0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={level}&TIL
 EROW={x}&TILECOL={y}&tk=56127e90e994e759a9dbab1a1f3bfd5a
@@ -1621,20 +1621,20 @@ EROW={x}&TILECOL={y}&tk=56127e90e994e759a9dbab1a1f3bfd5a
 
 先看你的 ROS 版本：
 
-```
+```bash
 echo $ROS_DISTRO
 ```
 
 然后安装：
 
-```
+```bash
 sudo apt update
 sudo apt install ros-$ROS_DISTRO-mapviz ros-$ROS_DISTRO-mapviz-plugins ros-$ROS_DISTRO-tile-map ros-$ROS_DISTR
 ```
 
 ### 开启g90 maprviz
 
-```
+```bash
 roslaunch wheeltec_gps_driver mapviz_path.launch
 ```
 
@@ -1678,15 +1678,22 @@ RTCM30_GR（双星仪器使用）
 
 ### 4G DTU
 
+```text
 AT+NTRIP=addr,port,user,password,mount
+```
 
 (其中 addr 为 Ntrip 服务器地址，port 为端口号，user 与 password 是 CORS 账号和
 
 密码，mount 为挂载点。)
 
-如：AT+NTRIP=120.253.239.161,8002,<CORS_USER>,<CORS_PASSWORD>,AUTO
+例如：
 
-AT+NTRIP=120.253.239.161,8002,<CORS_USER>,<CORS_PASSWORD>,RTCM33_GRCE
+```text
+AT+NTRIP=120.253.239.161,8002,<CORS_USER>,<CORS_PASSWORD>,AUTO
+
+AT+NTRIP=120.253.239.161,8002,cndh87709,a8888783,RTCM33_GRCE
+
+```
 
 **按一下”shift+Enter”键后再点击发送，**发送成功后会返回【OK】然后保存参数
 
@@ -2207,7 +2214,7 @@ Orbbec 方案保留作为历史硬件调研：
 
 ### 环境配置与编译
 
-```
+```bash
 cd /home/p/lxw/lxwgdutcar_ai_ws
 source /opt/ros/humble/setup.bash
 export PATH=/usr/bin:/bin:$PATH
@@ -2224,7 +2231,7 @@ Qwen3-VL-4B-Instruct-AWQ-4bit：[Qwen3 VL 4B | Jetson AI Lab](https://www.jetson
 
 docker挂梯子
 
-```
+```bash
 sudo mkdir -p /etc/systemd/system/docker.service.d
 
 sudo tee /etc/systemd/system/docker.service.d/proxy.conf >/dev/null <<'EOF'
