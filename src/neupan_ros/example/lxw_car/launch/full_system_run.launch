@@ -235,6 +235,7 @@
 
     <!-- NeuPAN始终运行；本节点只选择哪路指令发给下位机。 -->
     <node pkg="robot_base_driver" type="control_mode_mux.py" name="control_mode_mux" output="screen">
+        <remap from="/cmd_vel/remote" to="/cmd_vel_remote" />
         <param name="mode_topic" value="/vehicle/control_mode" />
         <param name="auto_topic" value="/cmd_vel/auto" />
         <param name="remote_topic" value="/cmd_vel/remote" />

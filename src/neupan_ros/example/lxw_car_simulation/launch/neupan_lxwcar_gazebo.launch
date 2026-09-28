@@ -1,5 +1,5 @@
 <launch>
-    <arg name="world_name" default="$(find neupan_ros)/example/lxw_car_simulation/worlds/gazebo_world_complex_20.world"/>
+    <arg name="world_name" default="$(find neupan_ros)/example/lxw_car_simulation/worlds/lxw_car_obstacles.world"/>
     <arg name="paused" default="false"/>
     <arg name="gui" default="true"/>
     <arg name="rviz" default="true"/>
@@ -7,15 +7,17 @@
 
     <arg name="x" default="0.0"/>
     <arg name="y" default="0.0"/>
-    <arg name="z" default="0.05"/>
+    <arg name="z" default="0.0"/>
     <arg name="yaw" default="0.0"/>
 
     <arg name="config_file" default="$(find neupan_ros)/example/lxw_car_simulation/config/neupan_config_sim.yaml"/>
     <arg name="dune_checkpoint" default="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
     <arg name="refresh_initial_path" default="true"/>
     <arg name="rviz_config" default="$(find neupan_ros)/example/lxw_car_simulation/rviz/lxw_car_simulation.rviz"/>
+    <arg name="cad_visual" default="true"/>
     <arg name="publish_demo_goal" default="false"/>
-    <arg name="dynamic_obstacles" default="true"/>
+    <arg name="dynamic_obstacles" default="false"/>
+    <arg name="cmd_timeout" default="0.5"/>
     <arg name="rvo_goal_x_min" default="1.5"/>
     <arg name="rvo_goal_x_max" default="9.0"/>
     <arg name="rvo_goal_y_min" default="-4.0"/>
@@ -52,7 +54,7 @@
     </include>
 
     <param name="robot_description"
-           command="$(find xacro)/xacro $(find neupan_ros)/example/lxw_car_simulation/urdf/lxwcar.urdf.xacro"/>
+           command="$(find xacro)/xacro $(find neupan_ros)/example/lxw_car_simulation/urdf/lxwcar.urdf.xacro cad_visual:=$(arg cad_visual)"/>
 
     <node pkg="gazebo_ros" type="spawn_model" name="spawn_lxwcar" output="screen"
           args="-urdf -param robot_description -model lxwcar -x $(arg x) -y $(arg y) -z $(arg z) -Y $(arg yaw)"/>
@@ -66,11 +68,12 @@
         <param name="model_name" value="lxwcar"/>
         <param name="cmd_topic" value="/neupan_cmd_vel"/>
         <param name="odom_frame" value="odom"/>
-        <param name="base_frame" value="base_link"/>
+        <param name="base_frame" value="base_footprint"/>
         <param name="wheelbase" value="0.67"/>
         <param name="wheel_radius" value="0.1275"/>
         <param name="max_speed" value="1.5"/>
         <param name="max_steer" value="0.35"/>
+        <param name="cmd_timeout" value="$(arg cmd_timeout)"/>
         <param name="x" value="$(arg x)"/>
         <param name="y" value="$(arg y)"/>
         <param name="yaw" value="$(arg yaw)"/>
@@ -87,7 +90,7 @@
         <param name="scan_angle_range" value="-3.14 3.14"/>
         <param name="scan_self_filter" value="true"/>
         <param name="scan_self_filter_length" value="0.95"/>
-        <param name="scan_self_filter_width" value="0.60"/>
+        <param name="scan_self_filter_width" value="0.75"/>
         <param name="scan_self_filter_margin" value="0.05"/>
         <param name="marker_size" value="0.05"/>
         <param name="marker_z" value="0.3"/>

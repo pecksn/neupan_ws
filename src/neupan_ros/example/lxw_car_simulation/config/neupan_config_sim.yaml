@@ -13,7 +13,7 @@ robot:
   max_speed: [1.5, 0.35]
   max_acce: [0.8, 0.20]
   length: 0.95
-  width: 0.60
+  width: 0.75
 
 # initial path
 ipath:

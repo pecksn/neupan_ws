@@ -3,8 +3,8 @@ import math
 
 import rospy
 import tf
-from gazebo_msgs.msg import ModelState
-from gazebo_msgs.srv import GetModelProperties, SetModelState
+from gazebo_msgs.msg import ModelState, ModelStates
+from gazebo_msgs.srv import SetModelState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState
@@ -25,7 +25,8 @@ class AckermannSimDriver:
         self.max_speed = float(rospy.get_param("~max_speed", 1.0))
         self.max_steer = float(rospy.get_param("~max_steer", 0.35))
         self.update_rate = float(rospy.get_param("~update_rate", 50.0))
-        self.model_z = float(rospy.get_param("~model_z", 0.05))
+        self.cmd_timeout = max(0.0, float(rospy.get_param("~cmd_timeout", 0.5)))
+        self.model_z = float(rospy.get_param("~model_z", 0.0))
 
         self.x = float(rospy.get_param("~x", 0.0))
         self.y = float(rospy.get_param("~y", 0.0))
@@ -34,29 +35,43 @@ class AckermannSimDriver:
         self.steer = 0.0
         self.wheel_pos = 0.0
         self.last_time = rospy.Time.now()
+        self.last_cmd_time = None
 
         self.odom_pub = rospy.Publisher("/odom", Odometry, queue_size=10)
         self.joint_pub = rospy.Publisher("/joint_states", JointState, queue_size=10)
         self.tf_br = tf.TransformBroadcaster()
         self.set_model_state = rospy.ServiceProxy("/gazebo/set_model_state", SetModelState)
-        self.get_model_properties = rospy.ServiceProxy(
-            "/gazebo/get_model_properties", GetModelProperties
-        )
         self.gazebo_ready = False
         self.model_ready = False
 
         rospy.Subscriber(self.cmd_topic, Twist, self.cmd_callback, queue_size=1)
+        rospy.Subscriber("/gazebo/model_states", ModelStates, self.model_states_callback, queue_size=1)
+
+    def model_states_callback(self, msg):
+        self.model_ready = self.model_name in msg.name
 
     def cmd_callback(self, msg):
         self.v = clamp(msg.linear.x, -self.max_speed, self.max_speed)
         self.steer = clamp(msg.angular.z, -self.max_steer, self.max_steer)
+        self.last_cmd_time = rospy.Time.now()
 
     def step(self):
         now = rospy.Time.now()
         dt = (now - self.last_time).to_sec()
         if dt <= 0.0:
+            if dt < 0.0:
+                # Gazebo reset rewinds /clock; discard commands from the old run.
+                self.last_time = now
+                self.last_cmd_time = None
+                self.v = 0.0
+                self.steer = 0.0
             return
         self.last_time = now
+        if self.last_cmd_time is None or (
+            self.cmd_timeout > 0.0 and (now - self.last_cmd_time).to_sec() > self.cmd_timeout
+        ):
+            self.v = 0.0
+            self.steer = 0.0
 
         yaw_rate = 0.0
         if abs(self.wheelbase) > 1e-6:
@@ -117,23 +132,14 @@ class AckermannSimDriver:
         self.joint_pub.publish(msg)
 
     def publish_model_state(self, quat):
+        if not self.model_ready:
+            return
         try:
             if not self.gazebo_ready:
                 rospy.wait_for_service("/gazebo/set_model_state", timeout=0.1)
                 self.gazebo_ready = True
         except rospy.ROSException:
             return
-
-        if not self.model_ready:
-            try:
-                rospy.wait_for_service("/gazebo/get_model_properties", timeout=0.1)
-                props = self.get_model_properties(self.model_name)
-                if props.success:
-                    self.model_ready = True
-            except (rospy.ROSException, rospy.ServiceException):
-                return
-            if not self.model_ready:
-                return
 
         state = ModelState()
         state.model_name = self.model_name
@@ -145,7 +151,7 @@ class AckermannSimDriver:
         state.pose.orientation.y = quat[1]
         state.pose.orientation.z = quat[2]
         state.pose.orientation.w = quat[3]
-        state.twist.linear.x = self.v
+        # The pose is integrated here; a Gazebo velocity would move it a second time.
         try:
             self.set_model_state(state)
         except rospy.ServiceException:
@@ -156,7 +162,10 @@ class AckermannSimDriver:
         rate = rospy.Rate(self.update_rate)
         while not rospy.is_shutdown():
             self.step()
-            rate.sleep()
+            try:
+                rate.sleep()
+            except rospy.ROSInterruptException:
+                return
 
 
 if __name__ == "__main__":

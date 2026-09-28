@@ -19,6 +19,7 @@ required_topics:
   - /camera/remote_image_raw  # GPU 板发送、NUC 解码后的实时彩色画面
   - /camera/remote_camera_info
   - /hybridnets/result_json
+  - /hybridnets/debug_image
   - /hybridnets/valid
   - /tf
 
@@ -33,6 +34,7 @@ topics:
   - /camera/remote_image_raw
   - /camera/remote_camera_info
   - /hybridnets/result_json
+  - /hybridnets/debug_image
   - /hybridnets/valid
   - /hybridnets/inference_hz
   - /hybridnets/network_age_ms
@@ -45,7 +47,6 @@ topics:
   - /road_curb/status
   - /cmd_vel/selected
 
-# /hybridnets/debug_image is deliberately omitted because it duplicates the
-# received image and can greatly increase bag size. Recreate it during replay.
+# 同时录原视频和叠加图会增加写盘量；分包和磁盘剩余空间保护仍然生效。
 record_all: false
 exclude_regex: ""

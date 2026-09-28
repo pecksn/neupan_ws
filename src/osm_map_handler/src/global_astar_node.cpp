@@ -5,6 +5,8 @@
 #include <limits>
 #include <queue>
 #include <set>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -21,6 +23,7 @@
 #include <nav_msgs/Path.h>
 #include <ros/ros.h>
 #include <sensor_msgs/NavSatFix.h>
+#include <std_msgs/String.h>
 #include <visualization_msgs/Marker.h>
 
 namespace pt = boost::property_tree;
@@ -115,6 +118,7 @@ public:
         };
 
         path_pub_ = nh_.advertise<nav_msgs::Path>("/osm_global_path", 1, true);
+        path_ll_pub_ = nh_.advertise<std_msgs::String>("/osm_global_path_ll", 1, true);
         marker_pub_ = nh_.advertise<visualization_msgs::Marker>("/osm_vector_map", 1, true);
         subgoal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/hybrid_astar_subgoal", 1);
         initialpose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>("/initialpose", 1, true);
@@ -146,6 +150,7 @@ private:
     ros::NodeHandle nh_;
     ros::NodeHandle private_nh_;
     ros::Publisher path_pub_;
+    ros::Publisher path_ll_pub_;
     ros::Publisher marker_pub_;
     ros::Publisher subgoal_pub_;
     ros::Publisher initialpose_pub_;
@@ -1140,6 +1145,25 @@ private:
         return nav_path;
     }
 
+    std_msgs::String buildLatLonPathMessage(const std::vector<XYPoint>& path) const {
+        const double meters_per_degree = earth_radius_ * (M_PI / 180.0);
+        const double longitude_scale = meters_per_degree * std::cos(origin_lat_ * M_PI / 180.0);
+        std::ostringstream json;
+        json << std::fixed << std::setprecision(8) << "{\"points\":[";
+        for (size_t i = 0; i < path.size(); ++i) {
+            if (i != 0) {
+                json << ',';
+            }
+            const double latitude = origin_lat_ + path[i].y / meters_per_degree;
+            const double longitude = origin_lon_ + path[i].x / longitude_scale;
+            json << "{\"latitude\":" << latitude << ",\"longitude\":" << longitude << '}';
+        }
+        json << "]}";
+        std_msgs::String message;
+        message.data = json.str();
+        return message;
+    }
+
     bool prepareGoalRequest(const geometry_msgs::PoseStamped& goal) {
         if (!has_odom_ || nodes_.empty()) {
             std::vector<std::string> missing;
@@ -1238,6 +1262,7 @@ private:
         }
 
         path_pub_.publish(buildPathMessage(current_path_));
+        path_ll_pub_.publish(buildLatLonPathMessage(current_path_));
         publishPoseMarkers(true, current_path_.front());
         ROS_INFO(
             "Road path planned: graph=%zu points, tracking=%zu points, start snap %.2fm, goal snap %.2fm, right lane offset=%s",

@@ -3,7 +3,7 @@
   <!-- Parameters aligned with example/lxw_car/config/neupan_config_outdoor.yaml
        and robot_base_driver/launch/navigation_core.launch. -->
   <xacro:property name="body_length" value="0.95"/>
-  <xacro:property name="body_width" value="0.60"/>
+  <xacro:property name="body_width" value="0.75"/>
   <xacro:property name="body_height" value="0.22"/>
   <xacro:property name="body_mass" value="45.0"/>
   <xacro:property name="wheelbase" value="0.67"/>
@@ -17,6 +17,7 @@
   <xacro:property name="rear_axle_x" value="${-wheelbase / 2.0}"/>
   <xacro:property name="left_wheel_y" value="${track_width / 2.0}"/>
   <xacro:property name="right_wheel_y" value="${-track_width / 2.0}"/>
+  <xacro:arg name="cad_visual" default="true"/>
 
   <xacro:include filename="lxwcar.gazebo.xacro"/>
 
@@ -40,6 +41,20 @@
         iyz="0"
         izz="${body_mass * (body_length * body_length + body_width * body_width) / 12.0}"/>
     </inertial>
+    <xacro:if value="$(arg cad_visual)">
+      <visual>
+        <!-- STEP uses millimetres. The exported mesh bottom is 118.6 mm below CAD origin. -->
+        <origin xyz="-0.0035 0 0.1186" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://neupan_ros/example/lxw_car_simulation/meshes/lxwcar_cad.stl"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="lxw_cad_grey">
+          <color rgba="0.55 0.58 0.60 1"/>
+        </material>
+      </visual>
+    </xacro:if>
+    <xacro:unless value="$(arg cad_visual)">
     <visual>
       <origin xyz="0 0 ${wheel_radius + body_height / 2.0}" rpy="0 0 0"/>
       <geometry>
@@ -49,6 +64,7 @@
         <color rgba="0.0 0.55 0.28 1"/>
       </material>
     </visual>
+    </xacro:unless>
     <collision>
       <origin xyz="0 0 ${wheel_radius + body_height / 2.0}" rpy="0 0 0"/>
       <geometry>
@@ -64,6 +80,7 @@
         <mass value="2.0"/>
         <inertia ixx="0.018" ixy="0" ixz="0" iyy="0.018" iyz="0" izz="0.010"/>
       </inertial>
+      <xacro:unless value="$(arg cad_visual)">
       <visual>
         <origin xyz="0 0 0" rpy="1.5708 0 0"/>
         <geometry>
@@ -73,6 +90,7 @@
           <color rgba="0.02 0.02 0.02 1"/>
         </material>
       </visual>
+      </xacro:unless>
       <collision>
         <origin xyz="0 0 0" rpy="1.5708 0 0"/>
         <geometry>
@@ -89,6 +107,7 @@
         <mass value="0.5"/>
         <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
       </inertial>
+      <xacro:unless value="$(arg cad_visual)">
       <visual>
         <origin xyz="0 0 0.03" rpy="0 0 0"/>
         <geometry>
@@ -98,6 +117,7 @@
           <color rgba="0.35 0.35 0.35 1"/>
         </material>
       </visual>
+      </xacro:unless>
       <collision>
         <origin xyz="0 0 0.03" rpy="0 0 0"/>
         <geometry>
@@ -160,6 +180,7 @@
   </joint>
 
   <link name="livox_frame">
+    <xacro:unless value="$(arg cad_visual)">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
@@ -169,6 +190,7 @@
         <color rgba="0.08 0.20 0.75 1"/>
       </material>
     </visual>
+    </xacro:unless>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>

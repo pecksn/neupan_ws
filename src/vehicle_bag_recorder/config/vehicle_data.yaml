@@ -56,6 +56,7 @@ topics:
   # 规划、环境感知和控制（按实际用途增删）
   - /scan
   - /osm_global_path
+  - /osm_global_path_ll
   - /osm_global_path_curb_refined
   - /move_base_simple/goal
   - /neupan_goal
@@ -65,6 +66,7 @@ topics:
   - /road_curb/roi_cloud
   - /road_curb/candidate_cloud
   - /cmd_vel/auto
+  - /cmd_vel_remote
   - /cmd_vel/remote
   - /cmd_vel/selected
   - /global_path_tracker/status

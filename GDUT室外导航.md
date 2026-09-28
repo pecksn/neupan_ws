@@ -70,7 +70,7 @@ roslaunch neupan_ros outdoor_global_only_test.launch \
 roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
 ```
 
-该启动文件默认同时启动 GPU 板视频与 HybridNets JSON 接收，但不弹出叠加窗口。需要窗口时：
+该启动文件默认接收 GPU 板原视频和 HybridNets JSON，同时发布 `/hybridnets/debug_image`，但不弹出摄像头画面窗口。需要临时查看叠加画面时：
 
 ```bash
 roslaunch neupan_ros full_system_run.launch \
@@ -151,7 +151,7 @@ roslaunch vehicle_bag_recorder record.launch \
 
 ### 双板 HybridNets 专用录制
 
-GPU 板作为正式相机源时，使用专用配置，记录远程图像、内参、推理 JSON、有效状态、推理频率、网络时延、Livox/FAST-LIO 点云和 TF：
+GPU 板作为正式相机源时，使用专用配置，记录远程原视频、叠加调试图、内参、推理 JSON、有效状态、推理频率、网络时延、Livox/FAST-LIO 点云和 TF：
 
 ```bash
 roslaunch vehicle_bag_recorder record.launch \
@@ -182,9 +182,9 @@ rostopic echo /hybridnets/valid
 rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.bag
 ```
 
-确认 `/camera/remote_image_raw`、`/hybridnets/result_json`、`/cloud_registered_body` 均有非零消息数。配置中列有话题只代表准备录制，实际有无画面仍以 bag 的消息数为准。
+确认 `/camera/remote_image_raw`、`/hybridnets/debug_image`、`/hybridnets/result_json`、`/cloud_registered_body` 均有非零消息数。配置中列有话题只代表准备录制，实际有无画面仍以 bag 的消息数为准。
 
-`/hybridnets/debug_image` 是可以回放重建的重复图像，专用配置有意不记录它，以减少磁盘占用。NUC 本地相机独立调试时才使用默认 `vehicle_data.yaml` 中的 `/camera/image_raw` 和 `/camera/camera_info`，两类相机话题不要混写。
+叠加调试图与原视频一起录制会明显增加 bag 大小；当前仍按 2048 MB 分包，并在磁盘剩余空间低于 8 GB 时停止。NUC 本地相机独立调试时才使用默认 `vehicle_data.yaml` 中的 `/camera/image_raw` 和 `/camera/camera_info`，两类相机话题不要混写。
 
 ## 1.4 Rosbag 离线路缘测试
 
@@ -2021,6 +2021,22 @@ ros2 launch usb_camera hybridnets_stream.launch.py \
   bitrate:=8000000
 ```
 
+没有接入实时摄像头、只测试双板接收时，可在 GPU 板用已有 MP4 回放推送。先进入同一 ROS2 工作区，再执行：
+
+```bash
+cd /home/p/lxw/lxwgdutcar_ai_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch usb_camera hybridnets_video_replay.launch.py \
+  video_path:=/home/p/lxw/lxwgdutcar_ai_ws/video/hybridnets_rosbag/inference_input_rosbag20260921_153216/rosbag20260921_153216_camera.mp4 \
+  target_ip:=192.168.10.21 \
+  video_port:=5000 \
+  result_port:=6000 \
+  playback_rate:=1.0
+```
+
+实时相机启动和 MP4 回放是两种发送方式，只启动其中一种；NUC 仍使用同一个接收器。回放画面不对应 NUC 当前实时雷达点云，因此只能用于视频与 JSON 接收联调，不能拿这次录包验证相机—雷达时间同步或道路融合。
+
 GPU 板本机检查：
 
 ```bash
@@ -2031,7 +2047,7 @@ ros2 topic hz /hybridnets/drivable_mask
 
 GPU 板本地需要查看模型叠加图时，退出 Conda 后运行 `rqt_image_view`，选择 `/hybridnets/overlay`；`/hybridnets/drivable_mask` 是黑白掩膜，`/camera/image_raw` 是旋转 180° 后的原始画面。
 
-NUC 的 `/hybridnets/debug_image` 用半透明绿色显示可行驶区域、紫色和黄色显示左右道路边界；不绘制车道线，因为园区部分路段没有车道标线。左右边界来自 JSON 的 `left_boundary_px`、`right_boundary_px`，原始 JSON 保持不变。
+按需开启的 `/hybridnets/debug_image` 是 NUC 把 JSON 结果画到原视频上生成的调试图：半透明绿色显示可行驶区域，紫色和黄色显示左右道路边界；不绘制车道线。它不是 GPU 板发送的另一条视频，也不是供 NeuPAN 使用的推理结果。NeuPAN 目前尚未订阅 `/hybridnets/result_json`，要用于靠右行驶还需完成米制边界融合与路径接入。
 
 当前 JSON 坐标属于 `rotated_image_pixels`：分辨率为 `1920×1080`，左上角为原点，`u/x` 向右、`v/y` 向下。主要字段包括：
 
@@ -2090,7 +2106,7 @@ Neupan
 roslaunch hybridnets_receiver receiver.launch show_overlay:=true
 ```
 
-无桌面或不弹窗：
+单独运行接收器时默认只接收原视频和 JSON，不生成 `/hybridnets/debug_image`：
 
 ```bash
 roslaunch hybridnets_receiver receiver.launch show_overlay:=false
@@ -2110,8 +2126,9 @@ rostopic echo /hybridnets/valid
 rostopic echo /hybridnets/inference_hz
 rostopic echo /hybridnets/network_age_ms
 rostopic echo -n 1 /hybridnets/result_json
-rqt_image_view /hybridnets/debug_image
 ```
+
+NeuPAN 全系统默认发布 `/hybridnets/debug_image`，但不弹窗，可手动执行 `rqt_image_view /hybridnets/debug_image` 查看。单独运行 `receiver.launch` 时需设置 `start_overlay:=true` 才会发布该话题；设置 `show_overlay:=true` 则会同时自动弹窗。
 
 主要 ROS1 输出：
 

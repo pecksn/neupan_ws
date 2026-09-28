@@ -1,11 +1,13 @@
 <launch>
-    <arg name="world_name" default="$(find neupan_ros)/example/lxw_car_simulation/worlds/gazebo_world_complex_20.world"/>
+    <arg name="world_name" default="$(find neupan_ros)/example/lxw_car_simulation/worlds/lxw_car_obstacles.world"/>
     <arg name="paused" default="false"/>
     <arg name="gui" default="true"/>
     <arg name="rviz" default="true"/>
     <arg name="use_sim_time" default="true"/>
     <arg name="publish_demo_goal" default="false"/>
-    <arg name="dynamic_obstacles" default="true"/>
+    <arg name="dynamic_obstacles" default="false"/>
+    <arg name="cmd_timeout" default="0.5"/>
+    <arg name="cad_visual" default="true"/>
     <arg name="rvo_goal_x_min" default="2.5"/>
     <arg name="rvo_goal_x_max" default="7.5"/>
     <arg name="rvo_goal_y_min" default="-2.5"/>
@@ -19,6 +21,8 @@
         <arg name="use_sim_time" value="$(arg use_sim_time)"/>
         <arg name="publish_demo_goal" value="$(arg publish_demo_goal)"/>
         <arg name="dynamic_obstacles" value="$(arg dynamic_obstacles)"/>
+        <arg name="cmd_timeout" value="$(arg cmd_timeout)"/>
+        <arg name="cad_visual" value="$(arg cad_visual)"/>
         <arg name="rvo_goal_x_min" value="$(arg rvo_goal_x_min)"/>
         <arg name="rvo_goal_x_max" value="$(arg rvo_goal_x_max)"/>
         <arg name="rvo_goal_y_min" value="$(arg rvo_goal_y_min)"/>
