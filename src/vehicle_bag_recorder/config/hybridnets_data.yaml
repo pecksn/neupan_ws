@@ -40,6 +40,9 @@ topics:
   - /hybridnets/network_age_ms
   - /hybridnets/frame_seq
   - /hybridnets/confidence
+  - /hybridnets/left_boundary_valid
+  - /hybridnets/right_boundary_valid
+  - /hybridnets/intersection
   - /hybridnets/capture_header
   - /odom
   - /gps/fix

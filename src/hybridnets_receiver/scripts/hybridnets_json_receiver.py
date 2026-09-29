@@ -17,8 +17,10 @@ REQUIRED = (
 POINT_FIELDS = ("road_polygon_px", "left_boundary_px", "right_boundary_px")
 CONTROL_FIELDS = (
     "version", "frame_seq", "publish_timestamp_ns", "coordinate_space",
-    "confidence", "source_age_ms",
+    "confidence", "source_age_ms", "scene_type", "road_polygon_valid",
+    "left_boundary_valid", "right_boundary_valid",
 )
+SCENE_TYPES = ("normal", "intersection", "open_area", "unknown")
 
 
 class HybridNetsJsonReceiver:
@@ -36,9 +38,18 @@ class HybridNetsJsonReceiver:
         self.coordinate_space = rospy.get_param(
             "~coordinate_space", "rotated_image_pixels")
         self.min_right_points = int(rospy.get_param(
-            "~min_right_boundary_points", 8))
+            "~min_right_boundary_points", 3))
+        self.min_left_points = int(rospy.get_param(
+            "~min_left_boundary_points", 3))
+        self.min_road_polygon_points = int(rospy.get_param(
+            "~min_road_polygon_points", 3))
+        self.min_control_confidence = float(rospy.get_param(
+            "~min_control_confidence", 0.65))
+        self.confirm_valid_frames = int(rospy.get_param(
+            "~confirm_valid_frames", 3))
         self.last_receive = None
         self.last_frame_seq = None
+        self.valid_streak = 0
         self.last_sender = ""
         self.last_reason = "waiting_for_packet"
 
@@ -60,6 +71,12 @@ class HybridNetsJsonReceiver:
         self.frame_seq_pub = rospy.Publisher(
             rospy.get_param("~frame_seq_topic", "/hybridnets/frame_seq"),
             UInt64, queue_size=1)
+        self.left_valid_pub = rospy.Publisher(
+            "/hybridnets/left_boundary_valid", Bool, queue_size=1)
+        self.right_valid_pub = rospy.Publisher(
+            "/hybridnets/right_boundary_valid", Bool, queue_size=1)
+        self.intersection_pub = rospy.Publisher(
+            "/hybridnets/intersection", Bool, queue_size=1)
         self.header_pub = rospy.Publisher(
             rospy.get_param("~capture_header_topic", "/hybridnets/capture_header"),
             Header, queue_size=1)
@@ -93,15 +110,20 @@ class HybridNetsJsonReceiver:
         if missing:
             if self.require_control_fields:
                 raise ValueError("control fields are missing: %s" % ",".join(missing))
-            return None, 0.0
+            return (None, 0.0, "normal", bool(result["road_polygon_px"]),
+                    bool(result["left_boundary_px"]), bool(result["right_boundary_px"]))
 
         version = result["version"]
         frame_seq = result["frame_seq"]
         confidence = result["confidence"]
         publish = result["publish_timestamp_ns"]
         source_age = result["source_age_ms"]
-        if not isinstance(version, int) or isinstance(version, bool) or version < 2:
-            raise ValueError("version must be an integer >= 2")
+        scene_type = result["scene_type"]
+        road_valid = result["road_polygon_valid"]
+        left_valid = result["left_boundary_valid"]
+        right_valid = result["right_boundary_valid"]
+        if not isinstance(version, int) or isinstance(version, bool) or version < 3:
+            raise ValueError("version must be an integer >= 3")
         if not isinstance(frame_seq, int) or isinstance(frame_seq, bool) or frame_seq < 0:
             raise ValueError("frame_seq must be a non-negative integer")
         if (not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or
@@ -115,14 +137,29 @@ class HybridNetsJsonReceiver:
             raise ValueError("source_age_ms must be finite and non-negative")
         if result["coordinate_space"] != self.coordinate_space:
             raise ValueError("unexpected coordinate_space")
+        if scene_type not in SCENE_TYPES:
+            raise ValueError("unexpected scene_type")
+        if not all(isinstance(value, bool) for value in
+                   (road_valid, left_valid, right_valid)):
+            raise ValueError("boundary validity fields must be JSON booleans")
         for name in ("inference_ms", "inference_hz"):
             value = result.get(name, 0.0)
             if (not isinstance(value, (int, float)) or isinstance(value, bool) or
                     not math.isfinite(value) or value < 0.0):
                 raise ValueError("%s must be finite and non-negative" % name)
-        if bool(result["valid"]) and len(result["right_boundary_px"]) < self.min_right_points:
-            raise ValueError("valid result has too few right-boundary points")
-        return frame_seq, float(confidence)
+        if result["valid"]:
+            if not road_valid or len(result["road_polygon_px"]) < self.min_road_polygon_points:
+                raise ValueError("valid result has too few road-polygon points")
+            if left_valid and len(result["left_boundary_px"]) < self.min_left_points:
+                raise ValueError("valid result has too few left-boundary points")
+            if right_valid and len(result["right_boundary_px"]) < self.min_right_points:
+                raise ValueError("valid result has too few right-boundary points")
+            if scene_type == "normal" and not (left_valid or right_valid):
+                raise ValueError("normal scene has no valid road boundary")
+            if scene_type == "unknown":
+                raise ValueError("unknown scene cannot be valid")
+        return (frame_seq, float(confidence), scene_type, road_valid,
+                left_valid, right_valid)
 
     def receive_once(self):
         try:
@@ -164,7 +201,8 @@ class HybridNetsJsonReceiver:
                                  0.0 <= point[1] < self.height)):
                         raise ValueError("lane_lines_px contains an invalid pixel")
 
-            frame_seq, confidence = self.validate_control_fields(result)
+            (frame_seq, confidence, scene_type, road_valid,
+             left_valid, right_valid) = self.validate_control_fields(result)
 
             now = rospy.Time.now()
             if (self.last_receive is None or
@@ -177,8 +215,14 @@ class HybridNetsJsonReceiver:
             effective_age = max(source_age, age_ms) if clocks_comparable else source_age
             sequence_ok = (frame_seq is None or self.last_frame_seq is None or
                            frame_seq > self.last_frame_seq)
-            packet_valid = (result["valid"] and sequence_ok and
-                            effective_age <= self.max_source_age_ms)
+            confidence_ok = (not self.require_control_fields or
+                             confidence >= self.min_control_confidence)
+            candidate_valid = (result["valid"] and sequence_ok and confidence_ok and
+                               effective_age <= self.max_source_age_ms)
+            self.valid_streak = self.valid_streak + 1 if candidate_valid else 0
+            confirmed = (not self.require_control_fields or
+                         self.valid_streak >= self.confirm_valid_frames)
+            packet_valid = candidate_valid and confirmed
 
             self.last_receive = now
             if frame_seq is not None and sequence_ok:
@@ -186,8 +230,12 @@ class HybridNetsJsonReceiver:
             self.last_sender = "%s:%d" % sender
             if packet_valid:
                 self.last_reason = "ok"
+            elif candidate_valid:
+                self.last_reason = "confirming_valid_frames"
             elif not sequence_ok:
                 self.last_reason = "out_of_order_frame"
+            elif not confidence_ok:
+                self.last_reason = "low_confidence"
             else:
                 self.last_reason = "invalid_or_stale_result"
             normalized = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
@@ -196,12 +244,16 @@ class HybridNetsJsonReceiver:
             self.hz_pub.publish(float(result.get("inference_hz", 0.0)))
             self.age_pub.publish(float(effective_age))
             self.confidence_pub.publish(confidence)
+            self.left_valid_pub.publish(left_valid)
+            self.right_valid_pub.publish(right_valid)
+            self.intersection_pub.publish(scene_type == "intersection")
             if frame_seq is not None:
                 self.frame_seq_pub.publish(frame_seq)
             header = Header(stamp=rospy.Time.from_sec(capture / 1.0e9),
                             frame_id=str(result.get("frame_id", "camera_optical_frame")))
             self.header_pub.publish(header)
         except (UnicodeDecodeError, ValueError, TypeError, OverflowError) as error:
+            self.valid_streak = 0
             self.last_reason = "bad_packet"
             self.valid_pub.publish(False)
             rospy.logwarn_throttle(2.0, "Rejected HybridNets packet: %s", error)
@@ -210,6 +262,7 @@ class HybridNetsJsonReceiver:
         now = rospy.Time.now()
         timed_out = self.last_receive is None or (now - self.last_receive).to_sec() > self.timeout
         if timed_out:
+            self.valid_streak = 0
             self.valid_pub.publish(False)
             self.last_reason = "network_timeout" if self.last_receive else "waiting_for_packet"
         diagnostic = DiagnosticStatus()
