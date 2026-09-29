@@ -154,8 +154,6 @@ class HybridNetsJsonReceiver:
                 raise ValueError("valid result has too few left-boundary points")
             if right_valid and len(result["right_boundary_px"]) < self.min_right_points:
                 raise ValueError("valid result has too few right-boundary points")
-            if scene_type == "normal" and not (left_valid or right_valid):
-                raise ValueError("normal scene has no valid road boundary")
             if scene_type == "unknown":
                 raise ValueError("unknown scene cannot be valid")
         return (frame_seq, float(confidence), scene_type, road_valid,

@@ -112,8 +112,11 @@ class HybridNetsOverlay:
             points = self.points(result.get(key))
             if points is not None:
                 cv2.polylines(image, [points], False, color, 4)
-        text = "HybridNets valid=%s sync=%+.0fms" % (
-            bool(result.get("valid", False)), sync_error * 1000.0)
+        text = "HybridNets valid=%s scene=%s L=%d R=%d sync=%+.0fms" % (
+            bool(result.get("valid", False)), result.get("scene_type", "legacy"),
+            int(bool(result.get("left_boundary_valid", result.get("left_boundary_px")))),
+            int(bool(result.get("right_boundary_valid", result.get("right_boundary_px")))),
+            sync_error * 1000.0)
         color = (0, 255, 0) if result.get("valid", False) else (0, 0, 255)
         cv2.putText(image, text, (25, 45), cv2.FONT_HERSHEY_SIMPLEX,
                     1.0, color, 2, cv2.LINE_AA)
