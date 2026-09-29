@@ -164,8 +164,8 @@
         <arg name="lio_guard_max_yaw_rate_deg" value="$(arg lio_guard_max_yaw_rate_deg)" />
         <arg name="lio_guard_max_sample_gap" value="$(arg lio_guard_max_sample_gap)" />
         <arg name="lio_guard_recovery_stable_sec" value="$(arg lio_guard_recovery_stable_sec)" />
-        <arg name="enable_localization_safety_stop" value="$(arg outdoor_mode)" unless="$(arg use_global_ekf)" />
-        <arg name="enable_localization_safety_stop" value="false" if="$(arg use_global_ekf)" />
+        <!-- 自动模式的定位保护由 control_mode_mux 负责，底盘只接收选定速度。 -->
+        <arg name="enable_localization_safety_stop" value="false" />
         <arg name="publish_static_map_odom_outdoor" value="false" if="$(arg align_map_odom_with_global_local)" />
         <arg name="publish_static_map_odom_outdoor" value="true" unless="$(arg align_map_odom_with_global_local)" />
         <!-- 本launch内部自行管理 amcl/static_map_odom，防止和底层冲突 -->
@@ -244,6 +244,9 @@
         <param name="default_mode" value="$(arg default_control_mode)" />
         <param name="auto_timeout" value="$(arg auto_command_timeout)" />
         <param name="remote_timeout" value="$(arg remote_command_timeout)" />
+        <param name="safety_topic" value="/localization_safe" />
+        <param name="enable_auto_localization_safety_stop" value="$(arg outdoor_mode)" unless="$(arg use_global_ekf)" />
+        <param name="enable_auto_localization_safety_stop" value="false" if="$(arg use_global_ekf)" />
     </node>
 
     <!-- 仅用于RViz显示：将点云投影到 map 坐标，便于和室外全局标记对齐观察 -->

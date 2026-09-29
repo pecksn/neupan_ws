@@ -3,7 +3,7 @@ import json
 
 import rospy
 from geometry_msgs.msg import Twist
-from std_msgs.msg import String, UInt8
+from std_msgs.msg import Bool, String, UInt8
 
 
 class ControlModeMux:
@@ -18,6 +18,11 @@ class ControlModeMux:
         self.remote_topic = rospy.get_param("~remote_topic", "/cmd_vel/remote")
         self.output_topic = rospy.get_param("~output_topic", "/cmd_vel/selected")
         self.status_topic = rospy.get_param("~status_topic", "/vehicle/control_mode/status")
+        self.safety_topic = rospy.get_param("~safety_topic", "/localization_safe")
+        self.enable_auto_localization_safety_stop = bool(
+            rospy.get_param("~enable_auto_localization_safety_stop", False)
+        )
+        self.localization_safe = not self.enable_auto_localization_safety_stop
         self.publish_rate = max(1.0, float(rospy.get_param("~publish_rate", 20.0)))
         self.auto_timeout = max(0.05, float(rospy.get_param("~auto_timeout", 0.5)))
         self.remote_timeout = max(0.05, float(rospy.get_param("~remote_timeout", 0.5)))
@@ -37,6 +42,8 @@ class ControlModeMux:
         rospy.Subscriber(self.mode_topic, UInt8, self.mode_callback, queue_size=10)
         rospy.Subscriber(self.auto_topic, Twist, self.auto_callback, queue_size=10)
         rospy.Subscriber(self.remote_topic, Twist, self.remote_callback, queue_size=10)
+        if self.enable_auto_localization_safety_stop:
+            rospy.Subscriber(self.safety_topic, Bool, self.localization_safety_callback, queue_size=10)
         rospy.Timer(rospy.Duration(1.0 / self.publish_rate), self.timer_callback)
         self.publish_status("starting")
 
@@ -64,8 +71,17 @@ class ControlModeMux:
         self.last_remote = msg
         self.last_remote_time = rospy.Time.now()
 
+    def localization_safety_callback(self, msg):
+        was_safe = self.localization_safe
+        self.localization_safe = bool(msg.data)
+        if was_safe and not self.localization_safe and self.mode == self.AUTO:
+            self.output_pub.publish(Twist())
+            self.publish_status("localization_unsafe")
+
     def selected_command(self, now):
         if self.mode == self.AUTO:
+            if self.enable_auto_localization_safety_stop and not self.localization_safe:
+                return Twist(), "localization_unsafe"
             if self.last_auto is None or (now - self.last_auto_time).to_sec() > self.auto_timeout:
                 return Twist(), "auto_timeout"
             return self.last_auto, "auto_active"
