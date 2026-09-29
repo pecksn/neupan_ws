@@ -13,6 +13,7 @@
     <arg name="enable_hybridnets_receiver" default="true" doc="随全系统启动GPU板HybridNets视频与JSON接收"/>
     <arg name="show_hybridnets_overlay" default="false" doc="是否弹出HybridNets结果叠加窗口"/>
     <arg name="hybridnets_receiver_config" default="$(find hybridnets_receiver)/config/receiver.yaml" />
+    <arg name="hybridnets_require_control_fields" default="false" doc="GPU升级为右边界v2 JSON后设为true" />
     <arg name="lidar_curb_log_dir" default="/home/nuc/lxw/neupan_ws/tracker_logs" />
     <arg name="lidar_curb_desired_clearance_m" default="0.55" />
     <arg name="lidar_curb_refined_path_topic" default="/osm_global_path_curb_refined" />
@@ -479,6 +480,7 @@
         <arg name="start_video" value="true" />
         <arg name="start_overlay" value="true" />
         <arg name="show_overlay" value="$(arg show_hybridnets_overlay)" />
+        <arg name="require_control_fields" value="$(arg hybridnets_require_control_fields)" />
     </include>
 
     <!-- ==================== 6. 数据可视化 ==================== -->

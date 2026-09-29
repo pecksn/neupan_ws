@@ -38,6 +38,8 @@ topics:
   - /hybridnets/valid
   - /hybridnets/inference_hz
   - /hybridnets/network_age_ms
+  - /hybridnets/frame_seq
+  - /hybridnets/confidence
   - /hybridnets/capture_header
   - /odom
   - /gps/fix

@@ -5,6 +5,14 @@
   <arg name="start_video" default="true" />
   <arg name="show_overlay" default="false" />
   <arg name="start_overlay" default="$(arg show_overlay)" />
+  <arg name="record_debug_mp4" default="false" />
+  <arg name="debug_mp4_output_dir" default="/home/nuc/lxw/neupan_ws/videos/hybridnets_debug" />
+  <arg name="debug_mp4_fps" default="20.0" />
+  <arg name="debug_mp4_idle_timeout_sec" default="3.0" />
+  <arg name="overlay_image_buffer_sec" default="2.0" />
+  <arg name="overlay_video_delay_sec" default="0.10" />
+  <arg name="overlay_sync_tolerance_sec" default="0.25" />
+  <arg name="require_control_fields" default="false" />
 
   <arg name="virtual_video_device" default="/dev/video0" />
   <arg name="virtual_video_fps" default="30" />
@@ -31,6 +39,7 @@
         name="hybridnets_json_receiver"
         output="screen">
     <rosparam command="load" file="$(arg config)" />
+    <param name="require_control_fields" value="$(arg require_control_fields)" />
   </node>
 
   <!-- 仅在需要调试叠加图时处理完整分辨率图像 -->
@@ -41,6 +50,9 @@
         output="screen">
     <rosparam command="load" file="$(arg config)" />
     <param name="max_age" value="0.8" />
+    <param name="image_buffer_sec" value="$(arg overlay_image_buffer_sec)" />
+    <param name="video_delay_sec" value="$(arg overlay_video_delay_sec)" />
+    <param name="sync_tolerance_sec" value="$(arg overlay_sync_tolerance_sec)" />
     <param name="debug_image_topic" value="/hybridnets/debug_image" />
   </node>
 
@@ -50,5 +62,17 @@
         name="hybridnets_debug_view"
         output="screen">
     <remap from="image" to="/hybridnets/debug_image" />
+  </node>
+
+  <node if="$(arg record_debug_mp4)"
+        pkg="hybridnets_receiver"
+        type="debug_mp4_recorder.py"
+        name="hybridnets_debug_mp4_recorder"
+        launch-prefix="/usr/bin/python3"
+        output="screen">
+    <param name="image_topic" value="/hybridnets/debug_image" />
+    <param name="output_directory" value="$(arg debug_mp4_output_dir)" />
+    <param name="fps" value="$(arg debug_mp4_fps)" />
+    <param name="idle_timeout_sec" value="$(arg debug_mp4_idle_timeout_sec)" />
   </node>
 </launch>

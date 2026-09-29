@@ -7,7 +7,7 @@ import socket
 
 import rospy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-from std_msgs.msg import Bool, Float32, Header, String
+from std_msgs.msg import Bool, Float32, Header, String, UInt64
 
 
 REQUIRED = (
@@ -15,6 +15,10 @@ REQUIRED = (
     "road_polygon_px", "left_boundary_px", "right_boundary_px",
 )
 POINT_FIELDS = ("road_polygon_px", "left_boundary_px", "right_boundary_px")
+CONTROL_FIELDS = (
+    "version", "frame_seq", "publish_timestamp_ns", "coordinate_space",
+    "confidence", "source_age_ms",
+)
 
 
 class HybridNetsJsonReceiver:
@@ -27,7 +31,14 @@ class HybridNetsJsonReceiver:
         self.max_points = int(rospy.get_param("~max_polygon_points", 20000))
         self.width = int(rospy.get_param("~image_width", 1920))
         self.height = int(rospy.get_param("~image_height", 1080))
+        self.require_control_fields = bool(rospy.get_param(
+            "~require_control_fields", False))
+        self.coordinate_space = rospy.get_param(
+            "~coordinate_space", "rotated_image_pixels")
+        self.min_right_points = int(rospy.get_param(
+            "~min_right_boundary_points", 8))
         self.last_receive = None
+        self.last_frame_seq = None
         self.last_sender = ""
         self.last_reason = "waiting_for_packet"
 
@@ -43,6 +54,12 @@ class HybridNetsJsonReceiver:
         self.age_pub = rospy.Publisher(
             rospy.get_param("~network_age_topic", "/hybridnets/network_age_ms"),
             Float32, queue_size=1)
+        self.confidence_pub = rospy.Publisher(
+            rospy.get_param("~confidence_topic", "/hybridnets/confidence"),
+            Float32, queue_size=1)
+        self.frame_seq_pub = rospy.Publisher(
+            rospy.get_param("~frame_seq_topic", "/hybridnets/frame_seq"),
+            UInt64, queue_size=1)
         self.header_pub = rospy.Publisher(
             rospy.get_param("~capture_header_topic", "/hybridnets/capture_header"),
             Header, queue_size=1)
@@ -63,9 +80,49 @@ class HybridNetsJsonReceiver:
             raise ValueError("%s is not a valid bounded list" % name)
         for point in points:
             if (not isinstance(point, (list, tuple)) or len(point) != 2 or
-                    not all(isinstance(v, (int, float)) and math.isfinite(v)
+                    not all(isinstance(v, (int, float)) and not isinstance(v, bool) and
+                            math.isfinite(v)
                             for v in point)):
                 raise ValueError("%s contains an invalid pixel" % name)
+            if not (0.0 <= point[0] < self.width and
+                    0.0 <= point[1] < self.height):
+                raise ValueError("%s contains an out-of-range pixel" % name)
+
+    def validate_control_fields(self, result):
+        missing = [name for name in CONTROL_FIELDS if name not in result]
+        if missing:
+            if self.require_control_fields:
+                raise ValueError("control fields are missing: %s" % ",".join(missing))
+            return None, 0.0
+
+        version = result["version"]
+        frame_seq = result["frame_seq"]
+        confidence = result["confidence"]
+        publish = result["publish_timestamp_ns"]
+        source_age = result["source_age_ms"]
+        if not isinstance(version, int) or isinstance(version, bool) or version < 2:
+            raise ValueError("version must be an integer >= 2")
+        if not isinstance(frame_seq, int) or isinstance(frame_seq, bool) or frame_seq < 0:
+            raise ValueError("frame_seq must be a non-negative integer")
+        if (not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or
+                not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0):
+            raise ValueError("confidence must be in [0, 1]")
+        if (not isinstance(publish, int) or isinstance(publish, bool) or
+                publish < int(result["capture_timestamp_ns"])):
+            raise ValueError("publish_timestamp_ns precedes capture_timestamp_ns")
+        if (not isinstance(source_age, (int, float)) or isinstance(source_age, bool) or
+                not math.isfinite(source_age) or source_age < 0.0):
+            raise ValueError("source_age_ms must be finite and non-negative")
+        if result["coordinate_space"] != self.coordinate_space:
+            raise ValueError("unexpected coordinate_space")
+        for name in ("inference_ms", "inference_hz"):
+            value = result.get(name, 0.0)
+            if (not isinstance(value, (int, float)) or isinstance(value, bool) or
+                    not math.isfinite(value) or value < 0.0):
+                raise ValueError("%s must be finite and non-negative" % name)
+        if bool(result["valid"]) and len(result["right_boundary_px"]) < self.min_right_points:
+            raise ValueError("valid result has too few right-boundary points")
+        return frame_seq, float(confidence)
 
     def receive_once(self):
         try:
@@ -79,7 +136,14 @@ class HybridNetsJsonReceiver:
             result = json.loads(raw.decode("utf-8"))
             if not isinstance(result, dict) or not all(key in result for key in REQUIRED):
                 raise ValueError("required fields are missing")
-            if int(result["image_width"]) != self.width or int(result["image_height"]) != self.height:
+            if not isinstance(result["valid"], bool):
+                raise ValueError("valid must be a JSON boolean")
+            if (not isinstance(result["capture_timestamp_ns"], int) or
+                    isinstance(result["capture_timestamp_ns"], bool) or
+                    result["capture_timestamp_ns"] <= 0):
+                raise ValueError("capture_timestamp_ns must be a positive integer")
+            if (result["image_width"] != self.width or
+                    result["image_height"] != self.height):
                 raise ValueError("result resolution does not match camera calibration")
             for name in POINT_FIELDS:
                 self.validate_points(result, name)
@@ -88,23 +152,52 @@ class HybridNetsJsonReceiver:
                 raise ValueError("lane_lines_px is not a list")
             if sum(len(line) for line in lane_lines if isinstance(line, list)) > self.max_points:
                 raise ValueError("lane_lines_px is too large")
+            for line in lane_lines:
+                if not isinstance(line, list):
+                        raise ValueError("lane_lines_px contains a non-list line")
+                for point in line:
+                    if (not isinstance(point, (list, tuple)) or len(point) != 2 or
+                            not all(isinstance(v, (int, float)) and
+                                    not isinstance(v, bool) and math.isfinite(v)
+                                    for v in point) or
+                            not (0.0 <= point[0] < self.width and
+                                 0.0 <= point[1] < self.height)):
+                        raise ValueError("lane_lines_px contains an invalid pixel")
+
+            frame_seq, confidence = self.validate_control_fields(result)
 
             now = rospy.Time.now()
+            if (self.last_receive is None or
+                    (now - self.last_receive).to_sec() > self.timeout):
+                self.last_frame_seq = None
             capture = int(result["capture_timestamp_ns"])
             age_ms = (now.to_nsec() - capture) / 1.0e6
             clocks_comparable = -1000.0 <= age_ms <= 60000.0
             source_age = float(result.get("source_age_ms", 0.0))
             effective_age = max(source_age, age_ms) if clocks_comparable else source_age
-            packet_valid = bool(result["valid"]) and effective_age <= self.max_source_age_ms
+            sequence_ok = (frame_seq is None or self.last_frame_seq is None or
+                           frame_seq > self.last_frame_seq)
+            packet_valid = (result["valid"] and sequence_ok and
+                            effective_age <= self.max_source_age_ms)
 
             self.last_receive = now
+            if frame_seq is not None and sequence_ok:
+                self.last_frame_seq = frame_seq
             self.last_sender = "%s:%d" % sender
-            self.last_reason = "ok" if packet_valid else "invalid_or_stale_result"
+            if packet_valid:
+                self.last_reason = "ok"
+            elif not sequence_ok:
+                self.last_reason = "out_of_order_frame"
+            else:
+                self.last_reason = "invalid_or_stale_result"
             normalized = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
             self.json_pub.publish(normalized)
             self.valid_pub.publish(packet_valid)
             self.hz_pub.publish(float(result.get("inference_hz", 0.0)))
             self.age_pub.publish(float(effective_age))
+            self.confidence_pub.publish(confidence)
+            if frame_seq is not None:
+                self.frame_seq_pub.publish(frame_seq)
             header = Header(stamp=rospy.Time.from_sec(capture / 1.0e9),
                             frame_id=str(result.get("frame_id", "camera_optical_frame")))
             self.header_pub.publish(header)

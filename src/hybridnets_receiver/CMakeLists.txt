@@ -13,6 +13,7 @@ catkin_package()
 catkin_install_python(PROGRAMS
   scripts/hybridnets_json_receiver.py
   scripts/hybridnets_overlay.py
+  scripts/debug_mp4_recorder.py
   scripts/rtp_camera_receiver.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

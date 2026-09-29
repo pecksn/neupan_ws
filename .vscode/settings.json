@@ -1,7 +1,43 @@
 {
-    "chat.tools.terminal.autoApprove": {
-        "cat": true,
-        "ls": true
-    },
-    "cmake.sourceDirectory": "/home/nuc/lxw/neupan_ws/src/FAST_LIO"
+  "chat.tools.terminal.autoApprove": {
+    "cat": true,
+    "ls": true
+  },
+  "cmake.sourceDirectory": "/home/nuc/lxw/neupan_ws/src/FAST_LIO",
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/devel/**": true,
+    "**/build_isolated/**": true,
+    "**/devel_isolated/**": true,
+    "**/rosbags/**": true,
+    "**/calibration_data/**": true,
+    "**/tracker_logs/**": true,
+    "**/videos/**": true,
+    "**/src/models/**": true,
+    "**/.codegraph/**": true
+  },
+  "search.exclude": {
+    "**/build/**": true,
+    "**/devel/**": true,
+    "**/build_isolated/**": true,
+    "**/devel_isolated/**": true,
+    "**/rosbags/**": true,
+    "**/calibration_data/**": true,
+    "**/tracker_logs/**": true,
+    "**/videos/**": true,
+    "**/src/models/**": true,
+    "**/.codegraph/**": true
+  },
+  "files.exclude": {
+    "**/build/**": true,
+    "**/devel/**": true,
+    "**/build_isolated/**": true,
+    "**/devel_isolated/**": true,
+    "**/rosbags/**": true,
+    "**/calibration_data/**": true,
+    "**/tracker_logs/**": true,
+    "**/videos/**": true,
+    "**/src/models/**": true,
+    "**/.codegraph/**": true
+  }
 }

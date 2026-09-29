@@ -96,9 +96,7 @@ roslaunch teb_test outdoor_teb_test.launch
 
 ## 1.3 Rosbag 一键录制
 
-通用录包功能包位于 `src/vehicle_bag_recorder`。它不绑定某个检测或导航算法，通过 YAML
-管理话题，并调用 ROS 官方 `rosbag record` 保留原始消息类型和时间戳。当前默认配置面向整车
-联调，包含：
+通用录包包 `src/vehicle_bag_recorder` 用 YAML 配置话题，由 `rosbag record` 保留原始类型和时间戳。默认录制：
 
 - MID360 原始点云和 IMU；
 - FAST-LIO 车体/地图点云与里程计，其中 `/cloud_registered_body` 是路缘离线复现的必录点云；
@@ -114,12 +112,9 @@ python3 -c "import yaml; print('PyYAML OK')"
 roslaunch vehicle_bag_recorder record.launch
 ```
 
-`python3-yaml` 只需安装一次。如果出现 `ModuleNotFoundError: yaml`，说明它没有安装在当前 ROS1
-容器实际使用的 Python 环境中。
+`python3-yaml` 只需安装一次；若报 `ModuleNotFoundError: yaml`，检查 ROS1 容器的 Python 环境。
 
-录制器会检查 `/cloud_registered_body`、`/tf`、`/gps/fix`、`/gnss/gpgga`、`/heading`、
-`/camera/image_raw` 和 `/camera/camera_info` 是否真的存在。缺失时终端每 5 秒告警，但不会中断其他话题；`Ctrl+C` 结束时还会
-列出本次从未出现的必录话题。因此不能只看录包程序已经启动，还要确认没有关键话题缺失告警。
+录制器检查 `/cloud_registered_body`、`/tf`、GPS、航向和本地相机话题；缺失时每 5 秒告警，结束时列出从未出现的必录话题。启动成功不等于数据已录到。
 
 也可以直接运行 Python：
 
@@ -142,12 +137,9 @@ roslaunch vehicle_bag_recorder record.launch \
 /home/nuc/lxw/neupan_ws/rosbags/
 ```
 
-默认文件前缀为 `vehicle_data`，实际文件名包含启动时间；启用分包后类似
-`vehicle_data_20260908_091500_0.bag`。可以通过 `bag_prefix` 按建图、导航、控制器测试等用途临时
-命名，不需要修改 launch 文件。
+默认文件名类似 `vehicle_data_20260908_091500_0.bag`；可用 `bag_prefix` 临时改名。
 
-默认使用 LZ4 压缩、每 2048 MB 自动分包，并在磁盘剩余空间低于 8 GB 时安全停止。每次录制还
-会生成同名前缀的 JSON 清单。结束时按一次 `Ctrl+C`，看到“录制结束”后再断电或拔移动硬盘。
+默认 LZ4 压缩、每 2048 MB 分包、剩余空间低于 8 GB 时停止，并生成 JSON 清单。按 `Ctrl+C` 后等“录制结束”，再断电或拔盘。
 
 ### 双板 HybridNets 专用录制
 
@@ -158,7 +150,7 @@ roslaunch vehicle_bag_recorder record.launch \
   config_file:=$(rospack find vehicle_bag_recorder)/config/hybridnets_data.yaml
 ```
 
-其中 `/camera/remote_image_raw` 是 GPU 板摄像头实时发送、NUC 解码后的彩色画面；`/camera/remote_camera_info` 是相机内参。摄像头保持插在 GPU 板上即可。录制器每次在 `rosbags/` 下新建 `rosbagYYYYMMDD_HHMMSS/`，并把同一次录制的 bag 按 **2048 MB** 自动分包，例如：
+摄像头保持插在 GPU 板；NUC 解码图像为 `/camera/remote_image_raw`，内参为 `/camera/remote_camera_info`。每次录制新建目录并按 2048 MB 分包：
 
 ```text
 rosbags/rosbagYYYYMMDD_HHMMSS/
@@ -182,9 +174,9 @@ rostopic echo /hybridnets/valid
 rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.bag
 ```
 
-确认 `/camera/remote_image_raw`、`/hybridnets/debug_image`、`/hybridnets/result_json`、`/cloud_registered_body` 均有非零消息数。配置中列有话题只代表准备录制，实际有无画面仍以 bag 的消息数为准。
+确认 `/camera/remote_image_raw`、`/hybridnets/debug_image`、`/hybridnets/result_json`、`/cloud_registered_body` 的消息数均非零。
 
-叠加调试图与原视频一起录制会明显增加 bag 大小；当前仍按 2048 MB 分包，并在磁盘剩余空间低于 8 GB 时停止。NUC 本地相机独立调试时才使用默认 `vehicle_data.yaml` 中的 `/camera/image_raw` 和 `/camera/camera_info`，两类相机话题不要混写。
+同时录制原视频和调试图会增加 bag 大小。仅在 NUC 本地相机调试时使用 `/camera/image_raw` 和 `/camera/camera_info`；不要与远程相机话题混用。
 
 ## 1.4 Rosbag 离线路缘测试
 
@@ -269,6 +261,12 @@ sudo systemctl restart docker
 [14个ROS/ROS2版本任选 | 用Docker实现一键安装ROS_哔哩哔哩_bilibili](https://www.bilibili.com/video/BV1hY411N7HF/?spm_id_from=333.337.search-card.all.click&vd_source=1aac97640b2d7f2e6ae51b4b1cac54e5)
 
 ## 2.2 文件夹权限
+
+若主机用户 `nuc` 无法修改容器录制的视频，在主机执行（仅处理该目录）：
+
+```bash
+sudo chown -R nuc:nuc /home/nuc/lxw/neupan_ws/videos/hybridnets_debug
+```
 
 ## 2.3 代理设置
 
@@ -1699,11 +1697,11 @@ AT+NTRIP=120.253.239.161,8002,cndh87709,a8888783,RTCM33_GRCE
 
 # 十二、道路视觉与相机
 
-本章只区分两类内容：**当前工程已经实现的视觉接收链路**，以及**尚未接入主导航闭环的视觉—雷达融合功能**。当前主导航仍以 MID360 路缘 + OSM + NeuPAN 为主。GPU 板已经负责相机采集和 HybridNets 推理，NUC 已能接收实时视频和推理 JSON、生成叠加图、输出 `/dev/video0` 并录包，但 HybridNets 结果目前只用于观察和数据采集，尚未直接控制车辆。
+当前主导航使用 MID360 路缘、OSM 和 NeuPAN。GPU 板负责相机与 HybridNets 推理；NUC 接收视频和 JSON，可生成叠加图、输出 `/dev/video0` 并录包。视觉结果尚未接入车辆控制。
 
 ## 12.1 MID360 激光雷达路缘检测
 
-激光雷达路缘检测已经存在，并且分为两个包：
+路缘检测相关包：
 
 | 路径 | 定位 | 是否直接用于当前 MID360 系统 |
 |---|---|---|
@@ -1784,7 +1782,7 @@ NUC hybridnets_receiver
 | `/dev/video0` 像素格式 | `YUYV` |
 | 标定坐标系 | `camera_optical_frame` |
 
-`/dev/video0` 由 `v4l2loopback` 创建，内容来自远程解码画面。仅出现设备节点不代表已有画面，必须同时满足接收节点正在运行且 GPU 板正在发送视频。
+`/dev/video0` 是远程视频的虚拟摄像头；有设备节点不代表 GPU 板已发送画面。
 
 启动远程接收并查看：
 
@@ -1799,7 +1797,7 @@ OpenCV 可使用：
 cap = cv2.VideoCapture(0)
 ```
 
-NUC 上的本地相机启动文件仍保留用于标定或独立调试。当前物理 USB 相机通常是 `/dev/video2`，不要让它与虚拟 `/dev/video0` 混用：
+本地相机仅用于标定或单独调试，通常为 `/dev/video2`，勿与虚拟 `/dev/video0` 混用：
 
 ```bash
 roslaunch usb_camera camera.launch device:=/dev/video2 preview:=true
@@ -1813,34 +1811,19 @@ roslaunch usb_camera camera.launch device:=/dev/video2 preview:=true
 /camera/camera_info
 ```
 
-**注意：** 内参、雷达外参、远程图像和 HybridNets 像素结果都以旋转 180° 后的 `1920×1080` 画面为基准。不要把未旋转画面送入几何投影链路，也不要在使用 GPU 板作为相机源时再次启动本地 `usb_camera camera.launch`。
+**坐标约定：** 内参、外参及推理像素均对应旋转 180° 后的 `1920×1080` 图像。使用 GPU 相机时勿再启动 NUC 本地相机。
 
 ## 12.3 相机内参标定
 
-项目内相机内参文件：
+内参文件：`src/usb_camera/config/usb_camera.yaml`；分辨率：`1920×1080`。
 
-```text
-src/usb_camera/config/usb_camera.yaml
-```
-
-当前分辨率：
-
-```text
-1920 × 1080
-```
-
-相机矩阵：
+相机矩阵与畸变参数：
 
 ```text
 fx = 1102.837297249009
 fy = 1104.805244636163
 cx = 929.1071103499039
 cy = 716.3749386027972
-```
-
-畸变参数：
-
-```text
 k1 = -0.3440482313019139
 k2 =  0.08610560344908336
 p1 = -0.003154023779031887
@@ -1857,48 +1840,21 @@ source devel/setup.bash
 roslaunch usb_camera calibrate.launch
 ```
 
-默认棋盘格参数：
-
-```text
-8 × 12 个内部角点
-方格边长 0.020 m
-```
-
-如果 `8×12` 指的是方格数量而不是内部角点，应改用：
+默认棋盘格为 `8×12` 个内部角点、方格边长 `0.020 m`。若 `8×12` 指方格数量，改用：
 
 ```bash
 roslaunch usb_camera calibrate.launch size:=7x11 square:=0.020
 ```
 
-标定结果默认由 ROS 保存到：
-
-```text
-/home/nuc/.ros/camera_info/usb_camera.yaml
-```
-
-确认结果后再同步到：
-
-```text
-src/usb_camera/config/usb_camera.yaml
-```
+ROS 默认保存至 `/home/nuc/.ros/camera_info/usb_camera.yaml`；确认后同步到项目内参文件。
 
 ## 12.4 MID360-Camera 外参标定
 
-外参配置文件：
-
-```text
-src/usb_camera/config/livox_camera_extrinsics.yaml
-```
+外参文件：`src/usb_camera/config/livox_camera_extrinsics.yaml`。
 
 当前正式配置采用 2026-09-20 提供的最新 `T_cam_lidar`。它覆盖了旧的 `pose_01.bag` 联合结果，因此旧结果的约 `1 cm` RMSE 不能用于评价当前矩阵；配置中的 `joint_rmse_m` 为 `null`。
 
-当前求解关系：
-
-```text
-p_camera = R_camera_lidar × p_lidar + t_camera_lidar
-```
-
-对应矩阵：
+变换关系：`p_camera = R_camera_lidar × p_lidar + t_camera_lidar`。矩阵：
 
 ```text
 R_camera_lidar =
@@ -1910,13 +1866,7 @@ t_camera_lidar =
 [0.001691342, -0.080829955, -0.071189642]
 ```
 
-ROS TF 中使用其逆变换发布：
-
-```text
-livox_frame -> camera_optical_frame
-```
-
-当前静态 TF：
+ROS TF 发布其逆变换 `livox_frame -> camera_optical_frame`：
 
 ```text
 translation = [0.0700865376, 0.0000000001, -0.0818057739]
@@ -1937,7 +1887,7 @@ rosrun tf tf_echo livox_frame camera_optical_frame
 
 ### 当前外参验收状态
 
-数值已经写入正式配置，但在把视觉结果真正用于导航前，仍应增加**点云重投影验证节点**，至少检查：
+外参已写入配置。视觉接入导航前，需用点云重投影检查：
 
 1. 墙面点落在真实墙面区域；
 2. 门框、桌沿、立柱等深度突变边缘与图像边缘一致；
@@ -1947,29 +1897,11 @@ rosrun tf tf_echo livox_frame camera_optical_frame
 
 如果静止场景对齐而运动场景出现整体错位，应优先检查时间同步，不要直接重新调空间外参。
 
-另外，`full_system_run.launch` 当前使用：
-
-```text
-base_link -> livox_frame = (0.10, 0.00, 0.35) m
-```
-
-该机械外参仍应以实车测量结果为准，并与 FAST-LIO、点云转 LaserScan 和相机外参链统一维护。
+`full_system_run.launch` 中 `base_link -> livox_frame = (0.10, 0.00, 0.35) m`，仍需以实车测量为准。
 
 ## 12.5 FAST-Calib 适配
 
-新版工作区已经加入：
-
-```text
-src/FAST-Calib
-```
-
-ROS 包名：
-
-```text
-fast_calib
-```
-
-本车适配文件：
+上游包 `src/FAST-Calib`（ROS 包名 `fast_calib`）的本车适配文件：
 
 ```text
 src/FAST-Calib/config/neupan_params.yaml
@@ -1977,11 +1909,7 @@ src/FAST-Calib/launch/neupan_calib.launch
 src/FAST-Calib/launch/neupan_multi_calib.launch
 ```
 
-`neupan_params.yaml` 已写入当前 USB Camera3 内参，并针对 MID360 约 `2.2 m` 的采样密度调整聚类参数；默认 LiDAR 输入为：
-
-```text
-/livox/lidar
-```
+`neupan_params.yaml` 已写入 USB Camera3 内参，并按 MID360 约 `2.2 m` 的采样密度调整聚类参数；默认 LiDAR 输入为 `/livox/lidar`。
 
 单场景调用形式：
 
@@ -1992,18 +1920,11 @@ roslaunch fast_calib neupan_calib.launch \
   rviz:=true
 ```
 
-当前工程中同时保留 `usb_camera/scripts/calibrate_lidar_camera.py` 的离线联合求解流程。文档和论文中应区分：
-
-```text
-FAST-Calib：引入并适配的上游标定方法
-calibrate_lidar_camera.py：本项目用于多静止场景联合求解/验证的脚本
-```
-
-不要把二者的输出来源混写。
+另有 `usb_camera/scripts/calibrate_lidar_camera.py` 用于多静止场景联合求解；与上游 FAST-Calib 的结果需分别标注来源。
 
 ## 12.6 HybridNets：可行驶区域与车道线检测（已实现实时接收）
 
-HybridNets 已在 ROS2 GPU 板运行，并通过独立以太网把原始视频和像素级结果发送给 ROS1 NUC。GPU 板只发送一路未经叠加的 H.264/RTP 画面，不发送第二路叠加视频；NUC 使用同一帧视频和 JSON 在本地生成调试叠加图。
+GPU 板通过独立网口发送 H.264/RTP 原视频和推理 JSON；NUC 本地生成调试叠加图，不接收第二路视频。
 
 GPU 板启动：
 
@@ -2021,21 +1942,40 @@ ros2 launch usb_camera hybridnets_stream.launch.py \
   bitrate:=8000000
 ```
 
-没有接入实时摄像头、只测试双板接收时，可在 GPU 板用已有 MP4 回放推送。先进入同一 ROS2 工作区，再执行：
+只测接收时，先启动 NUC 接收器，再在 GPU 板**单次回放** MP4：
 
 ```bash
+conda deactivate
 cd /home/p/lxw/lxwgdutcar_ai_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
+
 ros2 launch usb_camera hybridnets_video_replay.launch.py \
   video_path:=/home/p/lxw/lxwgdutcar_ai_ws/video/hybridnets_rosbag/inference_input_rosbag20260921_153216/rosbag20260921_153216_camera.mp4 \
   target_ip:=192.168.10.21 \
   video_port:=5000 \
   result_port:=6000 \
-  playback_rate:=1.0
+  bitrate:=8000000 \
+  playback_rate:=1.0 \
+  loop:=false
 ```
 
-实时相机启动和 MP4 回放是两种发送方式，只启动其中一种；NUC 仍使用同一个接收器。回放画面不对应 NUC 当前实时雷达点云，因此只能用于视频与 JSON 接收联调，不能拿这次录包验证相机—雷达时间同步或道路融合。
+实时相机与 MP4 回放二选一；回放画面不对应实时雷达，不能用于相机—雷达同步或融合验证。
+
+要保存叠加画面，先在 NUC ROS1 环境启动接收和录制（不弹窗）：
+
+```bash
+roslaunch hybridnets_receiver receiver.launch \
+  start_overlay:=true show_overlay:=false record_debug_mp4:=true
+```
+
+再启动 GPU 回放。首帧到达后写入 `/home/nuc/lxw/neupan_ws/videos/hybridnets_debug/`；断流约 3 秒后完成 MP4。若接收器已运行，勿重复启动，另开 NUC 终端执行：
+
+```bash
+rosrun hybridnets_receiver debug_mp4_recorder.py
+```
+
+默认生成 `20 FPS` MP4，并按图像时间戳补帧保持实际时长；可用 `debug_mp4_fps` 调整输出流畅度。原视频、JSON 和雷达数据仍用 rosbag 保存。
 
 GPU 板本机检查：
 
@@ -2045,9 +1985,18 @@ ros2 topic echo /hybridnets/result_json --once
 ros2 topic hz /hybridnets/drivable_mask
 ```
 
-GPU 板本地需要查看模型叠加图时，退出 Conda 后运行 `rqt_image_view`，选择 `/hybridnets/overlay`；`/hybridnets/drivable_mask` 是黑白掩膜，`/camera/image_raw` 是旋转 180° 后的原始画面。
+GPU 板查看叠加图：退出 Conda 后用 `rqt_image_view` 选择 `/hybridnets/overlay`。`/hybridnets/drivable_mask` 是黑白掩膜；`/camera/image_raw` 是旋转后的原图。
 
-按需开启的 `/hybridnets/debug_image` 是 NUC 把 JSON 结果画到原视频上生成的调试图：半透明绿色显示可行驶区域，紫色和黄色显示左右道路边界；不绘制车道线。它不是 GPU 板发送的另一条视频，也不是供 NeuPAN 使用的推理结果。NeuPAN 目前尚未订阅 `/hybridnets/result_json`，要用于靠右行驶还需完成米制边界融合与路径接入。
+NUC 的 `/hybridnets/debug_image` 将 JSON 画在原图上：绿色为可行驶区，紫色/黄色为左右道路边界，不绘制车道线。NeuPAN 尚未使用该图或 `/hybridnets/result_json` 控车。
+
+接收端会缓存图像，并用 `capture_timestamp_ns`、`source_age_ms` 和 RTP 延迟匹配推理帧；图中 `sync=...ms` 是候选帧时间差，不代表真实网络延迟。可用明显运动或闪光画面校准 `overlay_video_delay_sec`：
+
+```bash
+roslaunch hybridnets_receiver receiver.launch \
+  start_overlay:=true overlay_video_delay_sec:=0.10
+```
+
+GPU 端应保证 JSON 的 `capture_timestamp_ns` 直接复制推理输入帧时间戳，并增加单调递增的 `frame_seq`，不要在推理完成时重新取时间。要做到严格逐帧一致，GPU 应在推理回调中对原输入帧生成 `/hybridnets/overlay`，或让 H.264 与 JSON 传输同一个可恢复的 `frame_seq`；普通 RTP 视频本身不能让 NUC 恢复应用层帧号。
 
 当前 JSON 坐标属于 `rotated_image_pixels`：分辨率为 `1920×1080`，左上角为原点，`u/x` 向右、`v/y` 向下。主要字段包括：
 
@@ -2064,11 +2013,11 @@ GPU 板本地需要查看模型叠加图时，退出 Conda 后运行 `rqt_image_
 | `left_boundary_px`, `right_boundary_px` | 左右道路边界，由近到远 |
 | `lane_lines_px` | 多条车道线像素点 |
 
-这些像素点不是车辆坐标和米制坐标，不能直接转换为方向盘或底盘控制量。当前 PyTorch 推理约 `2.7 Hz`，结果只用于调试和录包，尚未接管 NeuPAN。
+这些是像素坐标，不能直接用于控制。当前 PyTorch 推理约 `2.7 Hz`。
 
 ## 12.7 GPU 板 → NUC 实时视觉传输（已实现）
 
-两块板使用独立网段，不与 MID360 的 `192.168.1.0/24` 混用：
+两板使用 `192.168.10.0/24`，与雷达网段分开：
 
 | 设备/接口 | 地址 | 用途 |
 |---|---|---|
@@ -2085,7 +2034,7 @@ ip route get 192.168.10.20
 ping 192.168.10.20
 ```
 
-路由检查应显示数据经 `enxec1ac33f2710` 发出，源地址为 `192.168.10.21`。
+路由应显示接口 `enxec1ac33f2710`、源地址 `192.168.10.21`。
 
 端口约定：
 
@@ -2128,7 +2077,7 @@ rostopic echo /hybridnets/network_age_ms
 rostopic echo -n 1 /hybridnets/result_json
 ```
 
-NeuPAN 全系统默认发布 `/hybridnets/debug_image`，但不弹窗，可手动执行 `rqt_image_view /hybridnets/debug_image` 查看。单独运行 `receiver.launch` 时需设置 `start_overlay:=true` 才会发布该话题；设置 `show_overlay:=true` 则会同时自动弹窗。
+全系统默认发布 `/hybridnets/debug_image`、不弹窗；可手动运行 `rqt_image_view /hybridnets/debug_image`。单独启动接收器时，`start_overlay:=true` 生成图像，`show_overlay:=true` 还会弹窗。
 
 主要 ROS1 输出：
 
@@ -2144,7 +2093,7 @@ NeuPAN 全系统默认发布 `/hybridnets/debug_image`，但不弹窗，可手�
 | `/hybridnets/debug_image` | `sensor_msgs/Image` | NUC 生成的道路/边界叠加图 |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 接收健康状态 |
 
-日志中的 `Listening for HybridNets JSON on UDP 0.0.0.0:6000` 是正常状态：`0.0.0.0` 表示监听 NUC 的所有本地接口，不是 GPU 板地址。配置中的 `allowed_sender_ip: "192.168.10.20"` 仍会拒绝其他来源的数据。
+日志中的 `0.0.0.0:6000` 表示监听所有本地接口；`allowed_sender_ip: "192.168.10.20"` 仍限制发送方。
 
 接收配置位于 `src/hybridnets_receiver/config/receiver.yaml`。收不到数据时，在 NUC 主机检查：
 
@@ -2152,13 +2101,13 @@ NeuPAN 全系统默认发布 `/hybridnets/debug_image`，但不弹窗，可手�
 sudo tcpdump -ni enxec1ac33f2710 udp port 5000 or udp port 6000
 ```
 
-超过 `0.8 s` 未收到结果、结果年龄超过 `800 ms`、`valid=false`、分辨率或 JSON 格式不符时，NUC 都会发布 `/hybridnets/valid=false`。两块板应使用 `chrony` 或 PTP 对时，否则网络年龄和点云配对不可靠。
+结果超时 `0.8 s`、过期 `800 ms`、无效或格式不符时发布 `/hybridnets/valid=false`。两板需用 `chrony` 或 PTP 对时。
 
 ## 12.8 Vision + LiDAR 道路约束融合（待完成）
 
 > 本节为后续算法规划，当前工程尚未实现视觉融合闭环。
 
-目标不是简单把视觉 mask 显示出来，而是让视觉和 MID360 路缘共同约束 NeuPAN 的参考路径。规划侧下一步必须完成：
+目标是用视觉与 MID360 路缘共同约束 NeuPAN 路径。待完成：
 
 1. 使用 `capture_timestamp_ns` 匹配最近的 Livox 点云；
 2. 使用 `usb_camera.yaml` 内参和 `livox_camera_extrinsics.yaml` 外参把点云投影到图像；
@@ -2166,7 +2115,7 @@ sudo tcpdump -ni enxec1ac33f2710 udp port 5000 or udp port 6000
 4. 把这些点转换到 `base_link`，生成米制道路边界或局部栅格；
 5. 再与 MID360 路缘结果交叉验证并修正参考路径。
 
-必须先使用 `hybridnets_data.yaml` 录包做离线投影和时序验证，再进行低速实车接入。像素坐标不能直接用于转向。
+先用 `hybridnets_data.yaml` 录包验证投影和时序，再低速实车测试；像素坐标不能直接控制转向。
 
 建议形成以下回退逻辑：
 
@@ -2192,7 +2141,7 @@ LiDAR 路缘不可靠 + Vision 可靠
 有效性 valid
 ```
 
-后续再根据实车数据设计置信度融合和局部路径平滑，避免在尚无数据前把具体权重公式写死。
+融合权重和路径平滑应依据实车数据确定。
 
 ## 12.9 历史视觉与相机方案
 

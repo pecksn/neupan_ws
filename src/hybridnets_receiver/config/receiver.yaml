@@ -20,6 +20,9 @@ capture_header_topic: "/hybridnets/capture_header"
 result_timeout_sec: 0.8
 max_source_age_ms: 800.0
 max_polygon_points: 20000
+require_control_fields: false  # GPU升级为文档v2格式后，通过launch设为true。
+coordinate_space: "rotated_image_pixels"
+min_right_boundary_points: 8
 rtp_latency_ms: 100
 virtual_video_device: "/dev/video0"
 virtual_video_fps: 30
