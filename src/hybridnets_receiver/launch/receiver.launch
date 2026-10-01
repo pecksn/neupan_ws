@@ -64,6 +64,7 @@
     <remap from="image" to="/hybridnets/debug_image" />
   </node>
 
+  <!-- 同时保存同名 MP4 和逐帧匹配的 JSONL -->
   <node if="$(arg record_debug_mp4)"
         pkg="hybridnets_receiver"
         type="debug_mp4_recorder.py"

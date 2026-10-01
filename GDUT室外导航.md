@@ -1975,7 +1975,7 @@ roslaunch hybridnets_receiver receiver.launch \
 rosrun hybridnets_receiver debug_mp4_recorder.py
 ```
 
-默认生成 `20 FPS` MP4，并按图像时间戳补帧保持实际时长；可用 `debug_mp4_fps` 调整输出流畅度。原视频、JSON 和雷达数据仍用 rosbag 保存。
+同时保存同名 `YYYYMMDD_HHMMSS.mp4` 和 `.jsonl`（北京时间，同秒重名自动加序号）。JSONL 每行保存实际录入叠加视频的推理结果，包含 `mp4_frame_index`（从 0 开始）、`mp4_time_sec` 和匹配图像时间戳；补帧不重复写 JSON。默认生成 `20 FPS` MP4，并按图像时间戳补帧保持实际时长；可用 `debug_mp4_fps` 调整输出流畅度。完整接收 JSON、原视频和雷达数据仍可用 rosbag 保存。
 
 GPU 板本机检查：
 
@@ -2011,9 +2011,15 @@ GPU 端应保证 JSON 的 `capture_timestamp_ns` 直接复制推理输入帧时�
 | `source_age_ms` | 发送时图像年龄 |
 | `road_polygon_px` | 道路外轮廓像素点 `[u,v]` |
 | `left_boundary_px`, `right_boundary_px` | 左右道路边界，由近到远 |
+| `left_boundary_segments_px`, `right_boundary_segments_px` | 左右边界连续段；绘图、拟合逐段处理，禁止跨缺口连线 |
+| `left_valid_segments_px`, `right_valid_segments_px` | 通过独立质量检查的有效连续段；后续拟合只能使用这两个字段 |
+| `left_segment_quality`, `right_segment_quality` | 各测量段的几何质量分数，与 `*_boundary_segments_px` 顺序对应 |
+| `boundary_row_step_px` | 边界采样行间距；旧字段断线阈值为其 1.5 倍，缺省阈值 30 像素 |
 | `lane_lines_px` | 多条车道线像素点 |
 
 当 GPU 不做路口/场景分类时，`scene_type` 可固定为 `unknown`；NUC 仍接收并使用道路区域和左右边界，后续控制不依赖该字段。
+
+GPU 当前输出 `normal` / `unknown`，场景字段不决定是否保留边界。`valid=true` 仅代表道路区域有效；使用某侧边界前必须分别检查 `left_boundary_valid` / `right_boundary_valid`，并结合接收端 `/hybridnets/valid` 检查时效。控制拟合逐段使用 `*_valid_segments_px`；`*_boundary_segments_px` 含未通过质量检查的测量段，只用于调试。NUC 叠加图以暗色细线画全部测量段，以亮色粗线画有效段；兼容旧平铺点列表时，按相邻点 y 差断线。录制 MP4 使用相同的分段叠加画面，JSONL 保留完整新字段。
 
 这些是像素坐标，不能直接用于控制。当前 PyTorch 推理约 `2.7 Hz`。
 

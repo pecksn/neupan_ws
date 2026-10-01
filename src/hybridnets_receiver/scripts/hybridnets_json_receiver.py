@@ -161,6 +161,56 @@ class HybridNetsJsonReceiver:
         return (frame_seq, float(confidence), scene_type, road_valid,
                 left_valid, right_valid)
 
+    def validate_boundary_segments(self, result):
+        row_step = result.get("boundary_row_step_px", 20.0)
+        if (not isinstance(row_step, (int, float)) or isinstance(row_step, bool) or
+                not math.isfinite(row_step) or row_step <= 0):
+            raise ValueError("boundary_row_step_px must be finite and positive")
+        for side in ("left", "right"):
+            measured_name = side + "_boundary_segments_px"
+            valid_name = side + "_valid_segments_px"
+            quality_name = side + "_segment_quality"
+            measured = self.validate_segments(result, measured_name)
+            valid_segments = self.validate_segments(result, valid_name)
+            qualities = result.get(quality_name)
+            if qualities is not None:
+                if (not isinstance(qualities, list) or
+                        measured is not None and len(qualities) != len(measured)):
+                    raise ValueError("%s does not match measured segments" % quality_name)
+                if not all(isinstance(value, (int, float)) and
+                           not isinstance(value, bool) and math.isfinite(value) and
+                           0.0 <= value <= 1.0 for value in qualities):
+                    raise ValueError("%s contains an invalid score" % quality_name)
+            temporal_name = side + "_temporal_score"
+            temporal = result.get(temporal_name)
+            if (temporal is not None and
+                    (not isinstance(temporal, (int, float)) or
+                     isinstance(temporal, bool) or not math.isfinite(temporal) or
+                     not 0.0 <= temporal <= 1.0)):
+                raise ValueError("%s must be in [0, 1]" % temporal_name)
+            if valid_segments is not None:
+                side_valid = result.get(side + "_boundary_valid", False)
+                minimum = self.min_left_points if side == "left" else self.min_right_points
+                if side_valid and not any(len(segment) >= minimum
+                                          for segment in valid_segments):
+                    raise ValueError("%s has no usable segment" % valid_name)
+                if not side_valid and valid_segments:
+                    raise ValueError("%s must be empty when side is invalid" % valid_name)
+
+    def validate_segments(self, result, name):
+        if name not in result:
+            return None
+        segments = result[name]
+        if not isinstance(segments, list) or len(segments) > self.max_points:
+            raise ValueError("%s is not a valid bounded list" % name)
+        count = 0
+        for segment in segments:
+            self.validate_points({name: segment}, name)
+            count += len(segment)
+        if count > self.max_points:
+            raise ValueError("%s has too many points" % name)
+        return segments
+
     def receive_once(self):
         try:
             raw, sender = self.sock.recvfrom(65535)
@@ -184,6 +234,7 @@ class HybridNetsJsonReceiver:
                 raise ValueError("result resolution does not match camera calibration")
             for name in POINT_FIELDS:
                 self.validate_points(result, name)
+            self.validate_boundary_segments(result)
             lane_lines = result.get("lane_lines_px", [])
             if not isinstance(lane_lines, list):
                 raise ValueError("lane_lines_px is not a list")

@@ -2,6 +2,7 @@
 """Draw each HybridNets result on the closest buffered camera frame."""
 
 from collections import deque
+from itertools import count
 import json
 import threading
 
@@ -9,7 +10,7 @@ import cv2
 import numpy as np
 import rospy
 from sensor_msgs.msg import Image
-from std_msgs.msg import String
+from std_msgs.msg import Header, String
 
 
 class HybridNetsOverlay:
@@ -21,6 +22,9 @@ class HybridNetsOverlay:
         self.sync_tolerance = float(rospy.get_param("~sync_tolerance_sec", 0.25))
         self.images = deque()
         self.pending = deque()
+        self.debug_sequence = count()
+        self.result_publisher = rospy.Publisher(
+            "/hybridnets/debug_result_json", String, queue_size=10)
         self.publisher = rospy.Publisher(
             rospy.get_param("~debug_image_topic", "/hybridnets/debug_image"),
             Image, queue_size=1)
@@ -54,6 +58,20 @@ class HybridNetsOverlay:
         if not value:
             return None
         return np.rint(np.asarray(value, dtype=np.float64)).astype(np.int32).reshape(-1, 1, 2)
+
+    @staticmethod
+    def boundary_segments(result, side):
+        key = side + "_boundary_segments_px"
+        if key in result:
+            return result[key]
+        points = result.get(side + "_boundary_px", [])
+        threshold = 1.5 * float(result.get("boundary_row_step_px", 20.0))
+        segments = []
+        for point in points:
+            if not segments or abs(point[1] - segments[-1][-1][1]) > threshold:
+                segments.append([])
+            segments[-1].append(point)
+        return segments
 
     def collect_ready_locked(self):
         if not self.images:
@@ -107,11 +125,25 @@ class HybridNetsOverlay:
             cv2.fillPoly(mask, [polygon], (0, 180, 0))
             image = cv2.addWeighted(image, 0.75, mask, 0.25, 0.0)
 
-        for key, color in (("left_boundary_px", (255, 0, 255)),
-                           ("right_boundary_px", (0, 255, 255))):
-            points = self.points(result.get(key))
-            if points is not None:
-                cv2.polylines(image, [points], False, color, 4)
+        for side, color, dim_color in (
+                ("left", (255, 0, 255), (128, 0, 128)),
+                ("right", (0, 255, 255), (0, 128, 128))):
+            measured = self.boundary_segments(result, side)
+            valid_key = side + "_valid_segments_px"
+            if valid_key in result:
+                for segment in measured:
+                    points = self.points(segment)
+                    if points is not None and len(points) >= 2:
+                        cv2.polylines(image, [points], False, dim_color, 2)
+                visible = result[valid_key]
+            else:
+                # Legacy JSON has no separation between measured and usable
+                # segments, so retain the previous bright rendering.
+                visible = measured
+            for segment in visible:
+                points = self.points(segment)
+                if points is not None and len(points) >= 2:
+                    cv2.polylines(image, [points], False, color, 4)
         text = "HybridNets valid=%s scene=%s L=%d R=%d sync=%+.0fms" % (
             bool(result.get("valid", False)), result.get("scene_type", "legacy"),
             int(bool(result.get("left_boundary_valid", result.get("left_boundary_px")))),
@@ -120,10 +152,17 @@ class HybridNetsOverlay:
         color = (0, 255, 0) if result.get("valid", False) else (0, 0, 255)
         cv2.putText(image, text, (25, 45), cv2.FONT_HERSHEY_SIMPLEX,
                     1.0, color, 2, cv2.LINE_AA)
-        output = Image(header=message.header, height=message.height, width=message.width,
+        header = Header(seq=next(self.debug_sequence) % (2 ** 32),
+                        stamp=message.header.stamp, frame_id=message.header.frame_id)
+        output = Image(header=header, height=message.height, width=message.width,
                        encoding="bgr8", is_bigendian=False,
                        step=message.width * 3, data=image.tobytes())
         self.publisher.publish(output)
+        matched = dict(result)
+        matched["debug_image_seq"] = header.seq
+        matched["debug_image_timestamp_ns"] = header.stamp.to_nsec()
+        matched["debug_sync_error_ms"] = sync_error * 1000.0
+        self.result_publisher.publish(json.dumps(matched, separators=(",", ":")))
 
 
 if __name__ == "__main__":
