@@ -154,8 +154,10 @@ class HybridNetsJsonReceiver:
                 raise ValueError("valid result has too few left-boundary points")
             if right_valid and len(result["right_boundary_px"]) < self.min_right_points:
                 raise ValueError("valid result has too few right-boundary points")
-            if scene_type == "unknown":
-                raise ValueError("unknown scene cannot be valid")
+            # HybridNets does not classify road/intersection scenes.  Treat
+            # "unknown" as missing scene metadata, not as an invalid result;
+            # consumers may ignore the scene field while still using the
+            # road polygon and independently validated boundaries.
         return (frame_seq, float(confidence), scene_type, road_valid,
                 left_valid, right_valid)
 

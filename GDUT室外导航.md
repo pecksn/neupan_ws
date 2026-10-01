@@ -1951,7 +1951,7 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 ros2 launch usb_camera hybridnets_video_replay.launch.py \
-  video_path:=/home/p/lxw/lxwgdutcar_ai_ws/video/hybridnets_rosbag/inference_input_rosbag20260921_153216/rosbag20260921_153216_camera.mp4 \
+  video_path:=/home/p/lxw/lxwgdutcar_ai_ws/video/HybridNets/inputs/rosbag20260921_153216/rosbag20260921_153216_camera.mp4 \
   target_ip:=192.168.10.21 \
   video_port:=5000 \
   result_port:=6000 \
@@ -2012,6 +2012,8 @@ GPU 端应保证 JSON 的 `capture_timestamp_ns` 直接复制推理输入帧时�
 | `road_polygon_px` | 道路外轮廓像素点 `[u,v]` |
 | `left_boundary_px`, `right_boundary_px` | 左右道路边界，由近到远 |
 | `lane_lines_px` | 多条车道线像素点 |
+
+当 GPU 不做路口/场景分类时，`scene_type` 可固定为 `unknown`；NUC 仍接收并使用道路区域和左右边界，后续控制不依赖该字段。
 
 这些是像素坐标，不能直接用于控制。当前 PyTorch 推理约 `2.7 Hz`。
 
