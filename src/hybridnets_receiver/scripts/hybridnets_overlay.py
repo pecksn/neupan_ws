@@ -5,6 +5,7 @@ from collections import deque
 from itertools import count
 import json
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -23,6 +24,8 @@ class HybridNetsOverlay:
         self.images = deque()
         self.pending = deque()
         self.debug_sequence = count()
+        self.overlay_frame_count = 0
+        self.overlay_frame_times = deque()
         self.result_publisher = rospy.Publisher(
             "/hybridnets/debug_result_json", String, queue_size=10)
         self.publisher = rospy.Publisher(
@@ -152,6 +155,29 @@ class HybridNetsOverlay:
         color = (0, 255, 0) if result.get("valid", False) else (0, 0, 255)
         cv2.putText(image, text, (25, 45), cv2.FONT_HERSHEY_SIMPLEX,
                     1.0, color, 2, cv2.LINE_AA)
+        now = time.monotonic()
+        with self.lock:
+            self.overlay_frame_count += 1
+            self.overlay_frame_times.append(now)
+            while self.overlay_frame_times[0] < now - 2.0:
+                self.overlay_frame_times.popleft()
+            elapsed = now - self.overlay_frame_times[0]
+            overlay_fps = ((len(self.overlay_frame_times) - 1) / elapsed
+                           if elapsed > 0.0 else 0.0)
+            frame_count = self.overlay_frame_count
+        try:
+            gpu_fps = float(result.get("inference_hz", 0.0))
+            gpu_text = "%.1f" % gpu_fps if np.isfinite(gpu_fps) and gpu_fps >= 0 else "--"
+        except (TypeError, ValueError, OverflowError):
+            gpu_text = "--"
+        if "inference_hz" not in result:
+            gpu_text = "--"
+        fps_text = "GPU=%s FPS  NUC=%.1f FPS" % (
+            gpu_text, overlay_fps)
+        cv2.putText(image, fps_text, (25, 85), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0, (0, 0, 0), 5, cv2.LINE_AA)
+        cv2.putText(image, fps_text, (25, 85), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0, (255, 255, 255), 2, cv2.LINE_AA)
         header = Header(seq=next(self.debug_sequence) % (2 ** 32),
                         stamp=message.header.stamp, frame_id=message.header.frame_id)
         output = Image(header=header, height=message.height, width=message.width,
@@ -162,6 +188,8 @@ class HybridNetsOverlay:
         matched["debug_image_seq"] = header.seq
         matched["debug_image_timestamp_ns"] = header.stamp.to_nsec()
         matched["debug_sync_error_ms"] = sync_error * 1000.0
+        matched["debug_overlay_fps"] = overlay_fps
+        matched["debug_frame_count"] = frame_count
         self.result_publisher.publish(json.dumps(matched, separators=(",", ":")))
 
 

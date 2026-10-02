@@ -1929,13 +1929,14 @@ GPU 板通过独立网口发送 H.264/RTP 原视频和推理 JSON；NUC 本地�
 GPU 板启动：
 
 ```bash
+conda deactivate
 cd /home/p/lxw/lxwgdutcar_ai_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select usb_camera \
-  --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+/usr/bin/python3 -m colcon build --packages-select usb_camera --symlink-install
 source install/setup.bash
 
 ros2 launch usb_camera hybridnets_stream.launch.py \
+  backend:=tensorrt \
   target_ip:=192.168.10.21 \
   video_port:=5000 \
   result_port:=6000 \
@@ -1952,6 +1953,7 @@ source install/setup.bash
 
 ros2 launch usb_camera hybridnets_video_replay.launch.py \
   video_path:=/home/p/lxw/lxwgdutcar_ai_ws/video/HybridNets/inputs/rosbag20260921_153216/rosbag20260921_153216_camera.mp4 \
+  backend:=tensorrt \
   target_ip:=192.168.10.21 \
   video_port:=5000 \
   result_port:=6000 \
@@ -1959,6 +1961,12 @@ ros2 launch usb_camera hybridnets_video_replay.launch.py \
   playback_rate:=1.0 \
   loop:=false
 ```
+
+GPU 已生成完整检测与分割的 FP16 TensorRT 引擎，正常启动无需重新生成；ROS2 命令在退出 Conda 的终端执行，推理节点使用 GPU 原有的 `hybridnets` Conda 环境。修改源码后才需重新编译。
+
+两条命令均用 `backend:=tensorrt` 启用加速；改为 `backend:=pytorch` 可切回原后端，省略参数也默认使用 PyTorch。GPU 端 2026-10-02 的 7 个关键帧测试约为 `14 Hz`，这是核心处理速度，不是 NUC 接收帧率。引擎路径为 GPU 工作区的 `src/HybridNets/weights/hybridnets_full_384x640_fp16.engine`；换 GPU 或 TensorRT 版本后需重新构建，步骤见 GPU 端 `src/usb_camera/TENSORRT_GUIDE.md`。
+
+JSON 新增 `inference_backend` 和 `detections`，原视频端口、左右边界字段及 NUC 接收命令保持兼容；可检查 `inference_backend` 是否为 `tensorrt` 来确认后端。
 
 实时相机与 MP4 回放二选一；回放画面不对应实时雷达，不能用于相机—雷达同步或融合验证。
 
