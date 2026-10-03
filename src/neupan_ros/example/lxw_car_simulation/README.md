@@ -14,6 +14,7 @@ Gazebo simulation entry for the LXW Ackermann car with NeuPAN.
 - `config/rvo_config_complex.yaml`: RVO dynamic obstacle config copied from the official Gazebo LIMO example.
 - `rviz/lxw_car_simulation.rviz`: RViz view for `/scan`, TF, robot model, and NeuPAN markers/paths.
 - `scripts/publish_demo_goal.py`: optional latched goal publisher for quick smoke tests.
+- `scripts/gazebo_goal_marker.py`: follows `/move_base_simple/goal` and shows a cyan target with an orange flag in Gazebo. It has no collision geometry and does not appear in the laser scan.
 
 ## Sensor And Avoidance Notes
 
@@ -51,6 +52,14 @@ roslaunch neupan_ros lxw_car_simulation.launch dynamic_obstacles:=true world_nam
 ```
 
 ## Important dependency
+
+Dynamic obstacles default to a maximum speed of 0.5 m/s (RVO can slow them when avoiding one another). Set `obstacle_max_speed:=0.8` to increase this limit. The CAD body uses grey material in Gazebo; STL does not retain the original SolidWorks colours. Goal markers are enabled by default; use `show_goal_marker:=false` to disable them.
+
+The dense crowd uses a 2-second RVO horizon and random goals within x=[1.5, 9.0], y=[-4.0, 4.0]. A 10-second horizon with goals confined to x=[2.5, 7.5], y=[-2.5, 2.5] caused long periods of crowd stagnation even after increasing the speed limit. Verify motion using model position changes, rather than the configured speed or a single velocity peak.
+
+In random mode, `goal_stall_timeout: 4.0` reassigns an agent's target if it has not moved 20 cm for four simulation seconds. This prevents unreachable targets from keeping the crowd stationary. Other RVO scenarios leave this recovery disabled by default.
+
+The RVO goal client waits up to 15 seconds for `set_rvo_goals` before configuring random motion. Previously, concurrent startup could lose this service call and leave the scene in its default motion mode. Check the launch log for a successful goal-service call.
 
 The vehicle motion is driven by `scripts/ackermann_sim_driver.py`, not by a custom Gazebo Ackermann plugin. It subscribes to `/neupan_cmd_vel`, integrates the Ackermann model, publishes `/odom`, broadcasts `odom -> base_footprint` (with the URDF providing `base_footprint -> base_link`), publishes wheel/steering `/joint_states`, and moves the Gazebo model through `/gazebo/set_model_state`. Commands expire after 0.5 seconds by default (`cmd_timeout` launch argument); this stops the car if the controller exits or its messages stop.
 

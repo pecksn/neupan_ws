@@ -3,36 +3,47 @@
 > 本文档用于帮助理解 `/home/nuc/lxw/neupan_ws` 的整体结构、运行链路和主要函数职责。
 >
 > 项目基于 ROS1 Noetic。`src/` 是源码，`build/` 和 `devel/` 是 catkin 生成物，通常不应直接修改。
+>
+> 以下控制链路以 `neupan_ros/example/lxw_car/launch/full_system_run.launch` 为准；其他测试 launch 可能仍直接使用 `/neupan_cmd_vel`。这是静态代码分析，不能代替实车运行检查。
 
 ## 1. 项目总体结构
 
 ```mermaid
 flowchart LR
-    CAM[Astra 相机] --> VISION[道路视觉检测]
+    GPU[GPU 板 HybridNets] --> RX[hybridnets_receiver<br/>独立感知]
     GPS[GPS/NMEA] --> LOC[GPS/LIO 定位保护]
     IMU[Livox IMU] --> LIO[FAST-LIO]
     LIDAR[Livox MID360] --> LIO
     LIO --> SCAN[点云转 LaserScan]
-    MAP[OSM/栅格地图] --> ASTAR[OSM 全局 A*]
+    LIO --> CURB[右侧路沿检测<br/>可选路径修正]
+    GOAL["/gps_goal_ll"] --> BRIDGE[经纬度目标转换]
+    BRIDGE --> ASTAR[OSM 全局 A*]
+    MAP[OSM 道路图] --> ASTAR
     LOC --> ASTAR
-    ASTAR --> PATH[/osm_global_path]
+    ASTAR --> PATH["/osm_global_path"]
+    ASTAR --> PATHLL["/osm_global_path_ll<br/>云端经纬度路径"]
     SCAN --> NP[NeuPAN]
     PATH --> NP
+    CURB -. 启用控制后 .-> NP
     LOC --> NP
-    NP --> CMD[/neupan_cmd_vel]
-    CMD --> BASE[底盘串口驱动]
-    VISION --> REFINE[路径修正节点]
-    REFINE --> PATH2[/osm_global_path_refined]
+    NP --> AUTO["/cmd_vel/auto"]
+    REMOTE["/cmd_vel_remote"] --> MUX[control_mode_mux]
+    AUTO --> MUX
+    MODE["/vehicle/control_mode"] --> MUX
+    LOC --> SAFE["/localization_safe"]
+    SAFE --> MUX
+    MUX --> SELECTED["/cmd_vel/selected"]
+    SELECTED --> BASE[底盘串口驱动]
 ```
 
 系统可以分成六个层次：
 
-1. **传感器层**：Astra、Livox、GPS、IMU。
+1. **传感器层**：Livox、GPS、IMU；可选的相机和 GPU 板视觉接收。
 2. **定位层**：FAST-LIO、GPS 投影、GPS/LIO 守门器、`map -> odom` 对齐。
 3. **地图与全局规划层**：OSM 道路图、A*、Hybrid A*、栅格地图。
 4. **局部规划与控制层**：NeuPAN 或室外直接路径跟踪器。
 5. **底盘执行层**：串口底盘驱动。
-6. **测试与可视化层**：RViz、日志、rosbag、道路视觉调试。
+6. **测试与可视化层**：RViz、日志、rosbag、路沿检测和 HybridNets 调试。
 
 ## 2. 关键运行链路
 
@@ -45,7 +56,9 @@ Livox -> FAST-LIO -> /cloud_registered_body
 /odom 或 AMCL TF -> map -> base_link
 /scan + TF + /initial_path
       -> neupan_core.py
-      -> /neupan_cmd_vel
+      -> /cmd_vel/auto（本 launch 对 NeuPAN 输出的 remap）
+      -> control_mode_mux.py（mode=0）
+      -> /cmd_vel/selected
       -> base_driver_node.py
       -> MCU 串口
 ```
@@ -60,12 +73,18 @@ GPS + FAST-LIO
       -> map_odom_align_bridge.py
       -> map -> odom TF
 
-GPS/RViz 目标 + OSM
-      -> global_astar_node.cpp
-      -> /osm_global_path
-      -> neupan_core.py
-      -> /neupan_cmd_vel
+云端 /gps_goal_ll (sensor_msgs/NavSatFix)
+      -> gps_goal_bridge.py -> /move_base_simple/goal (map 坐标)
+      -> global_astar_node.cpp + OSM 道路图 + /odometry/global
+      -> /osm_global_path (map 坐标，供 NeuPAN 跟踪)
+      -> /osm_global_path_ll (经纬度 JSON，供云端显示)
+
+/osm_global_path + /scan + TF -> neupan_core.py
+      -> /cmd_vel/auto -> control_mode_mux.py（mode=0 且定位安全）
+      -> /cmd_vel/selected -> base_driver_node.py -> MCU 串口
 ```
+
+目标到达不等于立即运动：桥接节点会拒绝 NaN 经纬度和无效的 `NavSatFix.status.status`；A* 需要可用的全局里程计与 OSM 道路图，路径搜索也可能因道路吸附或不可达失败。NeuPAN 还需要有效扫描和 TF；自动模式下 `/localization_safe=false` 会使选择器输出零速度。
 
 ### 2.3 室外直接跟踪
 
@@ -76,19 +95,33 @@ OSM A* -> /osm_global_path
        -> base_driver_node.py
 ```
 
-`global_path_tracker.py` 和 `neupan_core.py` 都可能发布 `/neupan_cmd_vel`，不能在同一运行模式中同时启用。
+这条测试链路不经过完整系统的 `control_mode_mux.py`。不要与完整系统同时启动同一个串口驱动或竞争同一底盘速度输入。
 
-### 2.4 道路视觉修正
+### 2.4 MID360 右侧路沿修正（可选）
 
 ```text
-Astra RGB
-  -> road_vision_node.py
-  -> /road_vision/lateral_error
-  -> path_refine_node.py
-  -> /osm_global_path_refined
+/cloud_registered_body -> lidar_curb_node.py
+  -> /road_curb/lateral_error + /road_curb/status
+  -> path_refine_node.py + /osm_global_path
+  -> /osm_global_path_curb_refined
 ```
 
-当前视觉链主要用于检测和验证。根据测试指南，完成静止检测和米制误差验收前，不应让 NeuPAN 使用 `/osm_global_path_refined`。
+`enable_lidar_curb:=true` 只启动检测；还需 `enable_lidar_curb_control:=true` 才会把 NeuPAN 的初始路径切换到修正路径。默认两个开关都是 `false`。HybridNets 接收器是独立感知输入，当前不直接生成 NeuPAN 路径或底盘速度。
+
+### 2.5 云端接口与手动接管
+
+| Topic | 类型 | 云端方向 | 用途 |
+| --- | --- | --- | --- |
+| `/gps/fix` | `sensor_msgs/NavSatFix` | 订阅 | 原始 GPS 经纬度；不等同于融合后的 `/odometry/global` |
+| `/osm_global_path_ll` | `std_msgs/String` | 订阅 | `data` 为 `{"points":[{"latitude":23.0398,"longitude":113.39002},...]}` 的 JSON；与 `/osm_global_path` 最终路径点一一对应 |
+| `/gps_goal_ll` | `sensor_msgs/NavSatFix` | 发布 | 目标经纬度；默认拒绝 `status.status < 0` |
+| `/vehicle/control_mode` | `std_msgs/UInt8` | 发布 | `0=AUTO`，`1=MANUAL`；默认 `0` |
+| `/cmd_vel_remote` | `geometry_msgs/Twist` | 发布 | 云端手动速度；launch 把选择器内部 `/cmd_vel/remote` 订阅重映射到此 topic |
+| `/vehicle/control_mode/status` | `std_msgs/String` | 订阅 | 当前模式及 `auto_active`、`remote_active`、`localization_unsafe` 等原因 |
+
+自动时，NeuPAN 继续发布 `/cmd_vel/auto`，选择器仅在自动指令未超时且定位安全时转发；手动时 NeuPAN 不停止，但选择器只转发 `/cmd_vel_remote`。最终输出始终是 `/cmd_vel/selected`。自动/手动指令超时默认分别为 `0.5 s`/`1.0 s`，超时输出零速度。这里 `Twist.angular.z` 被底盘驱动解释为**前轮转向角（弧度）**，不是差速车的角速度。
+
+完整系统把定位安全停车放在选择器的自动分支；手动模式不受 `/localization_safe` 拦截。使用 `use_global_ekf:=true` 时，本 launch 关闭选择器的这项定位门控；其他 launch 是否启用底盘自身的定位保护需单独检查。
 
 ## 3. 根目录文件夹
 
@@ -106,7 +139,7 @@ catkin 开发环境，包含 `setup.bash`、环境变量、Python 路径、动�
 
 ### `bags/`
 
-rosbag 数据目录。目前包含 `bags/road_test/`，用于道路视觉模式录制和离线复测。
+可自行创建的 rosbag 数据目录；当前工作区根目录没有该文件夹。录制话题配置位于 `src/vehicle_bag_recorder/config/vehicle_data.yaml`。
 
 ### `tracker_logs/`
 
@@ -115,7 +148,6 @@ rosbag 数据目录。目前包含 `bags/road_test/`，用于道路视觉模式�
 ### 根目录 Markdown
 
 - `README.md`：项目总体说明。
-- `README_SUMMARY.md`：项目摘要。
 - `GDUT室外导航.md`：室外导航部署记录和说明。
 
 ## 4. `src/neupan_ros`
@@ -166,7 +198,7 @@ NeuPAN 的 ROS1 封装和示例工程。
 - `config/neupan_train.yaml`：DUNE 训练参数。
 - `dune_train_lxw_car.py`：加载训练配置并调用 `train_dune()`。
 - `launch/neupan_lxwcar.launch`：真实车辆基础启动，包含底盘、FAST-LIO、Livox、点云转 LaserScan 和 NeuPAN。
-- `launch/full_system_run.launch`：完整室内/室外系统入口，包含定位、GPS、OSM A*、点云处理、视觉相关参数和跟踪器。
+- `launch/full_system_run.launch`：完整室内/室外系统入口，包含定位、GPS 经纬度目标桥接、OSM A*、NeuPAN、自动/手动速度选择、底盘，以及可选的路沿检测与 HybridNets 接收。
 - `launch/outdoor_global_only_test.launch`：只测试室外定位和 OSM 全局规划。
 
 ### `example/lxw_car_simulation`
@@ -199,12 +231,19 @@ Limo 差速车仿真。
 
 ### `src/base_driver_node.py`
 
-- `RobotBaseDriver.__init__`：读取串口、车体和安全参数，打开串口，建立速度订阅、里程计发布和 TF 广播。
-- `cmd_vel_callback`：接收 `/neupan_cmd_vel`，把线速度和转向角转换为 MCU 协议 `CMD,<throttle>,<steering>`；处理死区和转角限幅。
-- `localization_safety_callback`：定位不安全时立即发送停车命令。
+- `RobotBaseDriver.__init__`：读取串口、车体和安全参数，打开串口，建立速度订阅、里程计发布和 TF 广播；速度订阅由 `~cmd_topic` 指定，完整系统配置为 `/cmd_vel/selected`。
+- `cmd_vel_callback`：把 `Twist.linear.x`（m/s）和 `Twist.angular.z`（转向角，rad）转换为 MCU 协议 `CMD,<轮速 rad/s>,<转角 deg>`；处理速度死区和 ±25° 转角限幅。
+- `localization_safety_callback`：仅当本节点的 `~enable_localization_safety_stop=true` 时，定位不安全立即发送停车命令。完整系统将该参数设为 `false`，改由控制模式选择器仅保护自动模式；其他 launch 可有不同设置。
 - `send_serial_command`：格式化并写入串口。
 - `read_from_mcu`：读取 MCU 的 `ODO` 行，解析位置和航向，设置里程计零点，计算相对位姿和速度。
 - 主循环：持续读取 MCU 数据并发布 `/odom`，必要时发布 `odom -> base_link` TF。
+
+### `src/control_mode_mux.py`
+
+- 订阅 `/vehicle/control_mode`、`/cmd_vel/auto` 和内部名称 `/cmd_vel/remote`。完整系统用 ROS remap 将后者接到云端 `/cmd_vel_remote`，不会额外创建 `/cmd_vel/remote` 发布话题。
+- `AUTO=0`：选择 NeuPAN 自动速度；完整系统在 `use_global_ekf:=false` 的室外配置下同时检查 `/localization_safe`。定位不安全时立即输出零速度并报告 `localization_unsafe`。
+- `MANUAL=1`：选择云端手动速度，不受定位安全状态拦截；超过默认 `1.0 s` 没有新遥控消息则输出零速度。
+- 以约 20 Hz 发布选定速度到 `/cmd_vel/selected`，并在状态变化时发布 JSON 状态到 `/vehicle/control_mode/status`。无模式消息时采用 launch 默认的 `0=AUTO`；非法模式值会被忽略。
 
 ### `src/global_path_tracker.py`
 
@@ -246,7 +285,7 @@ GPS 与 FAST-LIO 的全局定位安全守门器。
 - `append_recovery_candidate`：加入 GPS 恢复候选窗口。
 - `recovery_window_stable`：判断恢复窗口是否满足稳定时间。
 - `set_mode`：切换 GPS 跟踪、GPS 丢失、本地续推和恢复状态。
-- `update_guard`：发布 `/odometry/global`、`/gps_guard/status` 和 `/localization_safe`。
+- `update_guard`：更新 GPS 跟踪、丢失、本地续推等状态；定时回调随后发布 `/odometry/global`、`/gps_guard/status` 和 `/localization_safe`。
 
 ### `src/lio_odom_guard.py`
 
@@ -295,6 +334,7 @@ FAST-LIO 输出保护器。
 - `computeTurnAngle`：计算连续路径段的转角。
 - `spacingFromTurnAngle`：根据转角决定路径采样间距。
 - `resamplePathForTracking`：生成适合车辆控制的稠密路径。
+- `buildLatLonPathMessage`：把最终 `current_path_` 的所有路径点按与 GPS 投影相同的原点反算为经纬度，按原顺序生成 JSON。
 - `prepareGoalRequest`：准备当前起点和目标请求。
 - `processGoal`：执行吸附、搜索、偏移、重采样并发布最终路径。
 - `mapCallback`：接收地图或地图数据。
@@ -304,11 +344,11 @@ FAST-LIO 输出保护器。
 - `clickedPointCallback`：处理 RViz 点击点。
 - `timerCallback`：维护 GPS Marker 和目标超时状态。
 
-主要输出：`/osm_global_path`、`/osm_vector_map`、`/hybrid_astar_subgoal`、`/initialpose`。
+主要输出：`/osm_global_path`（`nav_msgs/Path`，`map` 坐标米制路径）、`/osm_global_path_ll`（`std_msgs/String`，JSON 经纬度路径）、`/osm_vector_map`、`/hybrid_astar_subgoal`、`/initialpose`。两条路径只在成功规划后发布，均为 latched topic；经纬度路径不是 `nav_msgs/Path`，不要把经纬度写进 `Pose.position.x/y`。
 
 ### `scripts/gps_goal_bridge.py`
 
-把经纬度目标转换为局部 `PoseStamped`，发布到 `/move_base_simple/goal`。
+订阅 `/gps_goal_ll`（`sensor_msgs/NavSatFix`），以启动参数配置的地图原点把经纬度目标转换为 `map` 坐标的 `PoseStamped`，发布到 `/move_base_simple/goal`；拒绝 NaN 经纬度和默认配置下 `status.status < 0` 的目标。该桥接节点由完整系统的 `enable_gps_goal_bridge` 控制，默认启用。
 
 ### `scripts/osm_alignment_analyzer.py`
 
@@ -318,58 +358,25 @@ FAST-LIO 输出保护器。
 - `load_points`：读取 GPS 或测试点。
 - `nearest_segment`：寻找每个点的最近道路段。
 
-## 7. `src/road_vision_refinement`
+## 7. `src/lidar_curb_refinement`
 
-负责相机道路区域、中心线、道路右边缘和路径横向修正。
+MID360 右侧路沿检测与可选路径修正。它使用 FAST-LIO 去畸变后的点云，不依赖机械式雷达的固定扫描线编号。
 
-### `scripts/road_vision_node.py`
+### `scripts/lidar_curb_node.py`
 
-核心类为 `RoadVisionNode`。
-
-- `__init__`：读取 HSV、ROI、IPM、置信度、平滑、确认帧数和输出参数，创建 OpenCV 核和 ROS 接口。
-- `load_ipm_matrix`：读取图像到 `base_link` 地面坐标的 3x3 单应矩阵，并检查矩阵合法性。
-- `image_cb`：图像处理主入口，执行尺寸检查、ROI 裁剪、道路 mask、中心线检测、来源选择和图像/状态发布。
-- `make_road_mask`：用低饱和度 HSV 阈值提取道路区域，并进行开闭运算。
-- `make_center_line_mask`：用白色和黄色 HSV 阈值提取中心线候选。
-- `detect_center_line`：使用 HoughLinesP、长度、倾角、历史位置和方向条件筛选中心线，并计算置信度。
-- `center_line_target`：在确认的中心线右侧生成目标。
-- `estimate_road_region`：寻找最大道路候选轮廓，估计扫描线范围、道路置信度和底部接触比例。
-- `road_edge_target`：把道路候选右边缘作为目标来源。
-- `road_region_target`：把道路区域中心作为目标来源。
-- `project_image_to_ground`：使用 IPM 把像素目标投影到地面坐标。
-- `publish_selected`：发布有效目标、误差、来源和调试状态。
-- `publish_invalid`：目标失效时执行短暂保持或无视觉参考状态。
-- `publish_metric_unavailable`：IPM 未加载或图像尺寸不匹配时发布不可度量状态。
-- `publish_status`：发布 JSON 状态。
-- `draw_center_line`、`draw_road_region`：在调试图上绘制检测结果。
-- `publish_images`：发布 mask、中心线 mask、道路 mask 和 debug image。
-
-自动模式优先级：
-
-```text
-center_line -> road_edge -> hold_last_valid -> no_visual_reference
-```
+- 订阅 `/cloud_registered_body`，经 TF 转到 `base_link`，在车体右前方高程栅格检测连续的上台阶。
+- 发布 `/road_curb/right_edge`、`/road_curb/lateral_error`、`/road_curb/status`，以及可选的 ROI 和候选点云。
+- 右侧在 `base_link` 的 `y<0`；状态无效或 TF 不可用时不会把该帧当成有效路沿。
 
 ### `scripts/path_refine_node.py`
 
-- `path_cb`：缓存 `/osm_global_path`。
-- `error_cb`：缓存视觉横向误差。
-- `status_cb`：缓存视觉来源和有效状态。
-- `publish_refined`：按误差修正路径横向位置，进行保持、衰减和平滑，然后发布 `/osm_global_path_refined`。
+- 订阅 `/osm_global_path`、`/road_curb/lateral_error` 和 `/road_curb/status`。
+- 根据路径行进方向的右法向量调整路径，按最大偏移量限幅，对有效误差平滑，对失效误差衰减。
+- 完整系统配置输出 `/osm_global_path_curb_refined`；原 `/osm_global_path` 不被就地修改。
 
-### 标定和采图脚本
+### `scripts/curb_run_logger.py` 和 `launch/road_curb_debug.launch`
 
-- `save_one_image.py`：等待下一帧 ROS 图像，保存后退出。
-- `pick_ipm_points.py`：在图像上人工点击已知地面点，计算 IPM 矩阵并保存 JSON。
-- `verify_ipm_points.py`：使用未参与标定的新点验证预测坐标和误差。
-
-### `config/`
-
-保存 IPM 点、相机内参、视觉阈值和道路检测参数。
-
-### `launch/`
-
-包含相机、`image_proc`、视觉节点、调试图像查看器和路径修正的启动组合。
+可独立记录路沿状态、误差和修正路径。完整系统中 `enable_lidar_curb` 控制检测节点，`enable_lidar_curb_control` 控制路径修正及 NeuPAN 跟踪修正路径；仅打开后者而未打开前者时，没有修正路径发布者。
 
 ## 8. `src/hybrid-a-star-annotation`
 
@@ -578,19 +585,15 @@ NMEA GPS 驱动和 GPS 辅助工具。
 - `write_record`：写入 JSONL 文件。
 - 各类回调：缓存 GPS、航向、三类里程计、控制和运动状态。
 
-## 16. `src/ros_astra_camera-main`
+## 16. 相机与 GPU 板视觉接收
 
-Astra/Orbbec 相机驱动，属于传感器基础设施。
+### `src/usb_camera`
 
-主要职责：
+本地 USB Camera3 的 ROS1 启动、180° 图像旋转和标定配置。`camera.launch` 默认从 `/dev/video0` 读取图像，发布 `/camera/image_raw` 和 `/camera/camera_info`；相机标定和雷达相机外参另有独立 launch。不要把它与 GPU 板接收器对同一 `/dev/video0` 的使用混为一条数据链。
 
-- 发现和管理相机设备。
-- 发布 RGB、深度和点云。
-- 发布 CameraInfo。
-- 提供 OpenNI、UVC、服务和动态配置接口。
-- 提供相机内部 TF。
+### `src/hybridnets_receiver`
 
-道路视觉主要使用校正后的 `/camera/rgb/image_rect_color` 和 `/camera/rgb/camera_info`。
+接收 GPU 板的 H.264/RTP 视频和推理 JSON，分别发布 `/camera/remote_image_raw` 与 `/hybridnets/result_json`；可选调试叠加 `/hybridnets/debug_image` 和 MP4/JSONL 录制。完整系统默认启动接收器，但它目前不向 NeuPAN 提供路径，也不发布底盘控制命令。
 
 ## 17. 其他源码与资源包
 
@@ -598,9 +601,9 @@ Astra/Orbbec 相机驱动，属于传感器基础设施。
 
 ROS NMEA 消息定义包，主要提供消息类型。
 
-### `src/urdf`
+### `src/models` 与 `src/neupan_ros/example/lxw_car_simulation/urdf`
 
-机器人模型和传感器安装结构，影响机器人外形、关节和 TF。
+模型资源和仿真车辆描述；TF 与车体尺寸需要结合对应 launch 和 URDF 核对。
 
 ### `src/FAST_LIO/Log`、`PCD`、`rviz_cfg`
 
@@ -636,41 +639,41 @@ FAST-LIO 运行日志、点云数据和 RViz 配置。
 - GPS 恢复所需稳定时间。
 - FAST-LIO 速度、横向速度、角速度和采样间隔门限。
 
-### 道路视觉配置
+### 控制模式与定位保护
 
-- ROI 顶部比例。
-- 白色/黄色中心线 HSV 阈值。
-- 道路低饱和度 HSV 阈值。
-- 中心线最小长度、最大位置跳变和最大方向跳变。
-- 中心线连续确认帧数。
-- 道路轮廓最少扫描线数和底部接触比例。
-- IPM 矩阵文件和图像尺寸。
-- 无效保持时间和衰减系数。
+- `default_control_mode=0`：启动后默认自动；云端通过 `/vehicle/control_mode` 发 `1` 切换手动，`0` 切回自动。
+- `auto_command_timeout=0.5`、`remote_command_timeout=1.0`：所选速度源超时后输出零速度。
+- 完整系统在室外且 `use_global_ekf=false` 时，仅对自动速度启用 `/localization_safe` 门控；底盘节点自身的定位门控在该 launch 中关闭。手动模式仍保留遥控指令超时停车。
+- 目标转换与 OSM、GPS 投影必须共用 `map_origin_lat/lon` 与 `datum_lat/lon`，否则云端目标和路径会出现系统性偏移。
+
+### 路沿与 GPU 板接收
+
+- `enable_lidar_curb` 启动 MID360 右侧路沿检测；`enable_lidar_curb_control` 决定是否让 NeuPAN 跟踪 `/osm_global_path_curb_refined`。控制开关应在检测有效、方向和净距标定完成后启用。
+- 路沿参数主要是右侧 ROI、上台阶高度、连续确认帧数、期望净距、最大修正量和误差平滑。
+- `enable_hybridnets_receiver=true` 默认启动 GPU 板视频/JSON 接收；`show_hybridnets_overlay` 只控制调试显示。当前 HybridNets 结果不直接影响运动控制。
 
 ## 19. 当前项目的主要风险
 
-1. **速度话题争抢**：NeuPAN 和 `global_path_tracker.py` 不应同时发布 `/neupan_cmd_vel`。
+1. **速度输入唯一性**：完整系统中底盘只订阅 `/cmd_vel/selected`，NeuPAN 被 remap 到 `/cmd_vel/auto`。其他测试 launch 或开环脚本可能仍发布 `/neupan_cmd_vel`，不要同时启动第二个串口底盘驱动或把多个源接到同一最终输入。
 2. **TF 冲突**：多个 launch 可能同时发布 `map -> odom`、`odom -> base_link` 或传感器外参。
-3. **传感器重复启动**：Astra、Livox、FAST-LIO 和 `image_proc` 若由多个 launch 启动，会出现重复节点或重复话题。
+3. **传感器重复启动**：Livox、FAST-LIO、USB 相机或 HybridNets 接收器若由多个 launch 启动，可能出现重复节点、端口占用或重复话题。
 4. **GPS 恢复跳变**：GPS 从失锁恢复时必须经过质量、连续稳定和位置/航向跳变检查。
 5. **LaserScan 安全停机**：扫描缺失、TF 不可用或数据长期被过滤时，NeuPAN 应保持停车。
-6. **视觉误检**：墙体、阴影、地砖缝和反光区域可能被识别为道路或中心线。
-7. **视觉坐标方向**：相机图像右侧不一定等于 `base_link` 的右侧，当前逻辑需要结合安装方向和实测验证。
-8. **IPM 误差**：当前独立验证误差约 `0.225 m`，暂按 `0.25 m` 验收，实车还需继续记录系统偏差。
-9. **全局路径修正范围**：整条路径平移可能导致远处路径不合理，后续应改为车辆前方局部修正。
+6. **目标消息与道路可达性**：`/gps_goal_ll` 无效状态、经纬度错误、缺少全局里程计或目标远离可行驶道路时，不会生成新路径。
+7. **遥控端全零或失联**：`/cmd_vel_remote` 连接存在并不代表有非零运动指令；手动源超过 1 秒不更新会输出零速度。
+8. **定位安全适用范围**：完整系统自动模式因 `/localization_safe=false` 停车，手动模式不会被此条件拦截；切换模式前应检查操作区域和遥控指令。
+9. **路沿/视觉误检**：MID360 右侧路沿是可选路径修正，GPU 板 HybridNets 目前仅用于接收与显示；不能把视觉 JSON 当成已经接入控制的参考线。
 
 ## 20. 推荐阅读顺序
 
 1. `src/neupan_ros/example/lxw_car/launch/full_system_run.launch`
 2. `src/neupan_ros/src/neupan_core.py`
-3. `src/robot_base_driver/src/base_driver_node.py`
-4. `src/robot_base_driver/src/global_odom_bridge.py`
-5. `src/robot_base_driver/src/global_path_tracker.py`
-6. `src/osm_map_handler/src/global_astar_node.cpp`
-7. `src/FAST_LIO/src/laserMapping.cpp`
-8. `src/road_vision_refinement/scripts/road_vision_node.py`
-9. 各包的 `config/`、`launch/`、`package.xml` 和 `CMakeLists.txt`
-10. Livox SDK、Astra 驱动、`build/` 和 `devel/`
+3. `src/osm_map_handler/scripts/gps_goal_bridge.py` 与 `src/osm_map_handler/src/global_astar_node.cpp`
+4. `src/robot_base_driver/src/control_mode_mux.py` 与 `src/robot_base_driver/src/base_driver_node.py`
+5. `src/robot_base_driver/src/global_odom_bridge.py`
+6. `src/robot_base_driver/src/global_path_tracker.py`（仅直接跟踪测试链路）
+7. `src/lidar_curb_refinement/README.md` 与 `src/hybridnets_receiver/README.md`
+8. FAST-LIO、Livox 驱动及各包的 `config/`、`launch/`、`package.xml`、`CMakeLists.txt`
 
 ## 21. 推荐调试方法
 
@@ -679,7 +682,9 @@ FAST-LIO 运行日志、点云数据和 RViz 配置。
 ```bash
 rosnode list
 rostopic list
-rostopic info /neupan_cmd_vel
+rostopic info /gps_goal_ll
+rostopic info /cmd_vel_remote
+rostopic info /cmd_vel/selected
 rostopic info /scan
 ```
 
@@ -697,37 +702,58 @@ rosrun tf tf_echo map odom
 rostopic echo /neupan/scan_health
 rostopic echo /gps_guard/status
 rostopic echo /localization_safe
-rostopic echo /road_vision/status
+rostopic echo /vehicle/control_mode/status
+rostopic echo /road_curb/status
+rostopic echo /hybridnets/result_json
 ```
 
-### 道路视觉测试
+### 收到云端目标但车辆不动
+
+按顺序检查；`/gps_goal_ll` 和 `/move_base_simple/goal` 是事件消息，需先运行 `rostopic echo` 再由云端发送新目标。前一步无数据时，先解决该步，再检查后续：
+
+```bash
+rostopic echo -n 1 /gps_goal_ll             # 目标经纬度及 status.status
+rostopic echo -n 1 /move_base_simple/goal    # 经纬度转出的 map 目标
+rostopic echo -n 1 /osm_global_path          # A* 米制路径
+rostopic echo -n 1 /osm_global_path_ll       # 同一路径的经纬度 JSON
+rostopic echo -n 1 /vehicle/control_mode/status
+rostopic echo -n 1 /localization_safe        # 自动模式需要 true
+rostopic echo -n 1 /cmd_vel/auto             # NeuPAN 原始自动速度
+rostopic echo -n 1 /cmd_vel/selected         # 最终送往串口底盘的速度
+```
+
+`/osm_global_path` 和 `/osm_global_path_ll` 为 latched；若一次目标未生成新路径，可能仍看到上一次规划结果，应结合消息时间戳、规划器日志和目标变化判断。手动接管时还要查看 `/cmd_vel_remote_raw`（若云端提供）、`/cmd_vel_remote`，并确认 `status.reason=remote_active`；ROS remap 后不要期待存在独立的 `/cmd_vel/remote` 发布者。最终速度非零但车不动时，检查底盘串口连接、死区与 MCU 状态。
+
+### 路沿检测测试
 
 ```bash
 source /opt/ros/noetic/setup.bash
 source devel/setup.bash
-roslaunch road_vision_refinement road_vision_debug.launch
+roslaunch lidar_curb_refinement road_curb_debug.launch
 ```
 
-车辆保持静止，不要同时启动完整导航或接入 NeuPAN。先验证：
-
-```text
-中心线 -> 道路右边缘 -> 暂时失效保持 -> 持续失效
-```
+先观察 `/road_curb/status`、`/road_curb/right_edge`、`/road_curb/lateral_error` 和两路调试点云，再决定是否启用 `enable_lidar_curb_control`。
 
 ### 录包复测
 
 重点记录：
 
 ```text
-/camera/rgb/image_rect_color
-/camera/rgb/camera_info
-/road_vision/debug_image
-/road_vision/center_line_mask
-/road_vision/road_mask
-/road_vision/status
-/road_vision/lateral_error
+/gps/fix
+/gps_goal_ll
+/odometry/global
+/localization_safe
+/vehicle/control_mode
+/vehicle/control_mode/status
+/cmd_vel_remote
+/cmd_vel/auto
+/cmd_vel/selected
 /osm_global_path
-/osm_global_path_refined
+/osm_global_path_ll
+/road_curb/status
+/road_curb/lateral_error
+/osm_global_path_curb_refined
+/hybridnets/result_json
 /scan
 /tf
 /tf_static
@@ -735,4 +761,4 @@ roslaunch road_vision_refinement road_vision_debug.launch
 
 ## 22. 一句话总结
 
-这是一个将 GPS、FAST-LIO、Livox、Astra、OSM、Hybrid A*、NeuPAN 和真实底盘串口整合到 ROS1 中的室内外导航系统：OSM 负责全局路径，FAST-LIO/GPS 负责定位，LaserScan 负责局部障碍，NeuPAN 或直接跟踪器负责控制，底盘驱动负责最终执行，道路视觉则作为独立的道路偏移检测和路径修正模块。
+这是一个把 GPS、FAST-LIO、Livox、OSM、NeuPAN、控制模式选择器和串口底盘整合在 ROS1 中的室内外导航系统：云端可下发经纬度目标并订阅经纬度路径；自动模式由 NeuPAN 控制并受定位安全保护，手动模式使用云端速度；MID360 路沿修正和 HybridNets 接收分别作为可选路径参考与独立感知输入。

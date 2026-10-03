@@ -6,12 +6,14 @@
     <arg name="use_sim_time" default="true"/>
     <arg name="publish_demo_goal" default="false"/>
     <arg name="dynamic_obstacles" default="false"/>
+    <arg name="obstacle_max_speed" default="0.5"/>
+    <arg name="show_goal_marker" default="true"/>
     <arg name="cmd_timeout" default="0.5"/>
     <arg name="cad_visual" default="true"/>
-    <arg name="rvo_goal_x_min" default="2.5"/>
-    <arg name="rvo_goal_x_max" default="7.5"/>
-    <arg name="rvo_goal_y_min" default="-2.5"/>
-    <arg name="rvo_goal_y_max" default="2.5"/>
+    <arg name="rvo_goal_x_min" default="1.5"/>
+    <arg name="rvo_goal_x_max" default="9.0"/>
+    <arg name="rvo_goal_y_min" default="-4.0"/>
+    <arg name="rvo_goal_y_max" default="4.0"/>
 
     <include file="$(find neupan_ros)/example/lxw_car_simulation/launch/neupan_lxwcar_gazebo.launch">
         <arg name="world_name" value="$(arg world_name)"/>
@@ -21,6 +23,8 @@
         <arg name="use_sim_time" value="$(arg use_sim_time)"/>
         <arg name="publish_demo_goal" value="$(arg publish_demo_goal)"/>
         <arg name="dynamic_obstacles" value="$(arg dynamic_obstacles)"/>
+        <arg name="obstacle_max_speed" value="$(arg obstacle_max_speed)"/>
+        <arg name="show_goal_marker" value="$(arg show_goal_marker)"/>
         <arg name="cmd_timeout" value="$(arg cmd_timeout)"/>
         <arg name="cad_visual" value="$(arg cad_visual)"/>
         <arg name="rvo_goal_x_min" value="$(arg rvo_goal_x_min)"/>

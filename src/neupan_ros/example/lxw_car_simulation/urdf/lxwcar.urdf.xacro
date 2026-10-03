@@ -60,8 +60,8 @@
       <geometry>
         <box size="${body_length} ${body_width} ${body_height}"/>
       </geometry>
-      <material name="lxw_body_green">
-        <color rgba="0.0 0.55 0.28 1"/>
+      <material name="lxw_body_grey">
+        <color rgba="0.55 0.58 0.60 1"/>
       </material>
     </visual>
     </xacro:unless>

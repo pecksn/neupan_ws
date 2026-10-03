@@ -1,9 +1,13 @@
 # parameters of rvo ros
 neighborDist: 4
 maxNeighbors: 10
-timeHorizon: 10
-timeHorizonObst: 5
+# A long horizon makes this dense crowd yield far in advance and stall.
+timeHorizon: 2
+timeHorizonObst: 2
 radius: 0.45
-maxSpeed: 0.08
+# m/s; overridden by the obstacle_max_speed launch argument when needed.
+maxSpeed: 0.5
 goal_threshold: 0.005
+# Reassign random goals when an agent fails to move 20 cm for this many sim seconds.
+goal_stall_timeout: 4.0
 agent_name: 'cross_clone_'

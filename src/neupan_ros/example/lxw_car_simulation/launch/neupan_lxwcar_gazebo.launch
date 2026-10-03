@@ -17,6 +17,8 @@
     <arg name="cad_visual" default="true"/>
     <arg name="publish_demo_goal" default="false"/>
     <arg name="dynamic_obstacles" default="false"/>
+    <arg name="obstacle_max_speed" default="0.5"/>
+    <arg name="show_goal_marker" default="true"/>
     <arg name="cmd_timeout" default="0.5"/>
     <arg name="rvo_goal_x_min" default="1.5"/>
     <arg name="rvo_goal_x_max" default="9.0"/>
@@ -35,6 +37,7 @@
 
     <group if="$(arg dynamic_obstacles)">
         <rosparam command="load" file="$(find neupan_ros)/example/lxw_car_simulation/config/rvo_config_complex.yaml"/>
+        <param name="maxSpeed" value="$(arg obstacle_max_speed)"/>
 
         <node name="rvo_node" pkg="rvo_ros" type="rvo_node" output="screen">
             <remap from="/rvo/model_states" to="/gazebo/model_states"/>
@@ -62,6 +65,9 @@
     <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher" output="screen">
         <param name="publish_frequency" value="50.0"/>
     </node>
+
+    <node if="$(arg show_goal_marker)" pkg="neupan_ros" type="gazebo_goal_marker.py"
+          name="gazebo_goal_marker" output="screen"/>
 
     <node pkg="neupan_ros" type="ackermann_sim_driver.py"
           name="ackermann_sim_driver" output="screen">
