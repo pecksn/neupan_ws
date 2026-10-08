@@ -33,7 +33,7 @@
 
 ## 1.1 编译与环境准备
 
-以下命令都在 ROS1 Noetic 环境中执行：
+NUC 主机输入 `Neupan`、按 `e` 进入容器，以下命令都在 ROS1 Noetic 环境中执行。日常启动无需重新编译；可直接使用 [核心启动指令.md](核心启动指令.md) 中的整段命令。
 
 ```bash
 cd /home/nuc/lxw/neupan_ws
@@ -69,6 +69,8 @@ roslaunch neupan_ros outdoor_global_only_test.launch \
 ```bash
 roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
 ```
+
+当前全系统的两个室外 NeuPAN 分支均使用 `example/lxw_car/model/acker_robot_default_6/model_5000.pth`。`neupan_config_outdoor.yaml` 的车体长 `0.95 m`、宽 `0.85 m`、轴距 `0.67 m`，与新模型训练几何一致；参考速度 `0.8 m/s`。更换模型时必须同步核对车体几何，不能仅替换 checkpoint。
 
 该启动文件默认接收 GPU 板原视频和 HybridNets JSON，同时发布 `/hybridnets/debug_image`，但不弹出摄像头画面窗口。需要临时查看叠加画面时：
 
@@ -175,6 +177,28 @@ rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.b
 ```
 
 确认 `/camera/remote_image_raw`、`/hybridnets/debug_image`、`/hybridnets/result_json`、`/cloud_registered_body` 的消息数均非零。
+
+### 运行卡顿诊断（2026-10-08 更新）
+
+全系统默认写入 `tracker_logs/system_run_full_日期_时间.jsonl`；普通及 HybridNets 录包配置均已加入下列诊断话题，重启后生效，录包命令不变。
+
+| 记录 | 排查用途 |
+|---|---|
+| `/cmd_vel/auto`、`/cmd_vel/selected` | 对比 NeuPAN 原始速度与最终输出 |
+| `/vehicle/control_mode/status` | 模式、指令年龄、超时阈值及 `auto_timeout` / `localization_unsafe` 原因 |
+| `/neupan/runtime` | 单次求解耗时、TF 查询耗时、成功规划指令更新间隔、速度和转角 |
+| `/Odometry`、`/odometry/lio_guarded`、`/odometry/local` | 对比原始 LIO、保护后 LIO、EKF 融合定位 |
+| `/gps_guard/local_fault_event` | 每次异常触发的位移、消息时间差、接收时间差及两种计算速度 |
+| `/gps_guard/status`、`/lio_guard/status`、`/localization_safe`、`/neupan/scan_health` | 定位、扫描与 TF 保护状态 |
+| `/motor/status`、`/motor/alarm` | 扭矩、温度和告警；当前 ≥7 N·m 仅告警，不因扭矩超限自动停车 |
+| `/neupan/config_snapshot` | 启动配置、模型路径及 SHA256（锁存发布，晚启动录包仍可接收） |
+| `/neupan/resources` | 每秒进程 CPU、内存和系统负载；CPU 百分比可超过 100% |
+
+JSONL 除 10 Hz 快照外，直接保存原始自动指令、规划耗时、模式变化及定位异常事件，避免短暂异常被快照漏掉；完整配置只保存为独立记录。新增诊断没有改变速度选择、定位跳变判断或停车阈值。
+
+2026-10-08 晚间日志发现两类卡顿：定位保护触发后保持约 2 秒；定位正常时也出现约 `0.8 → 0 → 0.8 m/s` 的周期切换，疑似规划更新超过默认 `0.5 s` 自动指令超时。后者需用新记录确认，不应直接归因于新模型或夜间光照。定位保护当前仍按接收时间差计算速度，新增消息时间差仅用于对比诊断。
+
+测试时重点检查：`solver_ms`、`command_interval_ms`、自动指令接收间隔是否超过 `500 ms`，零速度是否对应 `auto_timeout` 或 `localization_unsafe`。`angular.z` 在本车控制话题中是前轮转角（rad），不是车体偏航角速度。
 
 同时录制原视频和调试图会增加 bag 大小。仅在 NUC 本地相机调试时使用 `/camera/image_raw` 和 `/camera/camera_info`；不要与远程相机话题混用。
 
@@ -683,7 +707,7 @@ cd /home/nuc/lxw/neupan_ws && catkin_make && source devel/setup.bash
 | **adjust**               | q_s                    | 0.3        | 路径跟踪惩罚权重                  | float    |
 |                          | p_u                    | 2.5        | 控制量平滑惩罚权重                | float    |
 |                          | eta                    | 5.0        | 避障代价函数权重                  | float    |
-|                          | d_max                  | 2.0        | 障碍最大感知距离（m）             | float    |
+|                          | d_max                  | 2.0        | 优化中的避障距离目标上限（m），不是点云检测范围 | float    |
 |                          | d_min                  | 0.005      | 障碍最小安全距离（m）             | float    |
 
 | 模块   | 参数名                 | 公式对应关系                                                 | 核心轨迹影响                                                 |
@@ -693,7 +717,7 @@ cd /home/nuc/lxw/neupan_ws && catkin_make && source devel/setup.bash
 |        | ref_speed              | 基础代价 C0 中速度跟踪项参考值                               | 增大→轨迹巡航速度更快；减小→更平缓                           |
 |        | device                 | 无直接公式关联，仅影响计算效率                               | 固定为 CPU，不影响轨迹形状                                   |
 |        | time_print             | 无直接公式关联                                               | 仅控制日志输出，不影响轨迹                                   |
-|        | collision_threshold    | 碰撞判定阈值，对应 dist(Z,P)<0.01m 判定碰撞                  | 增大→碰撞判定更宽松；减小→更严格                             |
+|        | collision_threshold    | 规划器估计最小净距低于该值时停车                             | 增大→更早停车；减小→允许更贴近障碍物                         |
 | robot  | kinematics             | 运动学模型（acker = 阿克曼，diff = 差分），决定 At,Bt,ct 系数矩阵 | 切换模型→轨迹转弯逻辑改变（阿克曼有最小转弯半径，差分更灵活） |
 |        | wheelbase              | 阿克曼模型中轴距参数，影响转向角与转弯半径关系               | 增大→最小转弯半径变大，轨迹转弯更平缓；减小→转弯更灵活       |
 |        | max_speed              | 控制量约束 umin⪯uh⪯umax 中速度边界                           | 增大→轨迹最大速度上限提高；减小→更保守                       |
@@ -716,7 +740,7 @@ cd /home/nuc/lxw/neupan_ws && catkin_make && source devel/setup.bash
 | adjust | q_s                    | 基础代价 C0=∑qs∥s−sref∥2+pu∥u∥2 中轨迹跟踪权重               | 增大→轨迹更贴参考路径、不易偏离；减小→轨迹更灵活、易避障偏离 |
 |        | p_u                    | 基础代价 C0 中控制量平滑权重                                 | 增大→轨迹控制动作更柔和、无急拐；减小→控制动作更激进、轨迹可能抖动 |
 |        | eta                    | 避障代价 Cobs=η∑max(dmin−dist,0)2 中避障权重                 | 增大→避障优先级更高、轨迹绕障更明显；减小→避障激进、易贴障甚至碰撞 |
-|        | d_max                  | 障碍感知范围：仅处理 dist≤2.0m 的障碍物                      | 增大→感知范围更广、避障更提前；减小→过滤远处障碍、计算量降低 |
+|        | d_max                  | 优化中的避障距离目标上限，不是障碍点过滤距离                | 增大→允许优化争取更大净距；实际效果还受权重、路径与约束影响 |
 |        | d_min                  | 避障代价 Cobs 中最小安全距离                                 | 增大→轨迹离障碍物更远、更保守；减小→更贴障碍物、更激进       |
 
 ### 走直线左右摇摆问题
