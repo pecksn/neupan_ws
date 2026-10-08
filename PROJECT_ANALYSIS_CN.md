@@ -5,6 +5,8 @@
 > 项目基于 ROS1 Noetic。`src/` 是源码，`build/` 和 `devel/` 是 catkin 生成物，通常不应直接修改。
 >
 > 以下控制链路以 `neupan_ros/example/lxw_car/launch/full_system_run.launch` 为准；其他测试 launch 可能仍直接使用 `/neupan_cmd_vel`。这是静态代码分析，不能代替实车运行检查。
+>
+> 最近核对：2026-10-08。分析使用 codegraph 定位核心类和函数，并以源码及 launch 中的实际订阅、发布、参数和 remap 为准。
 
 ## 1. 项目总体结构
 
@@ -122,6 +124,21 @@ OSM A* -> /osm_global_path
 自动时，NeuPAN 继续发布 `/cmd_vel/auto`，选择器仅在自动指令未超时且定位安全时转发；手动时 NeuPAN 不停止，但选择器只转发 `/cmd_vel_remote`。最终输出始终是 `/cmd_vel/selected`。自动/手动指令超时默认分别为 `0.5 s`/`1.0 s`，超时输出零速度。这里 `Twist.angular.z` 被底盘驱动解释为**前轮转向角（弧度）**，不是差速车的角速度。
 
 完整系统把定位安全停车放在选择器的自动分支；手动模式不受 `/localization_safe` 拦截。使用 `use_global_ekf:=true` 时，本 launch 关闭选择器的这项定位门控；其他 launch 是否启用底盘自身的定位保护需单独检查。
+
+模式消息与速度消息的超时处理不同：启动后从未收到模式消息时采用默认自动模式；收到有效模式后，即使模式发布端断开，也保留最后一次模式，不会自动切回自动。当前没有模式心跳超时。模式发布端应周期发布或使用 latch，以便新启动的订阅者取得当前模式。
+
+### 2.6 控制状态的含义
+
+| `status.data` 中的 `reason` | 实际行为 |
+| --- | --- |
+| `starting` | 节点刚启动；随后由定时器更新状态 |
+| `auto_active` | 自动源及时且通过已启用的定位门控；仍可能转发零速度 |
+| `auto_timeout` | 自动源不存在或超过自动超时，输出零速度 |
+| `localization_unsafe` | 自动模式定位门控未通过，输出零速度 |
+| `remote_active` | 手动源及时，转发其速度；仍可能转发零速度 |
+| `remote_timeout` | 手动源不存在或超过手动超时，输出零速度 |
+
+状态话题为 latched JSON 字符串，实际结构是 `{"mode":1,"mode_name":"MANUAL","reason":"remote_active"}`。`active` 只表示速度源可用，不保证车辆正在运动；还需看 `/cmd_vel/selected` 的数值及串口执行情况。
 
 ## 3. 根目录文件夹
 
@@ -287,6 +304,8 @@ GPS 与 FAST-LIO 的全局定位安全守门器。
 - `set_mode`：切换 GPS 跟踪、GPS 丢失、本地续推和恢复状态。
 - `update_guard`：更新 GPS 跟踪、丢失、本地续推等状态；定时回调随后发布 `/odometry/global`、`/gps_guard/status` 和 `/localization_safe`。
 
+`localization_is_safe` 的条件是：全局与本地变换已初始化、本地里程计未超时，并且已过本地异常观察期。GPS 暂时失锁后，如果已初始化且本地续推正常，定位安全状态仍可能为 `true`；它不等价于“此刻 GPS 必须为 RTK Fixed”。启动时缺少 GPS 或本地里程计则无法完成初始化。
+
 ### `src/lio_odom_guard.py`
 
 FAST-LIO 输出保护器。
@@ -345,6 +364,8 @@ FAST-LIO 输出保护器。
 - `timerCallback`：维护 GPS Marker 和目标超时状态。
 
 主要输出：`/osm_global_path`（`nav_msgs/Path`，`map` 坐标米制路径）、`/osm_global_path_ll`（`std_msgs/String`，JSON 经纬度路径）、`/osm_vector_map`、`/hybrid_astar_subgoal`、`/initialpose`。两条路径只在成功规划后发布，均为 latched topic；经纬度路径不是 `nav_msgs/Path`，不要把经纬度写进 `Pose.position.x/y`。
+
+经纬度输出保留小数点后 8 位，转换对象是道路吸附、右侧偏移和重采样后的最终路径，不是 A* 搜索中访问过的全部候选节点。JSON 当前只有 `points`，没有路径 ID、时间戳、海拔或朝向；需要判断是否为新规划时，应结合原 `/osm_global_path.header.stamp` 和规划器日志。
 
 ### `scripts/gps_goal_bridge.py`
 
@@ -615,6 +636,16 @@ FAST-LIO 运行日志、点云数据和 RViz 配置。
 - `CMakeLists.txt`：定义消息生成、编译目标、链接库、脚本安装和测试。
 - launch 文件：决定节点、参数、话题 remap、TF 和启动条件。
 
+### `src/vehicle_bag_recorder`
+
+`scripts/bag_recorder.py` 的 `BagRecorder` 读取 YAML 配置，启动官方 `rosbag record`，监控磁盘空间及必录话题，结束时发送 SIGINT 等待 rosbag 完成索引。`config/vehicle_data.yaml` 是车辆数据配置，`config/hybridnets_data.yaml` 是视觉接收配置；输出包含 bag 和 JSON 清单。该工具只记录数据，不产生车辆控制指令。
+
+```bash
+roslaunch vehicle_bag_recorder record.launch
+```
+
+详细配置和存储目录以 [vehicle_bag_recorder/README.md](src/vehicle_bag_recorder/README.md) 为准。
+
 ## 18. 重点配置概念
 
 ### NeuPAN 配置
@@ -723,6 +754,25 @@ rostopic echo -n 1 /cmd_vel/selected         # 最终送往串口底盘的速度
 ```
 
 `/osm_global_path` 和 `/osm_global_path_ll` 为 latched；若一次目标未生成新路径，可能仍看到上一次规划结果，应结合消息时间戳、规划器日志和目标变化判断。手动接管时还要查看 `/cmd_vel_remote_raw`（若云端提供）、`/cmd_vel_remote`，并确认 `status.reason=remote_active`；ROS remap 后不要期待存在独立的 `/cmd_vel/remote` 发布者。最终速度非零但车不动时，检查底盘串口连接、死区与 MCU 状态。
+
+底盘速度死区为 `abs(linear.x) < 0.05 m/s`，落入死区时速度和转向都归零。最终速度非零也不意味着串口发送成功：串口打开失败时驱动仍可能注册为 ROS 节点，应检查 `Connected to serial port`、`Failed to connect to serial port` 或 `Serial write failed` 日志。
+
+### 单独验证手动接收
+
+已启动 ROS Master 和云端发布端时，可以启动一个只输出测试话题的选择器：
+
+```bash
+rosrun robot_base_driver control_mode_mux.py \
+  __name:=control_mode_mux_test \
+  /cmd_vel/remote:=/cmd_vel_remote \
+  /vehicle/control_mode:=/vehicle/control_mode_test \
+  _default_mode:=1 _remote_timeout:=1.0 \
+  _output_topic:=/cmd_vel/selected_test \
+  _status_topic:=/vehicle/control_mode/status_test
+rostopic echo /cmd_vel/selected_test
+```
+
+这能核对云端 `Twist` 是否被选择器接收及超时归零。完整系统运行检查还需确认 `/cmd_vel_remote` 的订阅者包含 `/control_mode_mux`，以及 `/cmd_vel/selected` 的订阅者包含 `/robot_base_driver`；仅在 `rostopic list` 中看到 topic 名不能证明有在线发布者或新消息。
 
 ### 路沿检测测试
 
