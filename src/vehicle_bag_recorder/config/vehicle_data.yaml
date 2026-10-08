@@ -59,6 +59,7 @@ topics:
   - /osm_global_path_ll
   - /osm_global_path_curb_refined
   - /move_base_simple/goal
+  - /goal_arrived
   - /neupan_goal
   - /road_curb/right_edge
   - /road_curb/lateral_error
@@ -69,6 +70,15 @@ topics:
   - /cmd_vel_remote
   - /cmd_vel/remote
   - /cmd_vel/selected
+  - /vehicle/control_mode/status
+  - /neupan/runtime
+  - /neupan/scan_health
+  - /odometry/lio_guarded
+  - /gps_guard/local_fault_event
+  - /motor/status
+  - /motor/alarm
+  - /neupan/resources
+  - /neupan/config_snapshot
   - /global_path_tracker/status
 
   # USB Camera3 输出。录制旋转 180° 后的原始彩色 Image，可在 rosbag

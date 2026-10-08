@@ -122,6 +122,7 @@ class GlobalOdomBridge:
         self.local_yaw_rate_deg_s = None
         self.previous_local_pose = None
         self.previous_local_recv = None
+        self.previous_local_stamp = None
         self.last_global_pose = None
 
         # map->odom transform estimated from trustworthy GPS and G90 heading.
@@ -146,6 +147,7 @@ class GlobalOdomBridge:
         self.pub = rospy.Publisher(self.output_topic, Odometry, queue_size=10)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=2, latch=True)
         self.safety_pub = rospy.Publisher(self.safety_topic, Bool, queue_size=2, latch=True)
+        self.local_fault_pub = rospy.Publisher("/gps_guard/local_fault_event", String, queue_size=30)
         rospy.Subscriber(self.input_topic, Odometry, self.gps_odom_cb, queue_size=10)
         rospy.Subscriber(self.local_topic, Odometry, self.local_odom_cb, queue_size=30)
         rospy.Subscriber(self.fix_topic, NavSatFix, self.fix_cb, queue_size=10)
@@ -214,10 +216,28 @@ class GlobalOdomBridge:
                 if yaw_rate > self.local_max_yaw_rate:
                     reasons.append("yaw_rate_%.1f" % math.degrees(yaw_rate))
                 if reasons:
+                    stamp_dt = None if self.previous_local_stamp is None else (
+                        msg.header.stamp - self.previous_local_stamp).to_sec()
+                    self.local_fault_pub.publish(json.dumps({
+                        "stamp": now.to_sec(), "reason": ",".join(reasons),
+                        "message_stamp": msg.header.stamp.to_sec(),
+                        "previous_message_stamp": None if self.previous_local_stamp is None
+                        else self.previous_local_stamp.to_sec(),
+                        "receive_dt_sec": dt, "message_dt_sec": stamp_dt,
+                        "dx_m": dx, "dy_m": dy, "distance_m": distance,
+                        "receive_speed_mps": speed,
+                        "message_speed_mps": distance / stamp_dt
+                        if stamp_dt is not None and stamp_dt > 0.0 else None,
+                        "lateral_speed_mps": lateral_speed,
+                        "yaw_rate_deg_s": math.degrees(yaw_rate),
+                        "speed_limit_mps": self.local_max_speed,
+                        "fault_hold_sec": self.local_fault_hold_sec,
+                    }, separators=(",", ":")))
                     self.handle_local_fault(now, msg, ",".join(reasons))
 
         self.previous_local_pose = copy.deepcopy(pose)
         self.previous_local_recv = now
+        self.previous_local_stamp = msg.header.stamp
         self.last_local_odom = msg
         self.last_local_recv = now
 

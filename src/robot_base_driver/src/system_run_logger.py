@@ -4,6 +4,7 @@ import json
 import math
 import os
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 
 import rospy
@@ -20,6 +21,8 @@ class SystemRunLogger:
 
     def __init__(self):
         rospy.init_node("system_run_logger")
+        self.log_lock = threading.RLock()
+        self.previous_auto_receive = None
 
         self.fix_topic = rospy.get_param("~fix_topic", "/gps/fix")
         self.gga_topic = rospy.get_param("~gga_topic", "/gnss/gpgga")
@@ -28,6 +31,9 @@ class SystemRunLogger:
         self.global_odom_topic = rospy.get_param("~global_odom_topic", "/odometry/global")
         self.local_odom_topic = rospy.get_param("~local_odom_topic", "/odometry/local")
         self.command_topic = rospy.get_param("~command_topic", "/neupan_cmd_vel")
+        self.auto_command_topic = rospy.get_param("~auto_command_topic", "/cmd_vel/auto")
+        self.control_mode_topic = rospy.get_param("~control_mode_topic", "/vehicle/control_mode/status")
+        self.neupan_runtime_topic = rospy.get_param("~neupan_runtime_topic", "/neupan/runtime")
         self.global_path_topic = rospy.get_param("~global_path_topic", "/osm_global_path")
         self.gps_guard_topic = rospy.get_param("~gps_guard_topic", "/gps_guard/status")
         self.lio_guard_topic = rospy.get_param("~lio_guard_topic", "/lio_guard/status")
@@ -61,6 +67,14 @@ class SystemRunLogger:
             "global_odom": None,
             "local_odom": None,
             "command": None,
+            "auto_command": None,
+            "control_mode": None,
+            "neupan_runtime": None,
+            "lio_guarded": None,
+            "motor_alarm": None,
+            "local_fault_event": None,
+            "neupan_resources": None,
+            "neupan_config": None,
             "global_path": None,
             "gps_guard": None,
             "lio_guard": None,
@@ -87,6 +101,19 @@ class SystemRunLogger:
         rospy.Subscriber(self.global_odom_topic, Odometry, self.global_odom_cb, queue_size=30)
         rospy.Subscriber(self.local_odom_topic, Odometry, self.local_odom_cb, queue_size=50)
         rospy.Subscriber(self.command_topic, Twist, self.command_cb, queue_size=100)
+        rospy.Subscriber(self.auto_command_topic, Twist, self.auto_command_cb, queue_size=100)
+        rospy.Subscriber(self.control_mode_topic, String, self.control_mode_cb, queue_size=50)
+        rospy.Subscriber(self.neupan_runtime_topic, String, self.neupan_runtime_cb, queue_size=50)
+        rospy.Subscriber("/odometry/lio_guarded", Odometry,
+                         lambda msg: self.update("lio_guarded", self.odom_dict(msg)), queue_size=50)
+        rospy.Subscriber("/motor/alarm", Bool,
+                         lambda msg: self.update("motor_alarm", bool(msg.data)), queue_size=20)
+        rospy.Subscriber("/gps_guard/local_fault_event", String,
+                         self.local_fault_event_cb, queue_size=100)
+        rospy.Subscriber("/neupan/resources", String,
+                         lambda msg: self.update("neupan_resources", self.parse_status(msg)), queue_size=10)
+        rospy.Subscriber("/neupan/config_snapshot", String,
+                         self.neupan_config_cb, queue_size=1)
         rospy.Subscriber(self.global_path_topic, Path, self.global_path_cb, queue_size=2)
         rospy.Subscriber(self.gps_guard_topic, String, self.gps_guard_cb, queue_size=20)
         rospy.Subscriber(self.lio_guard_topic, String, self.lio_guard_cb, queue_size=20)
@@ -116,6 +143,14 @@ class SystemRunLogger:
             "global_odom": self.global_odom_topic,
             "local_odom": self.local_odom_topic,
             "command": self.command_topic,
+            "auto_command": self.auto_command_topic,
+            "control_mode": self.control_mode_topic,
+            "neupan_runtime": self.neupan_runtime_topic,
+            "lio_guarded": "/odometry/lio_guarded",
+            "motor_alarm": "/motor/alarm",
+            "local_fault_event": "/gps_guard/local_fault_event",
+            "neupan_resources": "/neupan/resources",
+            "neupan_config": "/neupan/config_snapshot",
             "global_path": self.global_path_topic,
             "gps_guard": self.gps_guard_topic,
             "lio_guard": self.lio_guard_topic,
@@ -159,6 +194,10 @@ class SystemRunLogger:
             rospy.logerr("system_run_logger: failed to open log file: %s", exc)
 
     def write_record(self, record, force_flush=False, ignore_size_limit=False):
+        with self.log_lock:
+            return self.write_record_locked(record, force_flush, ignore_size_limit)
+
+    def write_record_locked(self, record, force_flush=False, ignore_size_limit=False):
         if self.log_file is None:
             return False
         line = json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n"
@@ -283,6 +322,43 @@ class SystemRunLogger:
             },
         )
 
+    def auto_command_cb(self, msg):
+        now = time.monotonic()
+        payload = {
+            "linear_x": float(msg.linear.x),
+            "angular_z": float(msg.angular.z),
+            "steering_deg": math.degrees(float(msg.angular.z)),
+            "receive_stamp": rospy.Time.now().to_sec(),
+            "receive_interval_ms": None if self.previous_auto_receive is None
+            else (now - self.previous_auto_receive) * 1000.0,
+        }
+        self.previous_auto_receive = now
+        self.update("auto_command", payload)
+        self.write_record({"record_type": "auto_command_event", "data": payload})
+
+    def control_mode_cb(self, msg):
+        payload = self.parse_status(msg)
+        self.update("control_mode", payload)
+        self.write_record({"record_type": "control_mode_event", "data": payload})
+
+    def neupan_runtime_cb(self, msg):
+        payload = self.parse_status(msg)
+        self.update("neupan_runtime", payload)
+        self.write_record({"record_type": "neupan_runtime_event", "data": payload})
+
+    def local_fault_event_cb(self, msg):
+        payload = self.parse_status(msg)
+        self.update("local_fault_event", payload)
+        self.write_record({"record_type": "local_fault_event", "data": payload})
+
+    def neupan_config_cb(self, msg):
+        payload = self.parse_status(msg)
+        self.update("neupan_config", {
+            key: payload.get(key) for key in
+            ("stamp", "config_file", "dune_checkpoint", "checkpoint_sha256")
+        })
+        self.write_record({"record_type": "neupan_config", "data": payload})
+
     def global_path_cb(self, msg):
         if not msg.poses:
             self.update("global_path", {"frame_id": msg.header.frame_id, "points": 0})
@@ -378,6 +454,10 @@ class SystemRunLogger:
             )
 
     def on_shutdown(self):
+        with self.log_lock:
+            self.close_log_locked()
+
+    def close_log_locked(self):
         if self.log_file is None:
             return
         try:
@@ -394,6 +474,7 @@ class SystemRunLogger:
                 ignore_size_limit=True,
             )
             self.log_file.close()
+            self.log_file = None
             rospy.loginfo("system_run_logger: closed combined log %s", self.log_path)
         except Exception as exc:
             rospy.logwarn("system_run_logger: failed to close log: %s", exc)

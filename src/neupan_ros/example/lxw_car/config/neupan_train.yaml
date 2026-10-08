@@ -7,7 +7,7 @@ robot:
   max_speed: [1.0, 0.35]
   max_acce: [0.8, 0.08] 
   length: 0.95          
-  width: 0.60           
+  width: 0.85           
 
 train:
   direct_train: true

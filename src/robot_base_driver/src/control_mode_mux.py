@@ -90,7 +90,18 @@ class ControlModeMux:
         return self.last_remote, "remote_active"
 
     def publish_status(self, reason):
-        payload = {"mode": self.mode, "mode_name": self.MODE_NAMES[self.mode], "reason": reason}
+        now = rospy.Time.now()
+        payload = {
+            "stamp": now.to_sec(), "mode": self.mode,
+            "mode_name": self.MODE_NAMES[self.mode], "reason": reason,
+            "auto_age_sec": None if self.last_auto is None else
+            (now - self.last_auto_time).to_sec(),
+            "remote_age_sec": None if self.last_remote is None else
+            (now - self.last_remote_time).to_sec(),
+            "auto_timeout_sec": self.auto_timeout,
+            "remote_timeout_sec": self.remote_timeout,
+            "localization_safe": self.localization_safe,
+        }
         self.status_pub.publish(String(data=json.dumps(payload, separators=(",", ":"))))
         self.last_reason = reason
 

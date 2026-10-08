@@ -51,6 +51,23 @@ topics:
   - /osm_global_path_curb_refined
   - /road_curb/status
   - /cmd_vel/selected
+  - /cmd_vel/auto
+  - /vehicle/control_mode/status
+  - /neupan/runtime
+  - /neupan/scan_health
+  - /gps_guard/status
+  - /lio_guard/status
+  - /localization_safe
+  - /odometry/local
+  - /odometry/global
+  - /odometry/gps
+  - /gnss/gpgga
+  - /odometry/lio_guarded
+  - /gps_guard/local_fault_event
+  - /motor/status
+  - /motor/alarm
+  - /neupan/resources
+  - /neupan/config_snapshot
 
 # 同时录原视频和叠加图会增加写盘量；分包和磁盘剩余空间保护仍然生效。
 record_all: false
