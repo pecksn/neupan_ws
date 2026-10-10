@@ -59,3 +59,4 @@ src/rvo_ros/
 
 # Generated inference videos (large local artifacts)
 /videos/
+/.runtime_diagnostics/

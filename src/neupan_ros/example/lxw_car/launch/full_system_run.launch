@@ -11,6 +11,7 @@
     <arg name="enable_lidar_curb_control" default="false" doc="让NeuPAN跟踪路沿修正路径；实车标定确认前保持false"/>
     <arg name="enable_lidar_curb_log" default="true" doc="路缘启用时持续写入独立JSONL日志"/>
     <arg name="enable_hybridnets_receiver" default="true" doc="随全系统启动GPU板HybridNets视频与JSON接收"/>
+    <arg name="enable_hybridnets_overlay" default="true" doc="是否计算HybridNets调试叠加图；关闭后仍接收原视频与JSON"/>
     <arg name="show_hybridnets_overlay" default="false" doc="是否弹出HybridNets结果叠加窗口"/>
     <arg name="hybridnets_receiver_config" default="$(find hybridnets_receiver)/config/receiver.yaml" />
     <arg name="hybridnets_require_control_fields" default="false" doc="GPU升级为双边界v3 JSON后设为true" />
@@ -330,6 +331,7 @@
         </node>
     </group>
 
+    <node if="$(arg enable_system_log)" pkg="robot_base_driver" type="system_resource_monitor.py" name="system_resource_monitor" output="screen" />
     <node if="$(arg enable_system_log)" pkg="robot_base_driver" type="system_run_logger.py" name="system_run_logger" output="screen">
         <param name="fix_topic" value="/gps/fix" />
         <param name="gga_topic" value="/gnss/gpgga" />
@@ -478,7 +480,7 @@
              file="$(find hybridnets_receiver)/launch/receiver.launch">
         <arg name="config" value="$(arg hybridnets_receiver_config)" />
         <arg name="start_video" value="true" />
-        <arg name="start_overlay" value="true" />
+        <arg name="start_overlay" value="$(arg enable_hybridnets_overlay)" />
         <arg name="show_overlay" value="$(arg show_hybridnets_overlay)" />
         <arg name="require_control_fields" value="$(arg hybridnets_require_control_fields)" />
     </include>

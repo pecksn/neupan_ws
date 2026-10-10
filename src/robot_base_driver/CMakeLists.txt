@@ -36,5 +36,6 @@ catkin_install_python(PROGRAMS
   src/lio_odom_guard.py
   src/map_odom_align_bridge.py
   src/system_run_logger.py
+  src/system_resource_monitor.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

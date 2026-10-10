@@ -23,10 +23,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 from neupan import neupan
 import json
 import time
-import os
-import resource
-import hashlib
-import yaml
 import rospy
 from geometry_msgs.msg import Twist, PoseStamped, Quaternion, PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry, Path
@@ -119,7 +115,7 @@ class neupan_core:
         self.robot_state = None  # (3, 1) [x, y, theta]
         self.stop = False
         self.arrive = False
-        self.goal_arrival_reported = False
+        self.goal_arrived_state = False
         self.arrival_path_key = None
         self.current_adjust_profile_name = "init"
         self.current_adjust_values = None
@@ -135,28 +131,7 @@ class neupan_core:
         self.vel_pub = rospy.Publisher("/neupan_cmd_vel", Twist, queue_size=10)
         self.runtime_pub = rospy.Publisher("/neupan/runtime", String, queue_size=10)
         self.last_command_monotonic = None
-        self.resource_pub = rospy.Publisher("/neupan/resources", String, queue_size=2)
-        self.config_snapshot_pub = rospy.Publisher("/neupan/config_snapshot", String,
-                                                   queue_size=1, latch=True)
-        with open(self.planner_config_file) as config_file:
-            planner_config = yaml.safe_load(config_file)
-        checkpoint_hash = None
-        if self.dune_checkpoint and os.path.isfile(self.dune_checkpoint):
-            with open(self.dune_checkpoint, "rb") as checkpoint:
-                checkpoint_hash = hashlib.sha256(checkpoint.read()).hexdigest()
-        self.config_snapshot_pub.publish(json.dumps({
-            "stamp": rospy.Time.now().to_sec(),
-            "config_file": self.planner_config_file,
-            "planner_config": planner_config,
-            "dune_checkpoint": self.dune_checkpoint,
-            "checkpoint_sha256": checkpoint_hash,
-            "node_parameters": rospy.get_param("~", {}),
-        }, separators=(",", ":")))
-        self.resource_previous_time = time.monotonic()
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        self.resource_previous_cpu = usage.ru_utime + usage.ru_stime
-        self.resource_timer = rospy.Timer(rospy.Duration(1.0), self.publish_resources)
-        self.goal_arrived_pub = rospy.Publisher("/goal_arrived", String, queue_size=10)
+        self.goal_arrived_pub = rospy.Publisher("/goal_arrived", String, queue_size=1, latch=True)
         self.plan_pub = rospy.Publisher("/neupan_plan", Path, queue_size=10)
         self.ref_state_pub = rospy.Publisher(
             "/neupan_ref_state", Path, queue_size=10
@@ -189,23 +164,11 @@ class neupan_core:
         rospy.Subscriber("/initial_path", Path, self.path_callback)
         rospy.Subscriber("/neupan_waypoints", Path, self.waypoints_callback)
         rospy.Subscriber("/neupan_goal", PoseStamped, self.goal_callback)
+        goal_arrived_rate = max(0.1, float(rospy.get_param("~goal_arrived_publish_rate", 2.0)))
+        self.goal_arrived_timer = rospy.Timer(
+            rospy.Duration(1.0 / goal_arrived_rate), self.goal_arrived_timer_callback
+        )
         
-    def publish_resources(self, _event):
-        now = time.monotonic()
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        cpu = usage.ru_utime + usage.ru_stime
-        elapsed = now - self.resource_previous_time
-        with open("/proc/self/statm") as statm:
-            rss_mb = int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1048576.0
-        self.resource_pub.publish(json.dumps({
-            "stamp": rospy.Time.now().to_sec(), "pid": os.getpid(),
-            "cpu_percent": 100.0 * (cpu - self.resource_previous_cpu) / elapsed
-            if elapsed > 0 else 0.0,
-            "rss_mb": rss_mb, "load_average": list(os.getloadavg()),
-            "cpu_count": os.cpu_count(),
-        }, separators=(",", ":")))
-        self.resource_previous_time = now
-        self.resource_previous_cpu = cpu
 
     def run(self):
 
@@ -341,7 +304,7 @@ class neupan_core:
                 "planner_arrive": bool(self.arrive),
             }, separators=(",", ":")))
             self.last_command_monotonic = command_time
-            self.publish_goal_arrival()
+            self.update_goal_arrival()
 
             # 计算并打印距离目的地的距离
             if (
@@ -648,10 +611,12 @@ class neupan_core:
             )
             return
 
-    def publish_goal_arrival(self):
-        if self.arrive and not self.goal_arrival_reported:
-            self.goal_arrived_pub.publish(String(data="car_arrive"))
-            self.goal_arrival_reported = True
+    def update_goal_arrival(self):
+        if self.arrive:
+            self.goal_arrived_state = True
+
+    def goal_arrived_timer_callback(self, _event):
+        self.goal_arrived_pub.publish(String(data="1" if self.goal_arrived_state else "0"))
 
     def path_callback(self, path):
         path_frame = path.header.frame_id if path.header.frame_id else "map"
@@ -715,7 +680,7 @@ class neupan_core:
                 path_key += tuple(initial_point_list[-1][:3, 0])
             if path_key != self.arrival_path_key:
                 self.arrival_path_key = path_key
-                self.goal_arrival_reported = False
+                self.goal_arrived_state = False
     
     def waypoints_callback(self, path):
         
@@ -751,7 +716,7 @@ class neupan_core:
                 rospy.loginfo_throttle(1.0, "initial path update from waypoints")
             self.neupan_planner.update_initial_path_from_waypoints(waypoints_list)
             self.neupan_planner.reset()
-            self.goal_arrival_reported = False
+            self.goal_arrived_state = False
 
     def goal_callback(self, goal):
 
@@ -765,7 +730,7 @@ class neupan_core:
             rospy.loginfo("Set NeuPAN goal: x=%.2f y=%.2f yaw=%.1fdeg", x, y, degrees(theta))
         self.neupan_planner.update_initial_path_from_goal(self.robot_state, self.goal)
         self.neupan_planner.reset()
-        self.goal_arrival_reported = False
+        self.goal_arrived_state = False
 
 
     def quat_to_yaw_list(self, quater):

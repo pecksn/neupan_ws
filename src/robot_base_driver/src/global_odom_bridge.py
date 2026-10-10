@@ -14,6 +14,94 @@ from std_msgs.msg import Bool, String
 from tf.transformations import quaternion_from_euler
 
 
+class LocalMotionGuard:
+    """Judge pose motion using source timestamps, not callback scheduling."""
+
+    def __init__(self, max_speed, max_lateral, max_yaw_rate,
+                 window_sec=0.2, confirm_sec=0.1, max_gap_sec=0.5,
+                 position_jump_m=0.35, yaw_jump_rad=math.radians(15)):
+        self.max_speed = max_speed
+        self.max_lateral = max_lateral
+        self.max_yaw_rate = max_yaw_rate
+        self.window = window_sec
+        self.confirm = confirm_sec
+        self.max_gap = max_gap_sec
+        self.position_jump = position_jump_m
+        self.yaw_jump = yaw_jump_rad
+        self.history = deque()
+        self.suspect_since = None
+
+    @staticmethod
+    def angle(value):
+        return math.atan2(math.sin(value), math.cos(value))
+
+    def observe(self, stamp, pose):
+        result = {"accepted": False, "fault": None, "candidate_reason": None,
+                  "window_speed_mps": None, "window_lateral_speed_mps": None,
+                  "window_yaw_rate_deg_s": None}
+        if not all(math.isfinite(v) for v in (stamp,) + pose) or stamp <= 0:
+            result["candidate_reason"] = "invalid_pose_or_timestamp"
+            return result
+        if self.history and stamp <= self.history[-1][0]:
+            result["candidate_reason"] = "non_monotonic_timestamp"
+            return result
+        result["accepted"] = True
+        if self.history:
+            old_stamp, old_pose = self.history[-1]
+            dt = stamp - old_stamp
+            dx, dy = pose[0] - old_pose[0], pose[1] - old_pose[1]
+            distance = math.hypot(dx, dy)
+            yaw_delta = abs(self.angle(pose[2] - old_pose[2]))
+            result.update(message_dt_sec=dt, dx_m=dx, dy_m=dy,
+                          distance_m=distance, message_speed_mps=distance / dt)
+            # Preserve an immediate stop for a discontinuity too large for
+            # normal motion, even if the source interval is unusually short.
+            if dt > self.max_gap:
+                result["fault"] = "message_gap_%.3fs" % dt
+            elif distance > max(self.position_jump, self.max_speed * dt):
+                result["fault"] = "position_jump_%.3fm" % distance
+            elif yaw_delta > max(self.yaw_jump, self.max_yaw_rate * dt):
+                result["fault"] = "yaw_jump_%.1fdeg" % math.degrees(yaw_delta)
+            if result["fault"]:
+                self.history.clear()
+                self.suspect_since = None
+                self.history.append((stamp, pose))
+                return result
+        self.history.append((stamp, pose))
+        while len(self.history) > 2 and stamp - self.history[1][0] >= self.window:
+            self.history.popleft()
+        old_stamp, old_pose = self.history[0]
+        dt = stamp - old_stamp
+        if dt + 1e-9 < self.window:
+            return result
+        dx, dy = pose[0] - old_pose[0], pose[1] - old_pose[1]
+        speed = math.hypot(dx, dy) / dt
+        lateral = abs(-dx * math.sin(old_pose[2]) + dy * math.cos(old_pose[2])) / dt
+        yaw_rate = abs(self.angle(pose[2] - old_pose[2])) / dt
+        result.update(window_dt_sec=dt, window_speed_mps=speed,
+                      window_lateral_speed_mps=lateral,
+                      window_yaw_rate_deg_s=math.degrees(yaw_rate))
+        reasons = []
+        if speed > self.max_speed:
+            reasons.append("speed_%.2f" % speed)
+        if lateral > self.max_lateral:
+            reasons.append("lateral_%.2f" % lateral)
+        if yaw_rate > self.max_yaw_rate:
+            reasons.append("yaw_rate_%.1f" % math.degrees(yaw_rate))
+        if reasons:
+            result["candidate_reason"] = ",".join(reasons)
+            if self.suspect_since is None:
+                self.suspect_since = stamp
+            if stamp - self.suspect_since + 1e-9 >= self.confirm:
+                result["fault"] = "window_" + result["candidate_reason"]
+                self.history.clear()
+                self.history.append((stamp, pose))
+                self.suspect_since = None
+        else:
+            self.suspect_since = None
+        return result
+
+
 class GlobalOdomBridge:
     """Build a continuous global odometry using GPS corrections and local dead reckoning."""
 
@@ -102,6 +190,15 @@ class GlobalOdomBridge:
         self.local_fault_hold_sec = max(
             0.0, float(rospy.get_param("~local_fault_hold_sec", 2.0))
         )
+        self.local_motion_guard = LocalMotionGuard(
+            self.local_max_speed, self.local_max_lateral_speed, self.local_max_yaw_rate,
+            window_sec=max(0.05, float(rospy.get_param("~local_motion_window_sec", 0.2))),
+            confirm_sec=max(0.0, float(rospy.get_param("~local_motion_confirm_sec", 0.1))),
+            max_gap_sec=max(0.1, float(rospy.get_param("~local_motion_max_gap_sec", 0.5))),
+            position_jump_m=max(0.05, float(rospy.get_param("~local_position_jump_m", 0.35))),
+            yaw_jump_rad=math.radians(max(1.0, float(rospy.get_param("~local_yaw_jump_deg", 15.0)))),
+        )
+        self.local_motion_diagnostics = None
 
         self.last_gps_odom = None
         self.last_gps_recv = None
@@ -194,47 +291,37 @@ class GlobalOdomBridge:
     def local_odom_cb(self, msg):
         now = rospy.Time.now()
         pose = msg.pose.pose
-        if self.previous_local_pose is not None and self.previous_local_recv is not None:
-            dt = (now - self.previous_local_recv).to_sec()
-            if 0.005 <= dt <= self.data_timeout_sec:
-                dx = pose.position.x - self.previous_local_pose.position.x
-                dy = pose.position.y - self.previous_local_pose.position.y
-                distance = math.hypot(dx, dy)
-                previous_yaw = self.yaw_from_quaternion(self.previous_local_pose.orientation)
-                yaw = self.yaw_from_quaternion(pose.orientation)
-                yaw_rate = abs(self.normalize_angle(yaw - previous_yaw)) / dt
-                speed = distance / dt
-                lateral_speed = abs(-dx * math.sin(previous_yaw) + dy * math.cos(previous_yaw)) / dt
-                self.local_speed_mps = speed
-                self.local_lateral_speed_mps = lateral_speed
-                self.local_yaw_rate_deg_s = math.degrees(yaw_rate)
-                reasons = []
-                if speed > self.local_max_speed:
-                    reasons.append("speed_%.2f" % speed)
-                if lateral_speed > self.local_max_lateral_speed:
-                    reasons.append("lateral_%.2f" % lateral_speed)
-                if yaw_rate > self.local_max_yaw_rate:
-                    reasons.append("yaw_rate_%.1f" % math.degrees(yaw_rate))
-                if reasons:
-                    stamp_dt = None if self.previous_local_stamp is None else (
-                        msg.header.stamp - self.previous_local_stamp).to_sec()
-                    self.local_fault_pub.publish(json.dumps({
-                        "stamp": now.to_sec(), "reason": ",".join(reasons),
-                        "message_stamp": msg.header.stamp.to_sec(),
-                        "previous_message_stamp": None if self.previous_local_stamp is None
-                        else self.previous_local_stamp.to_sec(),
-                        "receive_dt_sec": dt, "message_dt_sec": stamp_dt,
-                        "dx_m": dx, "dy_m": dy, "distance_m": distance,
-                        "receive_speed_mps": speed,
-                        "message_speed_mps": distance / stamp_dt
-                        if stamp_dt is not None and stamp_dt > 0.0 else None,
-                        "lateral_speed_mps": lateral_speed,
-                        "yaw_rate_deg_s": math.degrees(yaw_rate),
-                        "speed_limit_mps": self.local_max_speed,
-                        "fault_hold_sec": self.local_fault_hold_sec,
-                    }, separators=(",", ":")))
-                    self.handle_local_fault(now, msg, ",".join(reasons))
-
+        current = (pose.position.x, pose.position.y,
+                   self.yaw_from_quaternion(pose.orientation))
+        result = self.local_motion_guard.observe(msg.header.stamp.to_sec(), current)
+        receive_dt = None if self.previous_local_recv is None else (
+            now - self.previous_local_recv).to_sec()
+        result.update(
+            stamp=now.to_sec(), message_stamp=msg.header.stamp.to_sec(),
+            previous_message_stamp=None if self.previous_local_stamp is None
+            else self.previous_local_stamp.to_sec(),
+            receive_dt_sec=receive_dt,
+            receive_speed_mps=result.get("distance_m", 0.0) / receive_dt
+            if receive_dt is not None and receive_dt > 0.0 else None,
+            speed_limit_mps=self.local_max_speed,
+            fault_hold_sec=self.local_fault_hold_sec,
+            motion_window_sec=self.local_motion_guard.window,
+            motion_confirm_sec=self.local_motion_guard.confirm,
+            fault_triggered=result["fault"] is not None,
+        )
+        if result["fault"] or not result["accepted"]:
+            result["reason"] = result["fault"] or result["candidate_reason"]
+            self.local_fault_pub.publish(json.dumps(result, separators=(",", ":")))
+        self.local_motion_diagnostics = result
+        if not result["accepted"]:
+            # Replayed/duplicate/invalid messages must not refresh freshness or
+            # replace the pose used by the map->odom bridge.
+            return
+        self.local_speed_mps = result["window_speed_mps"]
+        self.local_lateral_speed_mps = result["window_lateral_speed_mps"]
+        self.local_yaw_rate_deg_s = result["window_yaw_rate_deg_s"]
+        if result["fault"]:
+            self.handle_local_fault(now, msg, result["fault"])
         self.previous_local_pose = copy.deepcopy(pose)
         self.previous_local_recv = now
         self.previous_local_stamp = msg.header.stamp
@@ -638,6 +725,7 @@ class GlobalOdomBridge:
             "satellites": satellites,
             "hdop": hdop,
             "localization_safe": localization_safe,
+            "local_motion_diagnostics": self.local_motion_diagnostics,
             "local_fault_reason": self.local_fault_reason,
             "local_speed_mps": self.local_speed_mps,
             "local_lateral_speed_mps": self.local_lateral_speed_mps,

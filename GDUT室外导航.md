@@ -70,7 +70,7 @@ roslaunch neupan_ros outdoor_global_only_test.launch \
 roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
 ```
 
-当前全系统的两个室外 NeuPAN 分支均使用 `example/lxw_car/model/acker_robot_default_6/model_5000.pth`。`neupan_config_outdoor.yaml` 的车体长 `0.95 m`、宽 `0.85 m`、轴距 `0.67 m`，与新模型训练几何一致；参考速度 `0.8 m/s`。更换模型时必须同步核对车体几何，不能仅替换 checkpoint。
+当前全系统的两个室外 NeuPAN 分支均使用 `example/lxw_car/model/acker_robot_default_6/model_5000.pth`。`neupan_config_outdoor.yaml` 的车体长 `0.95 m`、宽 `0.85 m`、轴距 `0.67 m`，与新模型训练几何一致；参考速度 `0.8 m/s`。更换模型时必须同步核对车体几何，不能仅替换 checkpoint。旧模型 `_5`（训练宽度 `0.60 m`）保留用于对比。
 
 该启动文件默认接收 GPU 板原视频和 HybridNets JSON，同时发布 `/hybridnets/debug_image`，但不弹出摄像头画面窗口。需要临时查看叠加画面时：
 
@@ -81,6 +81,8 @@ roslaunch neupan_ros full_system_run.launch \
 ```
 
 临时不接收 GPU 板数据时增加 `enable_hybridnets_receiver:=false`。全系统已经启动接收器时，不要再单独启动 `receiver.launch`，否则 UDP 端口会冲突。
+
+仅关闭调试叠加图增加 `enable_hybridnets_overlay:=false`，原视频、虚拟摄像头和 JSON 继续接收；`show_hybridnets_overlay:=false` 只是不弹窗，不会停止绘图。关闭绘图后不产生 `/hybridnets/debug_image`，HybridNets 专用录包配置会告警缺少该必录话题；原图、JSON 和雷达仍可录制。
 
 ### OSM A* + TEB
 
@@ -180,6 +182,8 @@ rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.b
 
 ### 运行卡顿诊断（2026-10-08 更新）
 
+资源采集由独立节点 `robot_base_driver/src/system_resource_monitor.py` 完成，全系统随 `enable_system_log` 自动启动；`system_run_logger.py` 负责保存。`neupan_core.py` 仅保留规划耗时/指令间隔记录，不再读取主机资源或生成配置快照。主机进程排名由主机端 `host_process_monitor.py` 采集，独立 ROS 节点读取其快照；两者不在规划计算进程内运行。
+
 全系统默认写入 `tracker_logs/system_run_full_日期_时间.jsonl`；普通及 HybridNets 录包配置均已加入下列诊断话题，重启后生效，录包命令不变。
 
 | 记录 | 排查用途 |
@@ -192,11 +196,19 @@ rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.b
 | `/gps_guard/status`、`/lio_guard/status`、`/localization_safe`、`/neupan/scan_health` | 定位、扫描与 TF 保护状态 |
 | `/motor/status`、`/motor/alarm` | 扭矩、温度和告警；当前 ≥7 N·m 仅告警，不因扭矩超限自动停车 |
 | `/neupan/config_snapshot` | 启动配置、模型路径及 SHA256（锁存发布，晚启动录包仍可接收） |
-| `/neupan/resources` | 每秒进程 CPU、内存和系统负载；CPU 百分比可超过 100% |
+| `/neupan/resources` | 每秒进程 CPU/内存、整机 CPU/内存使用率、I/O 等待率、交换空间及主机 CPU 占用前 10 个进程；CPU 百分比统一按整机为 100% |
 
 JSONL 除 10 Hz 快照外，直接保存原始自动指令、规划耗时、模式变化及定位异常事件，避免短暂异常被快照漏掉；完整配置只保存为独立记录。新增诊断没有改变速度选择、定位跳变判断或停车阈值。
 
-2026-10-08 晚间日志发现两类卡顿：定位保护触发后保持约 2 秒；定位正常时也出现约 `0.8 → 0 → 0.8 m/s` 的周期切换，疑似规划更新超过默认 `0.5 s` 自动指令超时。后者需用新记录确认，不应直接归因于新模型或夜间光照。定位保护当前仍按接收时间差计算速度，新增消息时间差仅用于对比诊断。
+整机使用率字段：`system_cpu_percent`、`system_cpu_iowait_percent`、`system_memory_percent`；容量字段：`system_memory_total_mb`、`system_memory_used_mb`、`system_memory_available_mb`、`system_swap_used_mb`。CPU 按相邻采样的 `/proc/stat` 差值计算，内存按总量减可用量计算（包含可回收缓存的可用估计），从 Linux `/proc` 读取；当前容器中这些系统计数反映主机整体，不是容器独占额度。`cpu_percent` 和 `rss_mb` 仍仅表示 NeuPAN 进程。
+
+不再记录 `load_average`。`host_top_processes` 保存主机 CPU 占用前 10 个进程的 PID、程序/脚本名称、CPU 百分比、驻留内存、状态和线程数；不保存任意命令参数。`cpu_percent` 统一按整机全部逻辑核心为 100%，即单核口径除以逻辑核心数；原单核口径保留为 `cpu_core_percent`，用 `cpu_percent_basis=whole_machine` 区分旧日志。16 核机器上，原 400% 对应整机 25%。进程前 10 名之和不等于整机总占用，另用 `system_cpu_percent` 查看总占用。主机用户服务 `neupan-host-process-monitor.service` 每秒采集，随 NUC 用户登录启动，容器通过共享目录读取，避免漏掉主机远程桌面等进程。`host_process_snapshot_valid=false` 表示采集器不可用或数据超过 5 秒，不代表没有高占用进程。新增内容重启 NeuPAN 后进入运行 JSONL 和 rosbag。
+
+2026-10-08 晚间日志发现两类卡顿：定位保护触发后保持约 2 秒；定位正常时也出现约 `0.8 → 0 → 0.8 m/s` 的周期切换，疑似规划更新超过默认 `0.5 s` 自动指令超时。后者需用新记录确认，不应直接归因于新模型或夜间光照。
+
+2026-10-09 优化局部运动保护：以消息时间戳在约 `0.2 s` 窗口中计算净位移/航向变化，持续超限约 `0.1 s` 才触发；接收时间只用于新鲜度与诊断，重复、倒序或无效消息不会刷新定位新鲜度。明显瞬时位移超过 `max(0.35 m, 速度上限×消息间隔)`、角度变化超过 `max(15°, 角速度上限×消息间隔)`，或消息时间间隔超过 `0.5 s`，立即触发保护。速度/横向速度/角速度上限及 `2 s` 停车保持不变；GPS 固定解、精度要求和 NeuPAN 指令超时不变。
+
+可调私有参数：`local_motion_window_sec`（0.2）、`local_motion_confirm_sec`（0.1）、`local_motion_max_gap_sec`（0.5）、`local_position_jump_m`（0.35）、`local_yaw_jump_deg`（15）。`/gps_guard/status.local_motion_diagnostics` 保存窗口判断；`/gps_guard/local_fault_event.fault_triggered` 区分实际停车与被忽略的异常时间戳。11 项离线回归测试覆盖正常运动、短间隔厘米级修正、真实位置/角度跳变、持续超限、重复/倒序消息和断流；已有 10 Hz 快照回放未复现原异常，但不能替代全频率 rosbag 和低速实车验证。重启全系统生效。
 
 测试时重点检查：`solver_ms`、`command_interval_ms`、自动指令接收间隔是否超过 `500 ms`，零速度是否对应 `auto_timeout` 或 `localization_unsafe`。`angular.z` 在本车控制话题中是前轮转角（rad），不是车体偏航角速度。
 
@@ -2062,7 +2074,7 @@ GPU 当前输出 `normal` / `unknown`，场景字段不决定是否保留边界�
 | 设备/接口 | 地址 | 用途 |
 |---|---|---|
 | GPU 板 `eno1` | `192.168.10.20/24` | ROS2 推理与发送 |
-| NUC `enxec1ac33f2710`，连接名 `GPU板通信` | `192.168.10.21/24` | ROS1 接收 |
+| NUC `enxec1ac33f2710`，连接名 `GPU板通信` | `192.168.10.21/24` | ROS1 接收，当前使用百兆 USB 网口 |
 | NUC `enp114s0` | `192.168.1.100/24` | MID360 专用 |
 
 NUC 主机检查网络（不要在 ROS1 容器内修改 NetworkManager）：
@@ -2074,7 +2086,7 @@ ip route get 192.168.10.20
 ping 192.168.10.20
 ```
 
-路由应显示接口 `enxec1ac33f2710`、源地址 `192.168.10.21`。
+路由应显示接口 `enxec1ac33f2710`、源地址 `192.168.10.21`。当前百兆连接 `GPU板通信` 自动连接；备用千兆连接 `GPU板通信-千兆` 关闭自动连接，避免重复配置同一 IP。
 
 端口约定：
 
