@@ -673,11 +673,13 @@ class neupan_core:
                 rospy.loginfo_throttle(1.0, "initial path update from given path")
             self.neupan_planner.set_initial_path(initial_point_list)
             self.neupan_planner.reset()
-            # Refinement retains the original header; rearm only for a new route.
+            # rospy rewrites header.seq when a refinement node republishes.
+            # Use source stamp and final goal so camera corrections cannot
+            # rearm an already reached goal just by changing transport sequence.
             path_stamp = path.header.stamp.to_nsec()
-            path_key = (path.header.seq, path_stamp)
-            if path_stamp == 0:
-                path_key += tuple(initial_point_list[-1][:3, 0])
+            path_key = (path_frame, path_stamp,
+                        round(float(initial_point_list[-1][0, 0]), 4),
+                        round(float(initial_point_list[-1][1, 0]), 4))
             if path_key != self.arrival_path_key:
                 self.arrival_path_key = path_key
                 self.goal_arrived_state = False

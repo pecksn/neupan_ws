@@ -37,5 +37,6 @@ catkin_install_python(PROGRAMS
   src/map_odom_align_bridge.py
   src/system_run_logger.py
   src/system_resource_monitor.py
+  src/camera_right_path.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

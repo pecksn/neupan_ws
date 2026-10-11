@@ -9,6 +9,18 @@
     <arg name="enable_livox_driver" default="true"  doc="实车必须开启雷达驱动"/>
     <arg name="enable_lidar_curb" default="false" doc="启动MID360右侧路沿检测"/>
     <arg name="enable_lidar_curb_control" default="false" doc="让NeuPAN跟踪路沿修正路径；实车标定确认前保持false"/>
+    <arg name="enable_camera_right_path" default="false" doc="输出摄像头靠右验证路径，不改变控制" />
+    <arg name="enable_camera_right_control" default="false" doc="显式启用摄像头参考路径修正；先完成影子模式验证" />
+    <arg name="camera_right_center_clearance_m" default="-1" doc="旧中心距离覆盖；-1按右轮外沿距离换算" />
+    <arg name="camera_right_wheel_clearance_m" default="1.5" doc="右轮胎外沿距右边界目标距离" />
+    <arg name="camera_right_track_width_m" default="0.67" doc="用户确认的实车左右轮中心间距" />
+    <arg name="camera_right_tire_width_m" default="0.08" doc="轮胎宽度暂取仿真值，需实车确认" />
+    <arg name="camera_right_wheel_offset_m" default="-1" doc="中心至右轮外沿覆盖值；-1按轮距及胎宽换算" />
+    <arg name="camera_right_wheel_geometry_verified" default="false" />
+    <arg name="camera_right_strategy" default="segment_cache" doc="segment_cache: 道路段确认后缓存；realtime: 第一种实时修正" />
+    <arg name="camera_right_distance_reference" default="camera_center" doc="默认按相机光学中心的道路横向间距" />
+    <arg name="camera_right_camera_clearance_m" default="2.0" doc="相机光学中心到右边界的平面横向目标间距" />
+    <arg name="camera_right_base_link_height_m" default="0.20" doc="用户确认base_link离地约20cm；不改变传感器安装TF" />
     <arg name="enable_lidar_curb_log" default="true" doc="路缘启用时持续写入独立JSONL日志"/>
     <arg name="enable_hybridnets_receiver" default="true" doc="随全系统启动GPU板HybridNets视频与JSON接收"/>
     <arg name="enable_hybridnets_overlay" default="true" doc="是否计算HybridNets调试叠加图；关闭后仍接收原视频与JSON"/>
@@ -24,6 +36,7 @@
     <!-- OSM 地图原点（建议与 datum 一致） -->
     <arg name="map_origin_lat" default="23.0398" />
     <arg name="map_origin_lon" default="113.39002" />
+    <arg name="osm_map_file" default="/home/nuc/lxw/ros_maps/map.osm" />
     <arg name="outdoor_ekf_tf_time_offset" default="0.0" doc="室外时 EKF TF 时间偏移，建议 0 以避免时序警告" />
     <arg name="gps_port" default="/dev/wheeltec_gnss" doc="G90 接到上位机后的串口设备名" />
     <arg name="gps_baud" default="115200" doc="G90 NMEA 串口波特率" />
@@ -108,8 +121,9 @@
     <arg name="remote_command_timeout" default="1.0" />
     <arg name="outdoor_use_hybrid_astar" default="false" doc="室外是否启用 Hybrid A*；false 时 NeuPAN 直接跟踪 OSM A* 路径" />
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" doc="室外 NeuPAN 初始路径来源话题；可选 /osm_global_path 或 /sPath" />
-    <arg name="outdoor_control_path_topic" value="$(arg lidar_curb_refined_path_topic)" if="$(arg enable_lidar_curb_control)" />
-    <arg name="outdoor_control_path_topic" value="$(arg outdoor_initial_path_topic)" unless="$(arg enable_lidar_curb_control)" />
+    <arg name="outdoor_control_path_topic" value="/camera_right/control_path" if="$(arg enable_camera_right_control)" />
+    <arg name="outdoor_control_path_topic" value="$(arg lidar_curb_refined_path_topic)" if="$(eval arg('enable_lidar_curb_control') and not arg('enable_camera_right_control'))" />
+    <arg name="outdoor_control_path_topic" value="$(arg outdoor_initial_path_topic)" unless="$(eval arg('enable_lidar_curb_control') or arg('enable_camera_right_control'))" />
     <arg name="neupan_config_indoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_indoor.yaml" />
     <arg name="neupan_config_outdoor" default="$(find neupan_ros)/example/lxw_car/config/neupan_config_outdoor.yaml" />
     <arg name="enable_adaptive_adjust" default="false" doc="是否根据最近障碍物距离动态调整 NeuPAN 权重" />
@@ -288,6 +302,7 @@
     <group if="$(arg outdoor_mode)">
         <!-- 启动室外 C++ A* 规划器 -->
         <node pkg="osm_map_handler" type="global_astar_node" name="outdoor_global_astar" output="screen">
+            <param name="osm_file" value="$(arg osm_map_file)" />
             <param name="default_lat" value="$(arg map_origin_lat)" />
             <param name="default_lon" value="$(arg map_origin_lon)" />
             <param name="lookahead_dist" value="$(arg osm_lookahead_dist)" />
@@ -464,6 +479,24 @@
         </group>
     </group>
 
+    <include if="$(eval arg('outdoor_mode') and (arg('enable_camera_right_path') or arg('enable_camera_right_control')))"
+             file="$(find robot_base_driver)/launch/camera_right_path.launch">
+        <arg name="control_enabled" value="$(arg enable_camera_right_control)" />
+        <arg name="input_path_topic" value="$(arg outdoor_initial_path_topic)" />
+        <arg name="center_clearance_m" value="$(arg camera_right_center_clearance_m)" />
+        <arg name="wheel_clearance_m" value="$(arg camera_right_wheel_clearance_m)" />
+        <arg name="track_width_m" value="$(arg camera_right_track_width_m)" />
+        <arg name="tire_width_m" value="$(arg camera_right_tire_width_m)" />
+        <arg name="right_wheel_lateral_offset_m" value="$(arg camera_right_wheel_offset_m)" />
+        <arg name="wheel_geometry_verified" value="$(arg camera_right_wheel_geometry_verified)" />
+        <arg name="strategy" value="$(arg camera_right_strategy)" />
+        <arg name="distance_reference" value="$(arg camera_right_distance_reference)" />
+        <arg name="camera_clearance_m" value="$(arg camera_right_camera_clearance_m)" />
+        <arg name="base_link_height_m" value="$(arg camera_right_base_link_height_m)" />
+        <arg name="osm_file" value="$(arg osm_map_file)" />
+        <arg name="map_origin_lat" value="$(arg map_origin_lat)" />
+        <arg name="map_origin_lon" value="$(arg map_origin_lon)" />
+    </include>
     <include if="$(arg enable_lidar_curb)" file="$(find lidar_curb_refinement)/launch/road_curb_debug.launch">
         <arg name="cloud_topic" value="/cloud_registered_body" />
         <arg name="base_frame" value="base_link" />

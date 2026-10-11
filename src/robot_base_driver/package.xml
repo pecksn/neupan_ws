@@ -28,6 +28,9 @@
   <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>python3-serial</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>wheeltec_gps_driver</exec_depend>
 
 </package>

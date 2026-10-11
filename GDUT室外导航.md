@@ -2358,3 +2358,66 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
 ## 13.2 世界模型
 
 RSSM+雷达encoder+neupan
+
+## 摄像头靠右控制
+
+独立节点 `src/robot_base_driver/src/camera_right_path.py` 使用道路段校正缓存，目标是相机光学中心横向距右边界约 2 m（不是三维斜距，也不是车轮距离）。它只修正全局参考路径，不改原 OSM 文件、不直接发布速度；速度和转角仍由 NeuPAN 计算，雷达避障、定位保护、指令超时和人工接管保留。默认关闭视觉控制。
+
+### 启动命令
+
+进入 `Neupan` 后按 `e` 进入 ROS1，GPU 端同时启动实时摄像头推流与 JSON 发送。NUC 启用实际靠右控制：
+
+```bash
+cd /home/nuc/lxw/neupan_ws
+conda activate lxw
+source /opt/ros/noetic/setup.bash
+source /home/nuc/lxw/neupan_ws/devel/setup.bash
+sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+
+roslaunch neupan_ros full_system_run.launch outdoor_mode:=true \
+  enable_camera_right_path:=true enable_camera_right_control:=true \
+  camera_right_strategy:=segment_cache camera_right_camera_clearance_m:=2.0 \
+  camera_right_base_link_height_m:=0.20 \
+  enable_hybridnets_overlay:=false enable_rviz:=false
+```
+
+首次建议先用影子模式：只计算视觉修正路线，不交给 NeuPAN 控制；车辆仍可能按原 OSM 路线行驶，并非停车模式。在上述 ROS1 环境中运行（已有全系统时先停止旧实例）：
+
+```bash
+roslaunch neupan_ros full_system_run.launch outdoor_mode:=true \
+  enable_camera_right_path:=true enable_camera_right_control:=false \
+  camera_right_strategy:=segment_cache camera_right_camera_clearance_m:=2.0 \
+  camera_right_base_link_height_m:=0.20 \
+  enable_hybridnets_overlay:=false enable_rviz:=false
+```
+
+另开 ROS1 终端查看状态：
+
+```bash
+rostopic echo /camera_right/status
+```
+
+`active: true` 表示存在有效视觉修正，`guidance_source: osm` 表示使用原路线；`reason` 给出回退原因。影子路径为 `/camera_right/reference_path`，启用控制后 NeuPAN 的 `/initial_path` 接收 `/camera_right/control_path`。无需开启绘图或 RViz，不要同时启用 `enable_lidar_curb_control`。
+
+### 核心条件与回退
+
+- 建立新校正需要左右边界有效、定位安全、JSON 和接收器 valid 信号新鲜；使用连续边界点段，不跨缺口拟合。图像为标定时的 1920×1080、旋转后坐标。
+- GPU/NUC 时钟需同步，`capture_timestamp_ns` 必须为真实采集时间；采集时间差超出 -50～500 ms、`source_age_ms` 超过 300 ms 时不能建立新校正。未解决时钟和采集时间问题前不启用视觉实车控制。
+- 每个路线点需 3 个不同帧的一致观察，缓存最多 30 s；短暂边界丢失可复用有效缓存，无缓存回退 OSM。新路线、定位异常、地图对齐变化超过 0.2 m 或 2° 会清空缓存。
+- 最大校正 1.5 m，按 0.15 m/s 渐进生效，路径最多 2 Hz 更新；不外推未观察路段、不移动起终点，左侧至少留 0.75 m 几何余量。短路段不保证完全达到 2 m。`camera_right_strategy:=realtime` 可切回实时策略对照。
+
+OSM 优先处理路口/转弯：读取同一 `osm_map_file` 的道路连接点，检查前方约 8 m 路线转向；处于路口附近或路线转角超过约 20° 时清空视觉缓存、沿原 OSM 路线行驶，不强制保持相机中心 2 m。右边界暂时不清晰只允许复用有效的已观察缓存，没有缓存就回到 OSM。
+
+地面按 `base_link` 下方 0.20 m 计算（`camera_right_base_link_height_m:=0.20`，默认值），相机离地约 0.468 m；不修改标定外参。视频只投影近处合理视场内的连续路线，排除远处侧向路段，不跨缺口连线；实际导航仍保留完整路线。修正视频：[comparison.mp4](rosbag_videos/rosbag20261008_155045/right_driving_2m_ground20_fixed/comparison.mp4)。离线缓存修正 45/982 个样本，未应用全部实时保护，不代表实车控制已验收。
+
+### 验证与录制
+
+25 项单元测试及 ROS1 隔离影子联调通过，尚未完成实车控制验收。平地模型尚不补偿坡道、车身俯仰；节点失效后的独立停车看门狗尚未实现。先用实时数据完成影子验证，再在封闭场地低速、可随时人工接管的条件下测试控制，不建议无监督运行。
+
+`src/vehicle_bag_recorder/config/hybridnets_data.yaml` 已包含 `/camera_right/reference_path`、`/camera_right/control_path`、`/camera_right/status`，用于后续 bag 检查；旧 bag 超过时效门槛，不能将离线结果当作实时控制验收。
+
+```bash
+python src/Test/test_camera_right.py
+```
+
+默认只运行几何单元测试；`--ros` 仅允许独立 master `http://127.0.0.1:11319` 且 `control_enabled=false` 的影子联调，禁止在车辆主 master 上运行。bag 视频与外参验证统一使用 `src/usb_camera/scripts/validate_driving_extrinsics.py`。
