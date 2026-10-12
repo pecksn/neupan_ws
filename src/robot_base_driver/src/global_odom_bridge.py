@@ -102,6 +102,46 @@ class LocalMotionGuard:
         return result
 
 
+class DeadReckoningBudget:
+    """Bound uncorrected travel/time, not an estimate of actual pose error."""
+
+    def __init__(self, max_distance_m, max_duration_sec):
+        self.max_distance_m = max(0.1, float(max_distance_m))
+        self.max_duration_sec = max(1.0, float(max_duration_sec))
+        self.reset()
+
+    def reset(self):
+        self.started_at = None
+        self.last_xy = None
+        self.distance_m = 0.0
+        self.limit_reason = None
+
+    def begin(self, now_sec, xy=None):
+        if self.started_at is None:
+            self.started_at = now_sec
+            self.last_xy = xy
+
+    def observe(self, xy):
+        if self.started_at is None:
+            return
+        if self.last_xy is not None:
+            self.distance_m += math.hypot(xy[0] - self.last_xy[0], xy[1] - self.last_xy[1])
+        self.last_xy = xy
+
+    def elapsed_sec(self, now_sec):
+        return 0.0 if self.started_at is None else max(0.0, now_sec - self.started_at)
+
+    def check(self, now_sec):
+        if self.started_at is None:
+            return None
+        if self.limit_reason is None:
+            if self.distance_m >= self.max_distance_m:
+                self.limit_reason = "dead_reckoning_distance_limit"
+            elif self.elapsed_sec(now_sec) >= self.max_duration_sec:
+                self.limit_reason = "dead_reckoning_time_limit"
+        return self.limit_reason
+
+
 class GlobalOdomBridge:
     """Build a continuous global odometry using GPS corrections and local dead reckoning."""
 
@@ -199,6 +239,10 @@ class GlobalOdomBridge:
             yaw_jump_rad=math.radians(max(1.0, float(rospy.get_param("~local_yaw_jump_deg", 15.0)))),
         )
         self.local_motion_diagnostics = None
+        self.dead_reckoning_budget = DeadReckoningBudget(
+            rospy.get_param("~dead_reckoning_max_distance_m", 100.0),
+            rospy.get_param("~dead_reckoning_max_duration_sec", 600.0),
+        )
 
         self.last_gps_odom = None
         self.last_gps_recv = None
@@ -322,6 +366,14 @@ class GlobalOdomBridge:
         self.local_yaw_rate_deg_s = result["window_yaw_rate_deg_s"]
         if result["fault"]:
             self.handle_local_fault(now, msg, result["fault"])
+        if self.transform_initialized and self.mode != self.TRACKING:
+            xy = (pose.position.x, pose.position.y)
+            if result["fault"]:
+                # A reset/jump is not measured vehicle travel. Keep accumulated
+                # budget and elapsed time while rebasing the local coordinate.
+                self.dead_reckoning_budget.last_xy = xy
+            else:
+                self.dead_reckoning_budget.observe(xy)
         self.previous_local_pose = copy.deepcopy(pose)
         self.previous_local_recv = now
         self.previous_local_stamp = msg.header.stamp
@@ -550,6 +602,15 @@ class GlobalOdomBridge:
         self.transform_yaw = self.normalize_angle(self.transform_yaw + yaw_step)
 
     def set_mode(self, mode, reason):
+        if mode == self.TRACKING:
+            # Reset only after trusted GPS correction/initialization/recovery.
+            self.dead_reckoning_budget.reset()
+        elif self.transform_initialized:
+            xy = None
+            if self.last_local_odom is not None:
+                position = self.last_local_odom.pose.pose.position
+                xy = (position.x, position.y)
+            self.dead_reckoning_budget.begin(rospy.Time.now().to_sec(), xy)
         if mode != self.mode:
             if mode == self.DEAD_RECKONING:
                 rospy.logwarn("GPS guard: %s -> %s (%s)", self.mode, mode, reason)
@@ -703,6 +764,7 @@ class GlobalOdomBridge:
             and self.last_local_recv is not None
             and (now - self.last_local_recv).to_sec() <= self.data_timeout_sec
             and now >= self.local_bad_until
+            and self.dead_reckoning_budget.check(now.to_sec()) is None
         )
 
     def publish_status(self, now):
@@ -725,6 +787,11 @@ class GlobalOdomBridge:
             "satellites": satellites,
             "hdop": hdop,
             "localization_safe": localization_safe,
+            "dead_reckoning_elapsed_sec": self.dead_reckoning_budget.elapsed_sec(now.to_sec()),
+            "dead_reckoning_distance_m": self.dead_reckoning_budget.distance_m,
+            "dead_reckoning_limit_reason": self.dead_reckoning_budget.check(now.to_sec()),
+            "dead_reckoning_max_distance_m": self.dead_reckoning_budget.max_distance_m,
+            "dead_reckoning_max_duration_sec": self.dead_reckoning_budget.max_duration_sec,
             "local_motion_diagnostics": self.local_motion_diagnostics,
             "local_fault_reason": self.local_fault_reason,
             "local_speed_mps": self.local_speed_mps,

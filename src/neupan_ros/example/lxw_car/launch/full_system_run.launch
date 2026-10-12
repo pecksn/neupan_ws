@@ -75,6 +75,8 @@
     <arg name="gps_guard_local_max_lateral_speed" default="0.8" doc="FAST-LIO允许的最大横向速度" />
     <arg name="gps_guard_local_max_yaw_rate_deg" default="90.0" doc="FAST-LIO允许的最大瞬时角速度" />
     <arg name="gps_guard_local_fault_hold_sec" default="2.0" doc="本地里程计跳变后的停车观察时间" />
+    <arg name="gps_guard_dead_reckoning_max_distance_m" default="100.0" doc="无可信GPS校正时的累计续推路程上限(米)，需实测标定" />
+    <arg name="gps_guard_dead_reckoning_max_duration_sec" default="600.0" doc="无可信GPS校正时的续推时间上限(秒)，包含停车等待" />
     <!-- FAST-LIO进入本地EKF前的独立输出保护。 -->
     <arg name="lio_guard_max_speed" default="2.0" doc="LIO最大平面速度，超过则拒绝该段输出" />
     <arg name="lio_guard_max_lateral_speed" default="0.8" doc="LIO最大车体横向速度" />
@@ -175,6 +177,8 @@
         <arg name="gps_guard_local_max_lateral_speed" value="$(arg gps_guard_local_max_lateral_speed)" />
         <arg name="gps_guard_local_max_yaw_rate_deg" value="$(arg gps_guard_local_max_yaw_rate_deg)" />
         <arg name="gps_guard_local_fault_hold_sec" value="$(arg gps_guard_local_fault_hold_sec)" />
+        <arg name="gps_guard_dead_reckoning_max_distance_m" value="$(arg gps_guard_dead_reckoning_max_distance_m)" />
+        <arg name="gps_guard_dead_reckoning_max_duration_sec" value="$(arg gps_guard_dead_reckoning_max_duration_sec)" />
         <arg name="lio_guard_max_speed" value="$(arg lio_guard_max_speed)" />
         <arg name="lio_guard_max_lateral_speed" value="$(arg lio_guard_max_lateral_speed)" />
         <arg name="lio_guard_max_yaw_rate_deg" value="$(arg lio_guard_max_yaw_rate_deg)" />
@@ -349,6 +353,10 @@
     <node if="$(arg enable_system_log)" pkg="robot_base_driver" type="system_resource_monitor.py" name="system_resource_monitor" output="screen" />
     <node if="$(arg enable_system_log)" pkg="robot_base_driver" type="system_run_logger.py" name="system_run_logger" output="screen">
         <param name="fix_topic" value="/gps/fix" />
+        <param name="gps_goal_topic" value="/gps_goal_ll" />
+        <param name="map_goal_topic" value="/move_base_simple/goal" />
+        <param name="global_path_ll_topic" value="/osm_global_path_ll" />
+        <param name="goal_arrived_topic" value="/goal_arrived" />
         <param name="gga_topic" value="/gnss/gpgga" />
         <param name="heading_topic" value="/heading" />
         <param name="global_odom_topic" value="/odometry/global" />
@@ -363,7 +371,7 @@
         <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
         <param name="sample_rate" value="10.0" />
         <param name="flush_interval" value="1.0" />
-        <param name="max_file_size_mb" value="256.0" />
+        <param name="max_file_size_mb" value="0.0" /> <!-- 0 表示不限制日志文件大小 -->
         <param name="timezone_offset_hours" value="8.0" />
         <param name="print_to_screen" value="false" />
     </node>

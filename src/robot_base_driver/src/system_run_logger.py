@@ -8,7 +8,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 import rospy
-from geometry_msgs.msg import QuaternionStamped, Twist
+from geometry_msgs.msg import PoseStamped, QuaternionStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from nmea_msgs.msg import Gpgga
 from sensor_msgs.msg import NavSatFix
@@ -25,6 +25,10 @@ class SystemRunLogger:
         self.previous_auto_receive = None
 
         self.fix_topic = rospy.get_param("~fix_topic", "/gps/fix")
+        self.gps_goal_topic = rospy.get_param("~gps_goal_topic", "/gps_goal_ll")
+        self.map_goal_topic = rospy.get_param("~map_goal_topic", "/move_base_simple/goal")
+        self.global_path_ll_topic = rospy.get_param("~global_path_ll_topic", "/osm_global_path_ll")
+        self.goal_arrived_topic = rospy.get_param("~goal_arrived_topic", "/goal_arrived")
         self.gga_topic = rospy.get_param("~gga_topic", "/gnss/gpgga")
         self.heading_topic = rospy.get_param("~heading_topic", "/heading")
         self.gps_odom_topic = rospy.get_param("~gps_odom_topic", "/odometry/gps")
@@ -52,8 +56,9 @@ class SystemRunLogger:
         )
         self.sample_rate = max(1.0, float(rospy.get_param("~sample_rate", 10.0)))
         self.flush_interval = max(0.1, float(rospy.get_param("~flush_interval", 1.0)))
+        # Zero (the default) disables the file-size cap; positive values opt in.
         self.max_file_size_bytes = max(
-            1, int(float(rospy.get_param("~max_file_size_mb", 256.0)) * 1024 * 1024)
+            0, int(float(rospy.get_param("~max_file_size_mb", 0.0)) * 1024 * 1024)
         )
         self.print_to_screen = bool(rospy.get_param("~print_to_screen", False))
         self.timezone_offset_hours = float(rospy.get_param("~timezone_offset_hours", 8.0))
@@ -61,6 +66,10 @@ class SystemRunLogger:
 
         self.latest = {
             "gps_fix": None,
+            "gps_goal": None,
+            "map_goal": None,
+            "global_path_ll": None,
+            "goal_arrived": None,
             "gga": None,
             "heading": None,
             "gps_odom": None,
@@ -95,6 +104,10 @@ class SystemRunLogger:
         self.open_log_file()
 
         rospy.Subscriber(self.fix_topic, NavSatFix, self.fix_cb, queue_size=20)
+        rospy.Subscriber(self.gps_goal_topic, NavSatFix, self.gps_goal_cb, queue_size=20)
+        rospy.Subscriber(self.map_goal_topic, PoseStamped, self.map_goal_cb, queue_size=20)
+        rospy.Subscriber(self.global_path_ll_topic, String, self.global_path_ll_cb, queue_size=2)
+        rospy.Subscriber(self.goal_arrived_topic, String, self.goal_arrived_cb, queue_size=20)
         rospy.Subscriber(self.gga_topic, Gpgga, self.gga_cb, queue_size=20)
         rospy.Subscriber(self.heading_topic, QuaternionStamped, self.heading_cb, queue_size=30)
         rospy.Subscriber(self.gps_odom_topic, Odometry, self.gps_odom_cb, queue_size=30)
@@ -137,6 +150,10 @@ class SystemRunLogger:
     def topic_map(self):
         return {
             "fix": self.fix_topic,
+            "gps_goal": self.gps_goal_topic,
+            "map_goal": self.map_goal_topic,
+            "global_path_ll": self.global_path_ll_topic,
+            "goal_arrived": self.goal_arrived_topic,
             "gga": self.gga_topic,
             "heading": self.heading_topic,
             "gps_odom": self.gps_odom_topic,
@@ -204,6 +221,7 @@ class SystemRunLogger:
         line_size = len(line.encode("utf-8"))
         if (
             not ignore_size_limit
+            and self.max_file_size_bytes > 0
             and self.log_size_bytes + line_size > self.max_file_size_bytes
         ):
             if not self.log_capped:
@@ -242,25 +260,92 @@ class SystemRunLogger:
         return None if header.stamp == rospy.Time() else header.stamp.to_sec()
 
     def update(self, key, value):
-        self.latest[key] = value
-        self.received_at[key] = rospy.Time.now().to_sec()
+        with self.log_lock:
+            self.latest[key] = value
+            self.received_at[key] = rospy.Time.now().to_sec()
+
+    def fix_dict(self, msg):
+        return {
+            "msg_stamp": self.message_stamp(msg.header),
+            "frame_id": msg.header.frame_id,
+            "status": int(msg.status.status),
+            "service": int(msg.status.service),
+            "latitude": float(msg.latitude),
+            "longitude": float(msg.longitude),
+            "altitude": float(msg.altitude),
+            "cov_x": float(msg.position_covariance[0]),
+            "cov_y": float(msg.position_covariance[4]),
+            "cov_z": float(msg.position_covariance[8]),
+            "position_covariance": [float(v) for v in msg.position_covariance],
+            "covariance_type": int(msg.position_covariance_type),
+        }
 
     def fix_cb(self, msg):
-        self.update(
-            "gps_fix",
-            {
-                "msg_stamp": self.message_stamp(msg.header),
-                "status": int(msg.status.status),
-                "service": int(msg.status.service),
-                "latitude": float(msg.latitude),
-                "longitude": float(msg.longitude),
-                "altitude": float(msg.altitude),
-                "cov_x": float(msg.position_covariance[0]),
-                "cov_y": float(msg.position_covariance[4]),
-                "cov_z": float(msg.position_covariance[8]),
-                "covariance_type": int(msg.position_covariance_type),
-            },
-        )
+        self.update("gps_fix", self.fix_dict(msg))
+
+    def record_navigation_event(self, key, payload, summary=None):
+        """Log full event data with a coherent snapshot; keep periodic samples compact."""
+        with self.log_lock:
+            self.update(key, payload if summary is None else summary)
+            now = self.received_at[key]
+            context_keys = (
+                "gps_goal", "map_goal", "goal_arrived", "gps_fix", "gga", "heading",
+                "gps_odom", "global_odom", "local_odom", "gps_guard",
+                "localization_safe", "control_mode", "command",
+            )
+            self.write_record({
+                "record_type": key + "_event",
+                "stamp": now,
+                "local_time": self.local_time_string(),
+                "topic": self.topic_map()[key],
+                "data": payload,
+                "context": {name: self.latest[name] for name in context_keys},
+                "context_received_at": {name: self.received_at[name] for name in context_keys},
+            }, force_flush=True)
+
+    def gps_goal_cb(self, msg):
+        # Record all received targets, including ones rejected by the goal bridge.
+        self.record_navigation_event("gps_goal", self.fix_dict(msg))
+
+    def map_goal_cb(self, msg):
+        self.record_navigation_event("map_goal", {
+            "msg_stamp": self.message_stamp(msg.header),
+            "frame_id": msg.header.frame_id,
+            "x": float(msg.pose.position.x),
+            "y": float(msg.pose.position.y),
+            "z": float(msg.pose.position.z),
+            "yaw_deg": self.yaw_deg(msg.pose.orientation),
+        })
+
+    def goal_arrived_cb(self, msg):
+        with self.log_lock:
+            payload = {"state": msg.data, "valid": msg.data in ("0", "1"),
+                       "arrived": msg.data == "1"}
+            previous = self.latest["goal_arrived"]
+            if previous is None or previous["state"] != msg.data:
+                self.record_navigation_event("goal_arrived", payload)
+            else:
+                self.update("goal_arrived", payload)
+
+    def global_path_ll_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            if not isinstance(payload, dict) or not isinstance(payload.get("points"), list):
+                raise ValueError("expected a JSON object with a points array")
+            points = payload["points"]
+            if any(not isinstance(point, dict) or any(
+                    not isinstance(point.get(name), (int, float))
+                    or isinstance(point.get(name), bool)
+                    or not math.isfinite(point[name])
+                    for name in ("latitude", "longitude")) for point in points):
+                raise ValueError("expected finite latitude/longitude in every point")
+            summary = {"valid": True, "points": len(points),
+                       "start": points[0] if points else None,
+                       "end": points[-1] if points else None}
+        except (TypeError, ValueError) as exc:
+            payload = {"valid": False, "error": str(exc), "raw": msg.data}
+            summary = {"valid": False, "error": str(exc)}
+        self.record_navigation_event("global_path_ll", payload, summary)
 
     def gga_cb(self, msg):
         self.update(
@@ -296,6 +381,7 @@ class SystemRunLogger:
             "child_frame_id": msg.child_frame_id,
             "x": float(msg.pose.pose.position.x),
             "y": float(msg.pose.pose.position.y),
+            "z": float(msg.pose.pose.position.z),
             "yaw_deg": self.yaw_deg(msg.pose.pose.orientation),
             "linear_x": float(msg.twist.twist.linear.x),
             "linear_y": float(msg.twist.twist.linear.y),
@@ -360,13 +446,22 @@ class SystemRunLogger:
         self.write_record({"record_type": "neupan_config", "data": payload})
 
     def global_path_cb(self, msg):
+        payload = {
+            "msg_stamp": self.message_stamp(msg.header),
+            "frame_id": msg.header.frame_id,
+            "poses": [{"x": float(p.pose.position.x), "y": float(p.pose.position.y),
+                       "z": float(p.pose.position.z),
+                       "yaw_deg": self.yaw_deg(p.pose.orientation)} for p in msg.poses],
+        }
         if not msg.poses:
-            self.update("global_path", {"frame_id": msg.header.frame_id, "points": 0})
+            self.record_navigation_event("global_path", payload, {
+                "msg_stamp": payload["msg_stamp"],
+                "frame_id": msg.header.frame_id, "points": 0})
             return
         first = msg.poses[0].pose
         last = msg.poses[-1].pose
-        self.update(
-            "global_path",
+        self.record_navigation_event(
+            "global_path", payload,
             {
                 "msg_stamp": self.message_stamp(msg.header),
                 "frame_id": msg.header.frame_id,
@@ -425,14 +520,17 @@ class SystemRunLogger:
     def timer_cb(self, _event):
         now = rospy.Time.now().to_sec()
         sample = {"stamp": now, "local_time": self.local_time_string(now)}
-        for key, value in self.latest.items():
+        with self.log_lock:
+            latest = dict(self.latest)
+            received_at = dict(self.received_at)
+        for key, value in latest.items():
             sample[key] = value
-            received = self.received_at[key]
+            received = received_at[key]
             sample[key + "_age_sec"] = None if received is None else max(0.0, now - received)
 
-        heading = self.latest["heading"]
-        global_odom = self.latest["global_odom"]
-        local_odom = self.latest["local_odom"]
+        heading = latest["heading"]
+        global_odom = latest["global_odom"]
+        local_odom = latest["local_odom"]
         sample["global_heading_diff_deg"] = None
         if heading is not None and global_odom is not None:
             sample["global_heading_diff_deg"] = self.normalize_deg(

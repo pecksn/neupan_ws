@@ -22,6 +22,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 from neupan import neupan
 import json
+import threading
 import time
 import rospy
 from geometry_msgs.msg import Twist, PoseStamped, Quaternion, PoseWithCovarianceStamped
@@ -117,6 +118,11 @@ class neupan_core:
         self.arrive = False
         self.goal_arrived_state = False
         self.arrival_path_key = None
+        self.waiting_for_new_goal = False
+        self.route_update_lock = threading.Lock()
+        self.pending_route_update = None
+        self.pending_goal_request_stamp = None
+        self.minimum_path_stamp = 0
         self.current_adjust_profile_name = "init"
         self.current_adjust_values = None
         self.last_scan_received_time = None
@@ -164,6 +170,10 @@ class neupan_core:
         rospy.Subscriber("/initial_path", Path, self.path_callback)
         rospy.Subscriber("/neupan_waypoints", Path, self.waypoints_callback)
         rospy.Subscriber("/neupan_goal", PoseStamped, self.goal_callback)
+        rospy.Subscriber(
+            rospy.get_param("~goal_request_topic", "/move_base_simple/goal"),
+            PoseStamped, self.goal_request_callback
+        )
         goal_arrived_rate = max(0.1, float(rospy.get_param("~goal_arrived_publish_rate", 2.0)))
         self.goal_arrived_timer = rospy.Timer(
             rospy.Duration(1.0 / goal_arrived_rate), self.goal_arrived_timer_callback
@@ -175,6 +185,17 @@ class neupan_core:
         r = rospy.Rate(50)
 
         while not rospy.is_shutdown():
+
+            self.apply_pending_goal_request()
+            with self.route_update_lock:
+                route_pending = self.pending_route_update is not None
+            if self.waiting_for_new_goal and not route_pending:
+                self.vel_pub.publish(Twist())
+                message = ("Goal reached; waiting for a new goal/path" if self.goal_arrived_state
+                           else "Waiting for planned path for the new goal")
+                rospy.loginfo_throttle(2.0, message)
+                r.sleep()
+                continue
 
             try:
                 t0 = rospy.Time.now()
@@ -207,6 +228,12 @@ class neupan_core:
                 rospy.logwarn_throttle(1, "waiting for robot state")
                 self.vel_pub.publish(Twist())
                 self.publish_scan_health(rospy.Time.now())
+                r.sleep()
+                continue
+
+            self.apply_pending_route()
+            if self.waiting_for_new_goal:
+                self.vel_pub.publish(Twist())
                 r.sleep()
                 continue
 
@@ -281,10 +308,6 @@ class neupan_core:
                     action[0, 0],
                     degrees(action[1, 0]),
                 )
-
-            if info["arrive"]:
-                # print(action)
-                rospy.loginfo_throttle(1.0, "arrive at the target")
 
             # publish the path and velocity
             self.plan_pub.publish(self.generate_path_msg(info["opt_state_list"]))
@@ -613,10 +636,72 @@ class neupan_core:
 
     def update_goal_arrival(self):
         if self.arrive:
+            if not self.goal_arrived_state:
+                rospy.loginfo("Goal reached; waiting for a new goal/path")
             self.goal_arrived_state = True
+            self.waiting_for_new_goal = True
 
     def goal_arrived_timer_callback(self, _event):
         self.goal_arrived_pub.publish(String(data="1" if self.goal_arrived_state else "0"))
+
+    def goal_request_callback(self, goal):
+        with self.route_update_lock:
+            self.pending_goal_request_stamp = goal.header.stamp.to_nsec()
+
+    def apply_pending_goal_request(self):
+        with self.route_update_lock:
+            stamp = self.pending_goal_request_stamp
+            self.pending_goal_request_stamp = None
+        if stamp is None:
+            return
+        # A* path and goal arrive on separate ROS connections. Do not pause a
+        # route already accepted for this request if its callback arrived first.
+        if stamp and self.arrival_path_key is not None and self.arrival_path_key[1] >= stamp:
+            return
+        self.minimum_path_stamp = stamp
+        self.stop = False
+        self.arrive = False
+        self.goal_arrived_state = False
+        self.waiting_for_new_goal = True
+        self.vel_pub.publish(Twist())
+        self.goal_arrived_timer_callback(None)
+        rospy.loginfo("New goal received; arrival cleared, waiting for planned path")
+
+    def queue_route_update(self, kind, data, path_key=None):
+        # Subscriber callbacks must not reset a planner while its solver runs.
+        with self.route_update_lock:
+            if kind == "path" and path_key[1] < self.minimum_path_stamp:
+                return
+            if kind == "path" and self.waiting_for_new_goal and path_key == self.arrival_path_key:
+                return
+            self.pending_route_update = (kind, data, path_key)
+        rospy.loginfo("Queued new %s for NeuPAN", kind)
+
+    def apply_pending_route(self):
+        # Called only by the control loop, after obtaining the current pose.
+        with self.route_update_lock:
+            update = self.pending_route_update
+            self.pending_route_update = None
+        if update is None:
+            return
+        kind, data, path_key = update
+        if kind == "path" and path_key[1] < self.minimum_path_stamp:
+            return
+        if kind == "path":
+            self.neupan_planner.set_initial_path(data)
+        elif kind == "waypoints":
+            self.neupan_planner.update_initial_path_from_waypoints([self.robot_state] + data)
+        else:
+            self.goal = data
+            self.neupan_planner.update_initial_path_from_goal(self.robot_state, data)
+        self.neupan_planner.reset()
+        self.arrival_path_key = path_key
+        self.stop = False
+        self.arrive = False
+        self.goal_arrived_state = False
+        self.waiting_for_new_goal = False
+        self.goal_arrived_timer_callback(None)
+        rospy.loginfo("New %s accepted; arrival cleared, starting next route", kind)
 
     def path_callback(self, path):
         path_frame = path.header.frame_id if path.header.frame_id else "map"
@@ -668,21 +753,15 @@ class neupan_core:
             points = np.array([x, y, theta, 1]).reshape(4, 1)
             initial_point_list.append(points)
 
-        if self.neupan_planner.initial_path is None or self.refresh_initial_path:
-            if self.verbose_runtime_log:
-                rospy.loginfo_throttle(1.0, "initial path update from given path")
-            self.neupan_planner.set_initial_path(initial_point_list)
-            self.neupan_planner.reset()
-            # rospy rewrites header.seq when a refinement node republishes.
-            # Use source stamp and final goal so camera corrections cannot
-            # rearm an already reached goal just by changing transport sequence.
+        if self.neupan_planner.initial_path is None or self.refresh_initial_path or self.waiting_for_new_goal:
+            # Refinement preserves the source stamp. Its changing points/seq
+            # must not turn a completed route into another navigation task.
             path_stamp = path.header.stamp.to_nsec()
-            path_key = (path_frame, path_stamp,
-                        round(float(initial_point_list[-1][0, 0]), 4),
-                        round(float(initial_point_list[-1][1, 0]), 4))
-            if path_key != self.arrival_path_key:
-                self.arrival_path_key = path_key
-                self.goal_arrived_state = False
+            path_key = (path_frame, path_stamp)
+            if path_stamp == 0:
+                path_key += (round(float(initial_point_list[-1][0, 0]), 4),
+                             round(float(initial_point_list[-1][1, 0]), 4))
+            self.queue_route_update("path", initial_point_list, path_key)
     
     def waypoints_callback(self, path):
         
@@ -690,7 +769,7 @@ class neupan_core:
         Utilize multiple waypoints (goals) to set the initial path
         '''
 
-        waypoints_list = [self.robot_state]
+        waypoints_list = []
 
         for i in range(len(path.poses)):
             p = path.poses[i]
@@ -708,17 +787,16 @@ class neupan_core:
                     y2 = p2.pose.position.y
                     theta = atan2(y2 - y, x2 - x)
                 else:
-                    theta = waypoints_list[-1][2, 0]
+                    theta = waypoints_list[-1][2, 0] if waypoints_list else 0.0
             
             points = np.array([x, y, theta, 1]).reshape(4, 1)
             waypoints_list.append(points)
 
-        if self.neupan_planner.initial_path is None or self.refresh_initial_path:
-            if self.verbose_runtime_log:
-                rospy.loginfo_throttle(1.0, "initial path update from waypoints")
-            self.neupan_planner.update_initial_path_from_waypoints(waypoints_list)
-            self.neupan_planner.reset()
-            self.goal_arrived_state = False
+        if not waypoints_list:
+            rospy.logwarn("Ignoring empty waypoint goal")
+            return
+        if self.neupan_planner.initial_path is None or self.refresh_initial_path or self.waiting_for_new_goal:
+            self.queue_route_update("waypoints", waypoints_list)
 
     def goal_callback(self, goal):
 
@@ -726,13 +804,11 @@ class neupan_core:
         y = goal.pose.position.y
         theta = self.quat_to_yaw(goal.pose.orientation)
 
-        self.goal = np.array([[x], [y], [theta]])
+        new_goal = np.array([[x], [y], [theta]])
 
         if self.verbose_runtime_log:
             rospy.loginfo("Set NeuPAN goal: x=%.2f y=%.2f yaw=%.1fdeg", x, y, degrees(theta))
-        self.neupan_planner.update_initial_path_from_goal(self.robot_state, self.goal)
-        self.neupan_planner.reset()
-        self.goal_arrived_state = False
+        self.queue_route_update("goal", new_goal)
 
 
     def quat_to_yaw_list(self, quater):

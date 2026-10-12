@@ -53,6 +53,8 @@
     <arg name="gps_guard_local_max_lateral_speed" default="0.8" />
     <arg name="gps_guard_local_max_yaw_rate_deg" default="90.0" />
     <arg name="gps_guard_local_fault_hold_sec" default="2.0" />
+    <arg name="gps_guard_dead_reckoning_max_distance_m" default="100.0" />
+    <arg name="gps_guard_dead_reckoning_max_duration_sec" default="600.0" />
     <arg name="enable_localization_safety_stop" default="false" />
     <!-- MOTOR 报警阈值；扭矩单位需与下位机上报单位一致，温度单位为摄氏度。 -->
     <arg name="motor_torque_limit" default="7.0" />
@@ -177,6 +179,8 @@
                 <param name="local_max_lateral_speed" value="$(arg gps_guard_local_max_lateral_speed)" />
                 <param name="local_max_yaw_rate_deg" value="$(arg gps_guard_local_max_yaw_rate_deg)" />
                 <param name="local_fault_hold_sec" value="$(arg gps_guard_local_fault_hold_sec)" />
+                <param name="dead_reckoning_max_distance_m" value="$(arg gps_guard_dead_reckoning_max_distance_m)" />
+                <param name="dead_reckoning_max_duration_sec" value="$(arg gps_guard_dead_reckoning_max_duration_sec)" />
             </node>
             <group if="$(arg publish_static_map_odom_outdoor)">
                 <node pkg="tf" type="static_transform_publisher" name="map_to_odom_outdoor" args="0 0 0 0 0 0 map odom 100" />

@@ -59,6 +59,7 @@ topics:
   - /osm_global_path_ll
   - /osm_global_path_curb_refined
   - /move_base_simple/goal
+  - /gps_goal_ll
   - /goal_arrived
   - /neupan_goal
   - /road_curb/right_edge

@@ -140,6 +140,12 @@ OSM A* -> /osm_global_path
 
 状态话题为 latched JSON 字符串，实际结构是 `{"mode":1,"mode_name":"MANUAL","reason":"remote_active"}`。`active` 只表示速度源可用，不保证车辆正在运动；还需看 `/cmd_vel/selected` 的数值及串口执行情况。
 
+### 2.7 连续目标与桥底再次出发
+
+系统持续运行时，云端可以依次向 `/gps_goal_ll` 下发多个目标。NeuPAN 到达当前路径终点后持续发布零自动速度，并显示 `Goal reached; waiting for a new goal/path`；`/goal_arrived` 是 latched `std_msgs/String`，默认 2 Hz 发布 `"1"`。接收新的地图目标后先清除旧到达状态并发布 `"0"`，停车等待 A* 新路径；新路径由主循环统一装载和重置规划器，避免订阅回调与求解器同时修改路径。旧任务路径的重复发布不会重新启动已完成任务。
+
+首次启动仍需稳定 GPS 建立定位基准；到达后不重启系统，新目标不会重置 `global_odom_bridge`。桥底 GPS 非 Fixed 时可使用已初始化的全局变换和本地里程计继续规划、行驶，但本地里程计、TF、LaserScan 与定位安全状态仍必须正常，续推预算也不能超限。保存并冻结上一次终点坐标不能替代当前本地里程计位置。
+
 ## 3. 根目录文件夹
 
 ### `src/`
@@ -304,7 +310,9 @@ GPS 与 FAST-LIO 的全局定位安全守门器。
 - `set_mode`：切换 GPS 跟踪、GPS 丢失、本地续推和恢复状态。
 - `update_guard`：更新 GPS 跟踪、丢失、本地续推等状态；定时回调随后发布 `/odometry/global`、`/gps_guard/status` 和 `/localization_safe`。
 
-`localization_is_safe` 的条件是：全局与本地变换已初始化、本地里程计未超时，并且已过本地异常观察期。GPS 暂时失锁后，如果已初始化且本地续推正常，定位安全状态仍可能为 `true`；它不等价于“此刻 GPS 必须为 RTK Fixed”。启动时缺少 GPS 或本地里程计则无法完成初始化。
+`localization_is_safe` 的条件是：全局与本地变换已初始化、本地里程计未超时、已过本地异常观察期，并且本地续推距离和时间预算未超限。GPS 暂时失锁后，如果已初始化且本地续推正常，定位安全状态仍可能为 `true`；它不等价于“此刻 GPS 必须为 RTK Fixed”。启动时缺少 GPS 或本地里程计则无法完成初始化。
+
+续推试运行限制默认是累计路程 100 米或持续 600 秒（10 分钟），任一达到便将 `/localization_safe` 置为 `false`；这只是限制未校正里程计累积时间/距离，不能保证实际漂移小于某个米数。停车等待也计时，路程按每次本地位姿增量累计，因此往返运动不能抵消；新目标、到达、短暂 GPS Fixed 和里程计原点重置都不会清零预算。只有可信 GPS 完成初始化或平滑恢复到 `GPS_TRACKING` 才重置。距离和时间需用现场数据调整。
 
 ### `src/lio_odom_guard.py`
 
@@ -329,8 +337,10 @@ FAST-LIO 输出保护器。
 - `topic_map`：定义需要记录的话题集合。
 - `open_log_file`：创建 JSONL 日志文件。
 - `write_record`：写入单条记录。
-- 各类 `*_cb`：缓存 GPS、GGA、航向、里程计、控制、路径和安全状态。
-- `timer_cb`：按频率把综合状态写入日志。
+- 各类 `*_cb`：缓存 GPS、GGA、航向、里程计、控制、路径、安全状态、云端经纬度目标、地图目标和到达状态。
+- `record_navigation_event`：每次收到目标和路径立即写事件；完整米制/经纬度路径只写事件，不在每个采样中重复。到达状态首次收到或发生变化时也写事件，附带当时目标、GPS、航向、融合位姿、安全状态及数据接收时间，便于回溯各段任务；接收目标不代表目标已通过校验或已成功规划。
+- `timer_cb`：默认 10 Hz 写综合状态，含各字段数据年龄；目标、路径摘要和持续发布的到达 `0/1` 一并采样。原始 GPS 与融合位姿分开记录，桥底不能把原始 GPS 当作可信融合定位。
+- 日志位置：`tracker_logs/system_run_full_*.jsonl`，每行独立 JSON。默认 `max_file_size_mb=0`，不限制文件大小，持续写入直到系统退出；请关注磁盘剩余空间。若主动配置正数上限，达到上限后停止追加普通记录并告警。
 
 ### `config/` 和 `launch/`
 
@@ -355,6 +365,7 @@ FAST-LIO 输出保护器。
 - `resamplePathForTracking`：生成适合车辆控制的稠密路径。
 - `buildLatLonPathMessage`：把最终 `current_path_` 的所有路径点按与 GPS 投影相同的原点反算为经纬度，按原顺序生成 JSON。
 - `prepareGoalRequest`：准备当前起点和目标请求。
+- `cacheGoalRequest` / `tryPendingGoal`：定位或道路图未准备好时保留最新目标；新目标覆盖旧缓存，定时器在条件就绪后自动规划。道路不可达等规划失败不会高频重复尝试。
 - `processGoal`：执行吸附、搜索、偏移、重采样并发布最终路径。
 - `mapCallback`：接收地图或地图数据。
 - `odomCallback`：接收机器人位姿。
@@ -674,6 +685,7 @@ roslaunch vehicle_bag_recorder record.launch
 
 - `default_control_mode=0`：启动后默认自动；云端通过 `/vehicle/control_mode` 发 `1` 切换手动，`0` 切回自动。
 - `auto_command_timeout=0.5`、`remote_command_timeout=1.0`：所选速度源超时后输出零速度。
+- `gps_guard_dead_reckoning_max_distance_m=100.0`、`gps_guard_dead_reckoning_max_duration_sec=600.0`：续推预算。超限后自动模式停车，手动模式仍按已有遥控与超时规则处理；这些参数用于默认 `use_global_ekf=false` 的全局定位桥。
 - 完整系统在室外且 `use_global_ekf=false` 时，仅对自动速度启用 `/localization_safe` 门控；底盘节点自身的定位门控在该 launch 中关闭。手动模式仍保留遥控指令超时停车。
 - 目标转换与 OSM、GPS 投影必须共用 `map_origin_lat/lon` 与 `datum_lat/lon`，否则云端目标和路径会出现系统性偏移。
 

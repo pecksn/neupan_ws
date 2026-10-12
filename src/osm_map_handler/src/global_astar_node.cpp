@@ -209,6 +209,8 @@ private:
     std::unordered_map<std::string, std::vector<std::pair<std::string, double>>> adjacency_;
     std::vector<EdgeInfo> edges_;
     std::vector<XYPoint> current_path_;
+    geometry_msgs::PoseStamped pending_goal_;
+    bool has_pending_goal_{false};
 
     double robot_x_{0.0};
     double robot_y_{0.0};
@@ -1206,9 +1208,28 @@ private:
         goal.pose.position = msg->point;
         goal.pose.orientation.w = 1.0;
         ROS_INFO("Clicked point received: (%.2f, %.2f) frame=%s", goal.pose.position.x, goal.pose.position.y, goal.header.frame_id.c_str());
-        if (prepareGoalRequest(goal)) {
-            processGoal(goal);
+        cacheGoalRequest(goal);
+    }
+
+    void cacheGoalRequest(const geometry_msgs::PoseStamped& goal) {
+        if (!std::isfinite(goal.pose.position.x) || !std::isfinite(goal.pose.position.y)) {
+            ROS_WARN("Ignoring non-finite map goal");
+            return;
         }
+        // Latest goal wins while localization/road graph is not ready.
+        pending_goal_ = goal;
+        has_pending_goal_ = true;
+        ROS_INFO("Latest goal cached: (%.2f, %.2f)", goal.pose.position.x, goal.pose.position.y);
+        tryPendingGoal();
+    }
+
+    void tryPendingGoal() {
+        if (!has_pending_goal_ || !prepareGoalRequest(pending_goal_)) {
+            return;
+        }
+        const geometry_msgs::PoseStamped goal = pending_goal_;
+        has_pending_goal_ = false;
+        processGoal(goal);
     }
 
     void processGoal(const geometry_msgs::PoseStamped& goal) {
@@ -1274,13 +1295,11 @@ private:
     }
 
     void goalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
-        if (!prepareGoalRequest(*msg)) {
-            return;
-        }
-        processGoal(*msg);
+        cacheGoalRequest(*msg);
     }
 
     void timerCallback(const ros::TimerEvent&) {
+        tryPendingGoal();
         if (!has_odom_) {
             return;
         }
