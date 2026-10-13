@@ -37,6 +37,21 @@ import tf
 import sensor_msgs.point_cloud2 as pc2
 
 
+ANSI_YELLOW = "\033[33m"
+ANSI_RED = "\033[31m"
+ANSI_RESET = "\033[0m"
+
+
+def yellow_terminal_text(message):
+    """Highlight lifecycle messages without changing their ROS log severity."""
+    return "{}{}{}".format(ANSI_YELLOW, message, ANSI_RESET)
+
+
+def red_terminal_text(message):
+    """Highlight missing TF messages without changing their ROS log severity."""
+    return "{}{}{}".format(ANSI_RED, message, ANSI_RESET)
+
+
 class neupan_core:
     def __init__(self) -> None:
 
@@ -81,7 +96,6 @@ class neupan_core:
         self.scan_filtered_empty_timeout = max(
             0.1, float(rospy.get_param("~scan_filtered_empty_timeout", 2.0))
         )
-
         self.dune_checkpoint = rospy.get_param("~dune_checkpoint", None)
         self.refresh_initial_path = rospy.get_param("~refresh_initial_path", False)
         self.flip_angle = rospy.get_param("~flip_angle", False)
@@ -193,7 +207,7 @@ class neupan_core:
                 self.vel_pub.publish(Twist())
                 message = ("Goal reached; waiting for a new goal/path" if self.goal_arrived_state
                            else "Waiting for planned path for the new goal")
-                rospy.loginfo_throttle(2.0, message)
+                rospy.loginfo_throttle(2.0, yellow_terminal_text(message))
                 r.sleep()
                 continue
 
@@ -215,8 +229,10 @@ class neupan_core:
             ):
                 rospy.loginfo_throttle(
                     1,
-                    "waiting for tf for the transform from {} to {}".format(
-                        self.base_frame, self.map_frame
+                    red_terminal_text(
+                        "waiting for tf for the transform from {} to {}".format(
+                            self.base_frame, self.map_frame
+                        )
                     ),
                 )
                 self.vel_pub.publish(Twist())
@@ -263,9 +279,7 @@ class neupan_core:
             scan_healthy, scan_reason = self.scan_is_healthy(rospy.Time.now())
             self.publish_scan_health(rospy.Time.now())
             if self.stop_on_scan_fault and not scan_healthy:
-                rospy.logerr_throttle(
-                    1.0, "NeuPAN scan safety stop: %s", scan_reason
-                )
+                rospy.logerr_throttle(1.0, "NeuPAN scan safety stop: %s", scan_reason)
                 self.vel_pub.publish(Twist())
                 r.sleep()
                 continue
@@ -628,8 +642,10 @@ class neupan_core:
             self.mark_scan_fault("scan_tf_unavailable")
             rospy.loginfo_throttle(
                 1,
-                "waiting for tf for the transform from {} to {}".format(
-                    self.lidar_frame, self.map_frame
+                red_terminal_text(
+                    "waiting for tf for the transform from {} to {}".format(
+                        self.lidar_frame, self.map_frame
+                    )
                 ),
             )
             return
@@ -637,7 +653,9 @@ class neupan_core:
     def update_goal_arrival(self):
         if self.arrive:
             if not self.goal_arrived_state:
-                rospy.loginfo("Goal reached; waiting for a new goal/path")
+                rospy.loginfo(yellow_terminal_text(
+                    "Goal reached; waiting for a new goal/path"
+                ))
             self.goal_arrived_state = True
             self.waiting_for_new_goal = True
 
@@ -665,7 +683,9 @@ class neupan_core:
         self.waiting_for_new_goal = True
         self.vel_pub.publish(Twist())
         self.goal_arrived_timer_callback(None)
-        rospy.loginfo("New goal received; arrival cleared, waiting for planned path")
+        rospy.loginfo(yellow_terminal_text(
+            "New goal received; arrival cleared, waiting for planned path"
+        ))
 
     def queue_route_update(self, kind, data, path_key=None):
         # Subscriber callbacks must not reset a planner while its solver runs.
@@ -701,7 +721,9 @@ class neupan_core:
         self.goal_arrived_state = False
         self.waiting_for_new_goal = False
         self.goal_arrived_timer_callback(None)
-        rospy.loginfo("New %s accepted; arrival cleared, starting next route", kind)
+        rospy.loginfo(yellow_terminal_text(
+            "New {} accepted; arrival cleared, starting next route".format(kind)
+        ))
 
     def path_callback(self, path):
         path_frame = path.header.frame_id if path.header.frame_id else "map"

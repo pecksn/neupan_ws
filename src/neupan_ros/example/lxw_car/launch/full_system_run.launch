@@ -215,6 +215,7 @@
         <include file="$(find livox_ros_driver2)/launch_ROS1/rviz_MID360.launch">
             <arg name="rviz_enable"  value="false"/>
             <arg name="msg_frame_id" value="livox_frame"/>
+            <arg name="node_output" value="log"/>
             <!-- 需提供 CustomMsg 给 FAST-LIO -->
             <arg name="xfer_format"  value="1"/>
         </include>
