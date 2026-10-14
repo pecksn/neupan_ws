@@ -93,6 +93,7 @@ class SystemRunLogger:
             "scan_health": None,
             "localization_safe": None,
             "motor": None,
+            "camera_right": None,
         }
         self.received_at = {key: None for key in self.latest}
         self.previous_heading_deg = None
@@ -130,6 +131,8 @@ class SystemRunLogger:
                          lambda msg: self.update("neupan_resources", self.parse_status(msg)), queue_size=10)
         rospy.Subscriber("/neupan/config_snapshot", String,
                          self.neupan_config_cb, queue_size=1)
+        rospy.Subscriber("/camera_right/status", String,
+                         lambda msg: self.update("camera_right", self.parse_status(msg)), queue_size=10)
         rospy.Subscriber(self.global_path_topic, Path, self.global_path_cb, queue_size=2)
         rospy.Subscriber(self.gps_guard_topic, String, self.gps_guard_cb, queue_size=20)
         rospy.Subscriber(self.lio_guard_topic, String, self.lio_guard_cb, queue_size=20)
@@ -179,6 +182,7 @@ class SystemRunLogger:
             "scan_health": self.scan_health_topic,
             "safety": self.safety_topic,
             "motor": self.motor_status_topic,
+            "camera_right": "/camera_right/status",
         }
 
     def local_time_string(self, timestamp=None):
