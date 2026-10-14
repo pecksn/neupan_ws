@@ -156,6 +156,49 @@ class GeometryTests(unittest.TestCase):
         self.assertAlmostEqual(namespace['camera_center_clearance'](2,-.1),2.1)
         self.assertAlmostEqual(namespace['camera_center_clearance'](2,0),2)
 
+    def test_capture_pose_uses_exact_image_timestamp(self):
+        capture_ns=1791445845870625000
+        calls=[]
+        class FakeTime:
+            def __init__(self, secs, nsecs):
+                self.secs,self.nsecs=secs,nsecs
+        def lookup(target,source,stamp):
+            calls.append((target,source,stamp.secs,stamp.nsecs))
+            return ((1.,2.,0.),(0.,0.,0.,1.))
+        old_rospy=namespace.get('rospy')
+        old_tf=namespace['tf']
+        namespace['rospy']=NS(Time=FakeTime)
+        namespace['tf']=NS(Exception=RuntimeError,transformations=NS(euler_from_quaternion=lambda q:(0.,0.,.3)))
+        try:
+            position,yaw=namespace['capture_vehicle_pose'](NS(lookupTransform=lookup),capture_ns)
+            self.assertEqual(calls,[('map','base_link',capture_ns//1000000000,capture_ns%1000000000)])
+            self.assertEqual(position,(1.,2.,0.))
+            self.assertAlmostEqual(yaw,.3)
+        finally:
+            namespace['tf']=old_tf
+            if old_rospy is None:
+                namespace.pop('rospy')
+            else:
+                namespace['rospy']=old_rospy
+
+    def test_missing_capture_pose_does_not_use_latest_tf(self):
+        requested=[]
+        def lookup(_target,_source,stamp):
+            requested.append(stamp)
+            raise RuntimeError('TF history missing')
+        old_rospy=namespace.get('rospy')
+        namespace['rospy']=NS(Time=lambda secs,nsecs:NS(secs=secs,nsecs=nsecs))
+        try:
+            with self.assertRaisesRegex(ValueError,'capture-time vehicle TF unavailable'):
+                namespace['capture_vehicle_pose'](NS(lookupTransform=lookup),123)
+            self.assertEqual(len(requested),1)
+            self.assertEqual(requested[0].nsecs,123)
+        finally:
+            if old_rospy is None:
+                namespace.pop('rospy')
+            else:
+                namespace['rospy']=old_rospy
+
     def test_current_extrinsics_camera_center(self):
         import yaml
         cfg=workspace/'src/usb_camera/config/livox_camera_extrinsics.yaml'

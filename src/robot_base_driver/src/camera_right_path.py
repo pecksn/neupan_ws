@@ -86,6 +86,18 @@ def camera_center_clearance(distance,camera_y_base):
     return distance-camera_y_base
 
 
+def capture_vehicle_pose(listener, capture_ns):
+    """Read map->base_link at the camera capture time, never at the latest TF."""
+    capture_time = rospy.Time(capture_ns // 1000000000, capture_ns % 1000000000)
+    try:
+        position, quaternion = listener.lookupTransform('map', 'base_link', capture_time)
+    except tf.Exception as error:
+        raise ValueError('capture-time vehicle TF unavailable: %s' % error)
+    if not np.isfinite(np.r_[position, quaternion]).all():
+        raise ValueError('non-finite capture-time vehicle TF')
+    return position, tf.transformations.euler_from_quaternion(quaternion)[2]
+
+
 def project_ground_path(points,origin,rotation,matrix,distortion,width,height):
     """Project only near/front path; retain original adjacency through clipping."""
     points=np.asarray(points,float)
@@ -386,8 +398,9 @@ class CameraRightPath:
         latest = self.listener.getLatestCommonTime('map', 'base_link')
         if (rospy.Time.now()-latest).to_sec() > .5:
             raise ValueError('stale vehicle TF')
-        position, quaternion = self.listener.lookupTransform('map', 'base_link', rospy.Time(0))
-        yaw = tf.transformations.euler_from_quaternion(quaternion)[2]
+        # Pixel boundaries belong to the image's capture time.  Using the
+        # latest vehicle pose here shifts them as the vehicle moves.
+        position, yaw = capture_vehicle_pose(self.listener, capture)
         c, s = math.cos(yaw), math.sin(yaw)
         points = np.array([[q.pose.position.x, q.pose.position.y] for q in self.path.poses])
         delta = points-np.array(position[:2])
@@ -511,6 +524,13 @@ class CameraRightPath:
                     except (ValueError,tf.Exception):
                         self.cache.clear()
                         self.applied=None
+            if any(message in reason for message in (
+                    'capture-time vehicle TF unavailable',
+                    'non-finite capture-time vehicle TF',
+                    'capture stale or GPU/NUC clocks unsynchronized',
+                    'stale vehicle TF')):
+                rospy.logwarn_throttle(
+                    5., '\033[33mCamera right time alignment: %s\033[0m', reason)
             self.publish_result(result,now,reason,active,cached_points)
 
     def apply_realtime(self,result,data,dt):
