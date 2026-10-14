@@ -58,6 +58,7 @@
     <arg name="map_odom_align_use_global_yaw" default="true" doc="true: 用 /odometry/global 与 /odometry/local 的 yaw 实时对齐 map->odom" />
     <!-- 桥底/隧道GPS保护参数。协方差单位为m^2，恢复速率单位为m/s和deg/s。 -->
     <arg name="gps_guard_enable" default="true" doc="GPS失锁时切换到FAST-LIO本地续推" />
+    <arg name="low_precision_startup" default="false" doc="允许粗GPS位置加固定双天线航向初始化；仅稳定定位分支(use_global_ekf=false)生效" />
     <arg name="gps_guard_min_fix_status" default="2" doc="最低可接受NavSatFix状态；2对应当前驱动的RTK类解" />
     <arg name="gps_guard_required_gga_quality" default="4" doc="只允许GGA quality=4，即RTK Fixed" />
     <arg name="gps_guard_min_satellites" default="8" doc="恢复GPS所需最少卫星数" />
@@ -160,6 +161,7 @@
         <arg name="gps_map_projection_rate" value="$(arg gps_map_projection_rate)" />
         <arg name="global_odom_heading_filter_window_sec" value="$(arg global_odom_heading_filter_window_sec)" />
         <arg name="gps_guard_enable" value="$(arg gps_guard_enable)" />
+        <arg name="low_precision_startup" value="$(arg low_precision_startup)" />
         <arg name="gps_guard_min_fix_status" value="$(arg gps_guard_min_fix_status)" />
         <arg name="gps_guard_required_gga_quality" value="$(arg gps_guard_required_gga_quality)" />
         <arg name="gps_guard_min_satellites" value="$(arg gps_guard_min_satellites)" />

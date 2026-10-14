@@ -36,6 +36,7 @@
     <arg name="global_odom_heading_timeout" default="0.5" />
     <!-- G90弱信号保护：RTK不可信时使用本地FAST-LIO续推，恢复后平滑校正。 -->
     <arg name="gps_guard_enable" default="true" />
+    <arg name="low_precision_startup" default="false" />
     <arg name="gps_guard_min_fix_status" default="2" />
     <arg name="gps_guard_required_gga_quality" default="4" />
     <arg name="gps_guard_min_satellites" default="8" />
@@ -162,6 +163,7 @@
                 <param name="heading_topic" value="$(arg global_odom_heading_topic)" />
                 <param name="heading_timeout_sec" value="$(arg global_odom_heading_timeout)" />
                 <param name="guard_enabled" value="$(arg gps_guard_enable)" />
+                <param name="low_precision_startup" value="$(arg low_precision_startup)" />
                 <param name="min_fix_status" value="$(arg gps_guard_min_fix_status)" />
                 <param name="required_gga_quality" value="$(arg gps_guard_required_gga_quality)" />
                 <param name="min_satellites" value="$(arg gps_guard_min_satellites)" />

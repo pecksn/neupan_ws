@@ -31,6 +31,7 @@ class SystemRunLogger:
         self.goal_arrived_topic = rospy.get_param("~goal_arrived_topic", "/goal_arrived")
         self.gga_topic = rospy.get_param("~gga_topic", "/gnss/gpgga")
         self.heading_topic = rospy.get_param("~heading_topic", "/heading")
+        self.solution_topic = rospy.get_param("~solution_topic", "/gnss/solution_status")
         self.gps_odom_topic = rospy.get_param("~gps_odom_topic", "/odometry/gps")
         self.global_odom_topic = rospy.get_param("~global_odom_topic", "/odometry/global")
         self.local_odom_topic = rospy.get_param("~local_odom_topic", "/odometry/local")
@@ -72,6 +73,7 @@ class SystemRunLogger:
             "goal_arrived": None,
             "gga": None,
             "heading": None,
+            "gnss_solution": None,
             "gps_odom": None,
             "global_odom": None,
             "local_odom": None,
@@ -110,6 +112,7 @@ class SystemRunLogger:
         rospy.Subscriber(self.goal_arrived_topic, String, self.goal_arrived_cb, queue_size=20)
         rospy.Subscriber(self.gga_topic, Gpgga, self.gga_cb, queue_size=20)
         rospy.Subscriber(self.heading_topic, QuaternionStamped, self.heading_cb, queue_size=30)
+        rospy.Subscriber(self.solution_topic, String, self.solution_cb, queue_size=10)
         rospy.Subscriber(self.gps_odom_topic, Odometry, self.gps_odom_cb, queue_size=30)
         rospy.Subscriber(self.global_odom_topic, Odometry, self.global_odom_cb, queue_size=30)
         rospy.Subscriber(self.local_odom_topic, Odometry, self.local_odom_cb, queue_size=50)
@@ -156,6 +159,7 @@ class SystemRunLogger:
             "goal_arrived": self.goal_arrived_topic,
             "gga": self.gga_topic,
             "heading": self.heading_topic,
+            "gnss_solution": self.solution_topic,
             "gps_odom": self.gps_odom_topic,
             "global_odom": self.global_odom_topic,
             "local_odom": self.local_odom_topic,
@@ -289,7 +293,7 @@ class SystemRunLogger:
             self.update(key, payload if summary is None else summary)
             now = self.received_at[key]
             context_keys = (
-                "gps_goal", "map_goal", "goal_arrived", "gps_fix", "gga", "heading",
+                "gps_goal", "map_goal", "goal_arrived", "gps_fix", "gga", "heading", "gnss_solution",
                 "gps_odom", "global_odom", "local_odom", "gps_guard",
                 "localization_safe", "control_mode", "command",
             )
@@ -358,6 +362,15 @@ class SystemRunLogger:
                 "altitude": float(msg.alt),
             },
         )
+
+    def solution_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            if not isinstance(payload, dict):
+                raise ValueError("GNSS solution status must be an object")
+        except (TypeError, ValueError) as exc:
+            payload = {"valid": False, "error": str(exc)}
+        self.update("gnss_solution", payload)
 
     def heading_cb(self, msg):
         yaw = self.yaw_deg(msg.quaternion)

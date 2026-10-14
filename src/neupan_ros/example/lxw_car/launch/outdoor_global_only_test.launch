@@ -59,6 +59,7 @@
     <arg name="use_global_ekf" default="false" />
     <arg name="gps_map_projection_rate" default="30.0" />
     <arg name="gps_guard_enable" default="true" />
+    <arg name="low_precision_startup" default="false" />
     <arg name="gps_guard_min_fix_status" default="2" />
     <arg name="gps_guard_max_position_covariance" default="0.25" />
     <arg name="gps_guard_heading_jump_limit_deg" default="8.0" />
@@ -123,6 +124,7 @@
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
         <arg name="gps_map_projection_rate" value="$(arg gps_map_projection_rate)" />
         <arg name="gps_guard_enable" value="$(arg gps_guard_enable)" />
+        <arg name="low_precision_startup" value="$(arg low_precision_startup)" />
         <arg name="gps_guard_min_fix_status" value="$(arg gps_guard_min_fix_status)" />
         <arg name="gps_guard_max_position_covariance" value="$(arg gps_guard_max_position_covariance)" />
         <arg name="gps_guard_heading_jump_limit_deg" value="$(arg gps_guard_heading_jump_limit_deg)" />

@@ -825,6 +825,45 @@ roslaunch lidar_curb_refinement road_curb_debug.launch
 /tf_static
 ```
 
+### G90 位置与双天线定向状态（2026-10-14）
+
+NMEA 驱动额外解析设备已有的 `#PVTSLNA`，并校验 Unicore CRC32。
+协议依据：N4 Products Commands and Logs Reference Book V2 R1.2，
+7.3.23 节表 7-81。位置类型 `bestpos_type` 与定向类型 `heading_type`
+是独立字段；不能用 GGA 固定解状态代替定向固定状态。
+
+新增 `/gnss/solution_status`（`std_msgs/String`，JSON），包含
+`position_type`、`position_fixed`、经纬度、`heading_type`、
+`heading_fixed`、`heading_valid`、基线长度、航向角与定向卫星数。
+该状态已加入系统日志及 `/gps_guard/status`。
+
+默认只在定向类型为 `NARROW_INT`、基线大于零且定向卫星数大于零时
+允许 HDT 发布 `/heading`；状态超过 2.5 秒未更新、缺失或报文校验错误时
+拒绝航向。正常真北零度在定向有效时仍可发布。参数为
+`require_heading_fixed` 和 `solution_timeout_sec`，可在 `g90_nmea.launch`
+以及 GPS NMEA 驱动 launch 中设置。
+
+定位保护独立检查定向状态，位置仍通过 GGA=4、协方差、HDOP、卫星数等
+条件判断。默认高精度启动仍要求可靠位置和航向；已初始化后 GPS 退化继续沿用
+已有本地续推及 100 米/600 秒限制。此改动不使用不可靠位置进行全局校正，
+也不新增仅靠 GNSS 航向校正桥底续推的功能。
+
+验证包含真实无解报文、位置/定向独立组合、CRC 错误、截断、非有限数值、
+无效基线、航向零度及状态超时；固定解正例使用合成报文，仍需室外实测。
+观察命令：`rostopic echo /gnss/solution_status`。
+
+新增 `low_precision_startup` 开关，默认 false，完整系统使用
+`roslaunch neupan_ros full_system_run.launch outdoor_mode:=true low_precision_startup:=true`
+开启。仅在初次初始化允许较粗的位置（GGA 1/2/4/5、至少 6 颗卫星、HDOP≤5、
+水平协方差≤100 m²），定向固定/有效、新鲜度、本地里程计及航向跳变保护仍必需。
+保留 2 秒稳定确认，低精度位置候选相对均值散布≤2 米，优先采用满足条件的高精度初始化。
+低精度初始化一次建立地图参考后进入本地续推，不持续追随低质量 GPS，预算从初始化
+开始按原有 100 米/600 秒累计。可靠 RTK 恢复仍经过原有稳定确认和平滑校正。
+`/gps_guard/status` 新增开关、初始化精度、当前全局参考精度及低精度阈值，随状态入日志。
+开关经 `full_system_run.launch` / `outdoor_global_only_test.launch` 传入
+`navigation_core.launch` 的稳定定位分支；不适用于 `use_global_ekf=true`。
+固定航向不会消除粗 GPS 的地图平移误差，实车验证仍需关注路网对齐和到达偏差。
+
 ## 22. 一句话总结
 
 这是一个把 GPS、FAST-LIO、Livox、OSM、NeuPAN、控制模式选择器和串口底盘整合在 ROS1 中的室内外导航系统：云端可下发经纬度目标并订阅经纬度路径；自动模式由 NeuPAN 控制并受定位安全保护，手动模式使用云端速度；MID360 路沿修正和 HybridNets 接收分别作为可选路径参考与独立感知输入。

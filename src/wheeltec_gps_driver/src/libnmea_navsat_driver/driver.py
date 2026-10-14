@@ -33,6 +33,7 @@
 """Provides a driver for NMEA GNSS devices."""
 
 import math
+import json
 
 import rospy
 
@@ -46,7 +47,8 @@ import libnmea_navsat_driver.parser
 from nmea_msgs.msg import Sentence #wheeltec tues
 from nmea_msgs.msg import Gpgga 
 from geometry_msgs.msg import PoseStamped 
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
+from libnmea_navsat_driver.unicore import parse_pvtslna
 from geometry_msgs.msg import TwistWithCovarianceStamped
 
 class RosNMEADriver(object):
@@ -91,6 +93,11 @@ class RosNMEADriver(object):
         self.fix_pub = rospy.Publisher('/gps/fix', NavSatFix, queue_size=1)
         self.vel_pub = rospy.Publisher('/gps/vel', TwistStamped, queue_size=1)
         self.heading_pub = rospy.Publisher('heading', QuaternionStamped, queue_size=1)
+        self.solution_pub = rospy.Publisher('/gnss/solution_status', String, queue_size=10)
+        self.require_heading_fixed = rospy.get_param('~require_heading_fixed', True)
+        self.solution_timeout = max(0.1, float(rospy.get_param('~solution_timeout_sec', 2.5)))
+        self.last_solution = None
+        self.last_solution_recv = None
 
         self.eagleye_vel_pub =rospy.Publisher('/gps/nmea/vel',TwistWithCovarianceStamped,  queue_size=1)
 
@@ -204,6 +211,18 @@ class RosNMEADriver(object):
         Returns:
             bool: True if the NMEA string is successfully processed, False if there is an error.
         """
+        if nmea_string.startswith('#PVTSLNA,'):
+            now = rospy.Time.now()
+            try:
+                self.last_solution = parse_pvtslna(nmea_string)
+            except (ValueError, IndexError, UnicodeError) as exc:
+                self.last_solution = {'source': 'PVTSLNA', 'heading_valid': False,
+                                      'heading_fixed': False, 'error': str(exc)}
+                rospy.logwarn_throttle(2.0, 'Rejected GNSS solution status: %s', str(exc))
+            self.last_solution_recv = now
+            self.solution_pub.publish(String(data=json.dumps(
+                dict(self.last_solution, stamp=now.to_sec()), allow_nan=False)))
+            return 'error' not in self.last_solution
         if not check_nmea_checksum(nmea_string):
             #rospy.logwarn("Received a sentence with an invalid checksum. " +
             #              "Sentence was: %s" % repr(nmea_string))
@@ -416,9 +435,15 @@ class RosNMEADriver(object):
             self.lat_std_dev = data['lat_std_dev']
             self.alt_std_dev = data['alt_std_dev']
         elif 'HDT' in parsed_sentence:
+            if self.require_heading_fixed:
+                fresh = (self.last_solution_recv is not None and
+                         0 <= (rospy.Time.now() - self.last_solution_recv).to_sec() <= self.solution_timeout)
+                if not fresh or not self.last_solution.get('heading_valid', False):
+                    rospy.logwarn_throttle(2.0, 'GNSS heading suppressed: missing, stale or unfixed heading solution')
+                    return False
             data = parsed_sentence['HDT']
             heading_value = data.get('heading', None)
-            if heading_value is not None and not math.isnan(heading_value):
+            if heading_value is not None and math.isfinite(heading_value) and 0 <= heading_value <= 360:
                 current_heading = QuaternionStamped()
                 current_heading.header.stamp = current_time
                 current_heading.header.frame_id = frame_id

@@ -17,6 +17,7 @@
 - [九、点对点导航](#九点对点导航)
 - [十、跟踪算法与 Nav2](#十跟踪算法与-nav2)
 - [十一、RTK/CORS](#十一rtkcors)
+  - [G90 位置与双天线定向状态](#112-g90-位置与双天线定向状态2026-10-14-更新)
 - [十二、道路视觉与相机](#十二道路视觉与相机)
   - [MID360 激光雷达路缘检测](#121-mid360-激光雷达路缘检测)
   - [USB Camera3 与远程图像](#122-usb-camera3远程图像与-devvideo0)
@@ -194,6 +195,7 @@ rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.b
 | `/Odometry`、`/odometry/lio_guarded`、`/odometry/local` | 对比原始 LIO、保护后 LIO、EKF 融合定位 |
 | `/gps_guard/local_fault_event` | 每次异常触发的位移、消息时间差、接收时间差及两种计算速度 |
 | `/gps_guard/status`、`/lio_guard/status`、`/localization_safe`、`/neupan/scan_health` | 定位、扫描与 TF 保护状态 |
+| `/gnss/solution_status` | G90 的独立位置解与定向解类型、航向有效性、基线长度及定向卫星数；已接入 JSONL，独立话题尚未加入现有 rosbag 配置 |
 | `/motor/status`、`/motor/alarm` | 扭矩、温度和告警；当前 ≥7 N·m 仅告警，不因扭矩超限自动停车 |
 | `/neupan/config_snapshot` | 启动配置、模型路径及 SHA256（锁存发布，晚启动录包仍可接收） |
 | `/neupan/resources` | 每秒进程 CPU/内存、整机 CPU/内存使用率、I/O 等待率、交换空间及主机 CPU 占用前 10 个进程；CPU 百分比统一按整机为 100% |
@@ -1730,6 +1732,185 @@ AT+NTRIP=120.253.239.161,8002,cndh87709,a8888783,RTCM33_GRCE
 ```
 
 **按一下”shift+Enter”键后再点击发送，**发送成功后会返回【OK】然后保存参数
+
+## 11.2 G90 位置与双天线定向状态（2026-10-14 更新）
+
+“GPS 定位状态”和“经纬度解状态”描述的是位置解；另外需要独立判断的是
+双天线定向解。位置固定不能代替定向固定，位置浮动也不能直接推断定向无解。
+桥底能否保持定向固定需实测，不能仅凭 `/heading` 持续更新判断。
+
+### 驱动与接口
+
+当前仍使用 `wheeltec_gps_driver` 的 NMEA 串口驱动，额外解析设备已经输出的
+`#PVTSLNA`，无需切换到另一套 Unicore 驱动。新增解析先检查 Unicore CRC32、
+报文长度、数值范围及有限性，再分别提取位置类型和定向类型。
+
+| 接口 | 类型 | 内容 |
+|---|---|---|
+| `/gps/fix` | `sensor_msgs/NavSatFix` | 经纬度、协方差及 ROS 定位状态；当前驱动把 GGA 固定解和浮动解都映射成 `status.status=2`，不能只凭该字段判断固定 |
+| `/gnss/gpgga` | `nmea_msgs/Gpgga` | `gps_qual` 位置质量、卫星数和 HDOP |
+| `/heading` | `geometry_msgs/QuaternionStamped` | 经安装偏角和 ENU 转换后的航向；默认仅在定向状态有效且新鲜时发布 |
+| `/gnss/solution_status` | `std_msgs/String` | JSON，包含独立位置/定向解类型和有效性信息 |
+
+相关实现：
+
+- `src/wheeltec_gps_driver/src/libnmea_navsat_driver/unicore.py`：PVTSLNA 字段解析与 CRC32。
+- `src/wheeltec_gps_driver/src/libnmea_navsat_driver/driver.py`：发布解状态并检查 HDT 航向是否允许发布。
+- `src/robot_base_driver/src/global_odom_bridge.py`：定位保护独立检查定向状态。
+- `src/robot_base_driver/src/system_run_logger.py`：记录解状态及更新年龄。
+
+协议字段依据：N4 Products Commands and Logs Reference Book V2 R1.2，
+7.3.23 节表 7-81。`bestpos_type` 是位置类型，`heading_type` 是定向类型。
+G90 用户手册第 44 页的 `gps_qual` 列表只说明位置状态，第 45 页介绍
+`PVTSLNA` 定位定向报文；详细字段要查数据接口协议。
+
+### 具体状态与三个布尔字段
+
+位置类型 `position_type` 常见值如下；设备不一定会输出表中每一种类型。
+
+| 值 | 含义 |
+|---|---|
+| `NONE` | 无位置解 |
+| `SINGLE` | 单点定位 |
+| `PSRDIFF` / `SBAS` | 伪距差分 / 星基增强定位 |
+| `L1_FLOAT` / `IONOFREE_FLOAT` / `NARROW_FLOAT` | 不同类型的浮动解 |
+| `L1_INT` / `WIDE_INT` / `NARROW_INT` | L1 / 宽巷 / 窄巷固定解 |
+
+双天线定向类型 `heading_type` 主要关注：
+
+| 值 | 含义 | 当前默认处理 |
+|---|---|---|
+| `NONE` | 无定向解 | 拒绝航向 |
+| `NARROW_FLOAT` | 定向浮动解 | 拒绝航向 |
+| `NARROW_INT` | 定向固定解 | 继续检查有效性和更新时间 |
+
+布尔字段都只有 `true` / `false`：
+
+| 字段 | 当前代码的 `true` 条件 |
+|---|---|
+| `position_fixed` | `position_type == "NARROW_INT"` |
+| `heading_fixed` | `heading_type == "NARROW_INT"` |
+| `heading_valid` | `heading_fixed` 为真、基线长度大于零、参与定向的卫星数大于零 |
+
+当前 `position_fixed` 采用窄巷固定解判定；其他固定类型仍原样显示在
+`position_type` 中，因此 `position_fixed=false` 不等于“没有位置解”。
+正常固定航向通常可用，`heading_valid` 是额外检查异常报文。它表示本条
+报文是否通过检查，不包含时效；使用时还要检查状态是否超过 2.5 秒未更新。
+真北 `0°` 在定向有效时允许发布，无解时的占位 `0°` 会被拦截。
+
+位置浮动、定向固定的字段组合示例（不是实测记录）：
+
+```json
+{
+  "position_type": "NARROW_FLOAT",
+  "position_fixed": false,
+  "heading_type": "NARROW_INT",
+  "heading_fixed": true,
+  "heading_valid": true
+}
+```
+
+完整正常报文还包含 `source`、`stamp`、`latitude`、`longitude`、
+`baseline_m`、`heading_deg`、`pitch_deg`、`heading_satellites`。
+其中 `heading_deg` 为设备定向角，不是 `/heading` 经安装偏角和 ENU 转换后的 yaw。
+校验或解析失败时发布 `error`，并将定向有效性置为 false；其他字段可能缺失，
+不能把缺失字段当作有效值。
+
+### 定位保护、启动与续推
+
+默认高精度模式首次初始化仍要求可靠位置和航向。位置通过 GGA `gps_qual=4`、协方差、
+卫星数、HDOP 等条件判断，不能只看 `position_fixed`。已初始化后 GPS 退化
+沿用 FAST-LIO 本地续推，保留 100 米 / 600 秒限制；此次新增独立定向判断，
+没有加入“仅靠 GNSS 航向校正桥底续推”的功能。
+
+### 高精度与低精度启动开关
+
+默认 `low_precision_startup=false`，保持原来的高精度启动条件：
+
+```bash
+roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
+```
+
+需要固定航向配合较粗 GPS 起点启动时，显式开启：
+
+```bash
+roslaunch neupan_ros full_system_run.launch \
+  outdoor_mode:=true low_precision_startup:=true
+```
+
+该开关也可用于 `outdoor_global_only_test.launch`。它仅作用于默认的稳定定位
+分支 `use_global_ekf=false`，不是全局 EKF 分支的启动参数行为。
+
+低精度启动仍必须具备有效的位置解、固定且有效的双天线航向、新鲜且正常的
+局部里程计；无位置解或仅有 heading 不允许启动。低精度位置允许 GGA quality
+`1/2/4/5`，默认至少 6 颗卫星、HDOP 不超过 5、水平协方差不超过
+100 m²。初始化保留原来的 2 秒稳定确认，候选地图平移相对均值的散布允许
+到 2 米；航向稳定性和跳变检查不放宽。地图位置仍可能有数米甚至更大的偏差，
+2 米散布条件不是绝对定位误差上限。
+
+开关打开后优先尝试高精度初始化；质量或位置稳定性达不到高精度要求时才
+采用低精度条件。低精度初始化取稳定窗口中的平均平移、有效定向建立
+一次全局参考，随后进入 `LOCAL_DEAD_RECKONING`，不再用浮动/单点 GPS
+持续修改地图对齐，避免轨迹追随位置噪声。100 米 / 600 秒预算从初始化时
+开始计时，停车等待也计入。可靠 RTK 恢复后通过原有稳定窗口和平滑校正
+回到 `GPS_TRACKING`。后续目标点沿用当前参考，不会重新执行粗位置初始化。
+
+`/gps_guard/status` 新增：
+
+- `low_precision_startup_enabled`：开关状态。
+- `initialization_precision`：实际首次初始化采用 `high` 或 `low`，尚未初始化为 null。
+- `global_reference_precision`：当前参考为 `high` 或 `low`；低精度启动恢复可靠 RTK 后为 high。
+- `low_precision_limits`：本次运行的低精度检查阈值。
+
+相关原因包括 `low_precision_stability_check` 和初始化瞬间的
+`low_precision_initialized`；随后可能显示 GPS 协方差、GGA 质量或恢复等待原因。
+这些字段随原有 GPS guard 状态写入日志。
+阈值可通过 `global_odom_bridge` 的私有参数
+`low_precision_max_covariance`、`low_precision_max_hdop`、
+`low_precision_min_satellites`、`low_precision_consistency_m` 配置。
+低精度模式要求定位保护、航向使用和定向固定检查均开启，冲突配置会明确报错。
+
+固定航向改善初始方向可信度，不能保证局部规划不会异常，也不能消除粗位置
+对云端经纬度目标、路网对齐和到达判断的误差。新增模式已通过消息级离线
+测试和 launch 参数传递检查，仍需低速实车验证。
+
+默认参数：`require_heading_fixed=true`、`solution_timeout_sec=2.5`。
+可在 `g90_nmea.launch` 和 `wheeltec_dual_rtk_driver_nmea.launch` 中设置；
+`global_odom_bridge` 也有同名私有参数。2.5 秒是定向状态的超时阈值，
+不替代 `/heading` 自身的新鲜度检查；默认航向消息超时仍为 0.5 秒。
+缺少 PVTSLNA 时默认停止发布航向，并阻止可靠 GPS 初始化或校正。
+
+`/gps_guard/status` 的相关拒绝原因：
+
+- `heading_solution_missing`：尚未收到定向解状态。
+- `heading_solution_stale`：状态超时。
+- `heading_solution_unfixed`：定向未固定或有效性检查失败。
+
+实际 `reason` 还可能先报告位置或本地里程计异常，因为定位检查按顺序执行。
+
+### 查看与验证
+
+NUC 输入 `Neupan`、按 `e` 进入 ROS1 环境，启动全系统后查看：
+
+```bash
+rostopic echo /gnss/solution_status
+rostopic echo /gnss/gpgga/gps_qual
+rostopic echo /gps_guard/status
+rostopic hz /heading
+```
+
+GGA 中 `gps_qual=4` 为位置固定解，`5` 为浮动解，`1` 为单点定位，`0` 为无定位。
+无有效定向时 `/heading` 不发布，此时 `rostopic hz` 无数据是预期行为。
+停止发布后不要把此前收到的航向缓存当作当前有效值。
+
+重启系统后生效。`system_run_logger` 已将解状态保存为 `gnss_solution`、
+`gnss_solution_age_sec`，导航事件上下文和 `/gps_guard/status` 也包含该信息。
+现有 rosbag 配置尚未显式录制独立的 `/gnss/solution_status`；需要原始状态
+话题回放时应将它加入所使用的录包配置。
+
+验证已覆盖真实无解 PVTSLNA、位置/定向独立组合、CRC 错误、截断、非有限数值、
+异常基线、有效零度航向和状态超时。5 项解析/驱动测试通过，定位保护检查通过；
+实际设备无解时成功拦截占位零度航向。固定解正例使用合成报文，仍需室外实测。
 
 # 十二、道路视觉与相机
 

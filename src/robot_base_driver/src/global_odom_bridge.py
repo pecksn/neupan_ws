@@ -158,6 +158,9 @@ class GlobalOdomBridge:
         self.fix_topic = rospy.get_param("~fix_topic", "/gps/fix")
         self.gga_topic = rospy.get_param("~gga_topic", "/gnss/gpgga")
         self.heading_topic = rospy.get_param("~heading_topic", "/heading")
+        self.solution_topic = rospy.get_param("~solution_topic", "/gnss/solution_status")
+        self.require_heading_fixed = bool(rospy.get_param("~require_heading_fixed", True))
+        self.solution_timeout_sec = max(0.1, float(rospy.get_param("~solution_timeout_sec", 2.5)))
         self.output_topic = rospy.get_param("~output_topic", "/odometry/global")
         self.status_topic = rospy.get_param("~status_topic", "/gps_guard/status")
         self.safety_topic = rospy.get_param("~safety_topic", "/localization_safe")
@@ -168,6 +171,17 @@ class GlobalOdomBridge:
             0.0, float(rospy.get_param("~heading_filter_window_sec", 10.0))
         )
         self.guard_enabled = bool(rospy.get_param("~guard_enabled", True))
+        self.low_precision_startup = bool(rospy.get_param("~low_precision_startup", False))
+        self.low_precision_max_covariance = max(0.0, float(rospy.get_param("~low_precision_max_covariance", 100.0)))
+        self.low_precision_max_hdop = max(0.0, float(rospy.get_param("~low_precision_max_hdop", 5.0)))
+        self.low_precision_min_satellites = max(1, int(rospy.get_param("~low_precision_min_satellites", 6)))
+        self.low_precision_consistency_m = max(0.05, float(rospy.get_param("~low_precision_consistency_m", 2.0)))
+        self.initialization_precision = None
+        self.global_reference_precision = None
+        self.startup_candidate_profile = None
+        if self.low_precision_startup and not (
+                self.guard_enabled and self.use_heading_orientation and self.require_heading_fixed):
+            raise ValueError("low_precision_startup requires GPS guard and fixed heading checks")
         self.print_status_to_screen = bool(rospy.get_param("~print_status_to_screen", False))
 
         self.publish_rate = max(1.0, float(rospy.get_param("~publish_rate", 30.0)))
@@ -255,6 +269,8 @@ class GlobalOdomBridge:
         self.last_heading = None
         self.last_heading_yaw = None
         self.last_heading_recv = None
+        self.last_solution = None
+        self.last_solution_recv = None
         self.heading_bad_until = rospy.Time(0)
         self.local_bad_until = rospy.Time(0)
         self.local_fault_reason = "local_odom_missing"
@@ -295,6 +311,7 @@ class GlobalOdomBridge:
         rospy.Subscriber(self.gga_topic, Gpgga, self.gga_cb, queue_size=10)
         if self.use_heading_orientation:
             rospy.Subscriber(self.heading_topic, QuaternionStamped, self.heading_cb, queue_size=20)
+            rospy.Subscriber(self.solution_topic, String, self.solution_cb, queue_size=10)
 
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.publish_rate), self.timer_cb)
         rospy.loginfo(
@@ -418,6 +435,16 @@ class GlobalOdomBridge:
         )
         self.safety_pub.publish(Bool(data=False))
 
+    def solution_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            if not isinstance(payload, dict):
+                raise ValueError("GNSS solution status must be an object")
+        except (ValueError, TypeError):
+            payload = {"heading_valid": False, "heading_fixed": False}
+        self.last_solution = payload
+        self.last_solution_recv = rospy.Time.now()
+
     def heading_cb(self, msg):
         q = msg.quaternion
         if not all(self.finite(v) for v in (q.x, q.y, q.z, q.w)):
@@ -437,7 +464,11 @@ class GlobalOdomBridge:
         self.last_heading_yaw = yaw
         self.last_heading_recv = now
 
-    def data_quality(self, now):
+    def data_quality(self, now, low_precision=False):
+        # Relax position checks only before the first map alignment, never for
+        # ongoing GPS corrections or recovery. Fixed heading remains mandatory.
+        if low_precision and (not self.low_precision_startup or self.transform_initialized):
+            return False, "low_precision_startup_not_allowed"
         if self.last_local_odom is None or self.last_local_recv is None:
             return False, "local_odom_missing"
         if (now - self.last_local_recv).to_sec() > self.data_timeout_sec:
@@ -453,29 +484,39 @@ class GlobalOdomBridge:
                 return False, "gps_fix_missing"
             if (now - self.last_fix_recv).to_sec() > self.data_timeout_sec:
                 return False, "gps_fix_stale"
-            if self.last_fix.status.status < self.min_fix_status:
+            min_fix_status = 0 if low_precision else self.min_fix_status
+            if self.last_fix.status.status < min_fix_status:
                 return False, "fix_status_{}".format(self.last_fix.status.status)
 
             cov_x = float(self.last_fix.position_covariance[0])
             cov_y = float(self.last_fix.position_covariance[4])
-            if not (self.finite(cov_x) and self.finite(cov_y)):
+            if not (self.finite(cov_x) and self.finite(cov_y)) or min(cov_x, cov_y) < 0:
                 return False, "position_covariance_invalid"
-            if max(cov_x, cov_y) > self.max_position_covariance:
+            max_covariance = self.low_precision_max_covariance if low_precision else self.max_position_covariance
+            if max(cov_x, cov_y) > max_covariance:
                 return False, "position_covariance_large"
+            if low_precision and not (
+                    self.finite(self.last_fix.latitude) and self.finite(self.last_fix.longitude)
+                    and -90 <= self.last_fix.latitude <= 90 and -180 <= self.last_fix.longitude <= 180):
+                return False, "gps_coordinates_invalid"
             if self.last_gga is None or self.last_gga_recv is None:
                 return False, "gga_missing"
             if (now - self.last_gga_recv).to_sec() > self.data_timeout_sec:
                 return False, "gga_stale"
-            if (
+            if low_precision and int(self.last_gga.gps_qual) not in (1, 2, 4, 5):
+                return False, "gga_quality_{}".format(self.last_gga.gps_qual)
+            if (not low_precision and
                 self.required_gga_quality > 0
                 and int(self.last_gga.gps_qual) != self.required_gga_quality
             ):
                 return False, "gga_quality_{}".format(self.last_gga.gps_qual)
-            if int(self.last_gga.num_sats) < self.min_satellites:
+            min_satellites = self.low_precision_min_satellites if low_precision else self.min_satellites
+            if int(self.last_gga.num_sats) < min_satellites:
                 return False, "satellites_{}".format(self.last_gga.num_sats)
-            if not self.finite(float(self.last_gga.hdop)):
+            if not self.finite(float(self.last_gga.hdop)) or float(self.last_gga.hdop) < 0:
                 return False, "hdop_invalid"
-            if float(self.last_gga.hdop) > self.max_hdop:
+            max_hdop = self.low_precision_max_hdop if low_precision else self.max_hdop
+            if float(self.last_gga.hdop) > max_hdop:
                 return False, "hdop_%.2f" % self.last_gga.hdop
 
         gps_position = self.last_gps_odom.pose.pose.position
@@ -487,6 +528,15 @@ class GlobalOdomBridge:
             return False, "position_non_finite"
 
         if self.use_heading_orientation:
+            if self.require_heading_fixed:
+                if self.last_solution is None or self.last_solution_recv is None:
+                    return False, "heading_solution_missing"
+                age = (now - self.last_solution_recv).to_sec()
+                if age < 0 or age > self.solution_timeout_sec:
+                    return False, "heading_solution_stale"
+                if (self.last_solution.get("heading_fixed") is not True
+                        or self.last_solution.get("heading_valid") is not True):
+                    return False, "heading_solution_unfixed"
             if self.last_heading_yaw is None or self.last_heading_recv is None:
                 return False, "heading_missing"
             if (now - self.last_heading_recv).to_sec() > self.heading_timeout_sec:
@@ -559,7 +609,7 @@ class GlobalOdomBridge:
         while self.recovery_candidates and self.recovery_candidates[0][0] < cutoff:
             self.recovery_candidates.popleft()
 
-    def recovery_window_stable(self, duration_sec):
+    def recovery_window_stable(self, duration_sec, position_tolerance=None):
         if not self.recovery_candidates:
             return False
         first_stamp = self.recovery_candidates[0][0]
@@ -580,7 +630,7 @@ class GlobalOdomBridge:
             for candidate in candidates
         )
         return (
-            max_position_spread <= self.recovery_consistency_m
+            max_position_spread <= (self.recovery_consistency_m if position_tolerance is None else position_tolerance)
             and max_yaw_spread <= self.recovery_consistency_yaw_rad
         )
 
@@ -605,6 +655,7 @@ class GlobalOdomBridge:
         if mode == self.TRACKING:
             # Reset only after trusted GPS correction/initialization/recovery.
             self.dead_reckoning_budget.reset()
+            self.global_reference_precision = "high"
         elif self.transform_initialized:
             xy = None
             if self.last_local_odom is not None:
@@ -623,15 +674,29 @@ class GlobalOdomBridge:
 
     def update_guard(self, now):
         good, reason = self.data_quality(now)
+        low_precision = False
+        if not good and not self.transform_initialized and self.low_precision_startup:
+            good, reason = self.data_quality(now, low_precision=True)
+            low_precision = good
         if not good:
             self.stable_since = None
             self.last_recovery_candidate = None
             self.recovery_candidates.clear()
+            if not self.transform_initialized:
+                self.startup_candidate_profile = None
+                self.heading_transform_history.clear()
             if self.transform_initialized:
                 self.set_mode(self.DEAD_RECKONING, reason)
             else:
                 self.set_mode(self.WAITING, reason)
             return
+
+        if not self.transform_initialized:
+            profile = "low" if low_precision else "high"
+            if profile != self.startup_candidate_profile:
+                self.recovery_candidates.clear()
+                self.heading_transform_history.clear()
+                self.startup_candidate_profile = profile
 
         # A GPS sample is corrected once. Reusing an old GPS position with a
         # newer local pose would create a small backward sawtooth between fixes.
@@ -645,16 +710,39 @@ class GlobalOdomBridge:
         self.append_recovery_candidate(now, candidate)
         if not self.transform_initialized:
             self.last_recovery_candidate = candidate
-            if self.recovery_window_stable(self.initial_stable_sec):
+            tolerance = self.low_precision_consistency_m if low_precision else None
+            stable = self.recovery_window_stable(self.initial_stable_sec, tolerance)
+            # A reported RTK fix can still have too much position jitter for
+            # precise initialization. Explicit coarse mode may accept it under
+            # its own stability bound, still with fixed heading.
+            if (not stable and not low_precision and self.low_precision_startup
+                    and self.data_quality(now, low_precision=True)[0]
+                    and self.recovery_window_stable(self.initial_stable_sec, self.low_precision_consistency_m)):
+                low_precision = True
+                stable = True
+            if stable:
+                if low_precision:
+                    # One coarse position anchor; do not chase subsequent GPS noise.
+                    samples = [entry[1] for entry in self.recovery_candidates]
+                    candidate = (sum(p[0] for p in samples) / len(samples),
+                                 sum(p[1] for p in samples) / len(samples), candidate[2])
                 self.transform_x, self.transform_y, self.transform_yaw = candidate
                 self.transform_initialized = True
+                self.initialization_precision = "low" if low_precision else "high"
+                self.global_reference_precision = self.initialization_precision
                 self.last_tracking_candidate = candidate
                 self.last_candidate_step_m = 0.0
                 self.stable_since = None
                 self.recovery_candidates.clear()
-                self.set_mode(self.TRACKING, "gps_initialized")
+                if low_precision:
+                    self.set_mode(self.DEAD_RECKONING, "low_precision_initialized")
+                    rospy.logwarn("Low precision GPS start: fixed heading, coarse map position; local tracking limited to %.1fm / %.1fs",
+                                  self.dead_reckoning_budget.max_distance_m,
+                                  self.dead_reckoning_budget.max_duration_sec)
+                else:
+                    self.set_mode(self.TRACKING, "gps_initialized")
             else:
-                self.set_mode(self.WAITING, "gps_stability_check")
+                self.set_mode(self.WAITING, "low_precision_stability_check" if low_precision else "gps_stability_check")
             return
 
         position_error, yaw_error = self.transform_error(candidate)
@@ -780,10 +868,22 @@ class GlobalOdomBridge:
             "mode": self.mode,
             "reason": self.reason,
             "initialized": self.transform_initialized,
+            "low_precision_startup_enabled": self.low_precision_startup,
+            "initialization_precision": self.initialization_precision,
+            "global_reference_precision": self.global_reference_precision,
+            "low_precision_limits": {
+                "max_covariance_m2": self.low_precision_max_covariance,
+                "max_hdop": self.low_precision_max_hdop,
+                "min_satellites": self.low_precision_min_satellites,
+                "position_consistency_m": self.low_precision_consistency_m,
+            },
             "fix_status": fix_status,
             "cov_x": cov_x,
             "cov_y": cov_y,
             "gga_quality": gga_quality,
+            "gnss_solution": self.last_solution,
+            "gnss_solution_age_sec": None if self.last_solution_recv is None else
+            (now - self.last_solution_recv).to_sec(),
             "satellites": satellites,
             "hdop": hdop,
             "localization_safe": localization_safe,
