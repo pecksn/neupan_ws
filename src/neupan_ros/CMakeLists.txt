@@ -163,6 +163,7 @@ catkin_install_python(PROGRAMS
   example/lxw_car_simulation/scripts/ackermann_sim_driver.py
   example/lxw_car_simulation/scripts/publish_demo_goal.py
   example/lxw_car_simulation/scripts/gazebo_goal_marker.py
+  example/lxw_car_simulation/scripts/outdoor_simulation.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

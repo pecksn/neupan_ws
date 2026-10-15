@@ -1,5 +1,16 @@
 # test_motion_tools
 
+## 室外返程路径衔接回归（不驱动车辆）
+
+在 ROS1 的 `lxw` 环境运行；覆盖反向目标、前进连接、空间/观测不足停车、靠右路径切换及室内配置隔离。
+
+```bash
+cd /home/nuc/lxw/neupan_ws
+python src/Test/test_outdoor_start_connection.py -v
+```
+
+加 `NEUPAN_ROS_SMOKE=1` 可同时运行隔离 ROS1 进程测试：独立临时 master、假传感器和测试速度话题，不启动底盘驱动。
+
 ## 左右电机映射测试
 
 MCU 命令 `CMD,<throttle>,<steering>` 只有统一油门，不能独立驱动左右电机。

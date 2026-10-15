@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import glob
 import math
 import os
 import time
@@ -94,9 +95,17 @@ class SystemRunLogger:
             "localization_safe": None,
             "motor": None,
             "camera_right": None,
+            "neupan_failure": None,
+            "neupan_reference_path": None,
+            "camera_path_guard": None,
+            "route_connection": None,
         }
         self.received_at = {key: None for key in self.latest}
         self.previous_heading_deg = None
+        self.previous_reference_path = None
+        self.seen_failure_snapshots = set()
+        self.last_failure_scan = float('-inf')
+        self.failure_snapshot_dir = rospy.get_param('~failure_snapshot_dir', self.log_dir)
         self.sample_count = 0
         self.log_file = None
         self.log_path = None
@@ -131,6 +140,12 @@ class SystemRunLogger:
                          lambda msg: self.update("neupan_resources", self.parse_status(msg)), queue_size=10)
         rospy.Subscriber("/neupan/config_snapshot", String,
                          self.neupan_config_cb, queue_size=1)
+        rospy.Subscriber("/neupan/failure", String, self.neupan_failure_cb, queue_size=10)
+        rospy.Subscriber('/neupan/camera_path_guard', String,
+                         lambda msg: self.update('camera_path_guard', self.parse_status(msg)), queue_size=10)
+        rospy.Subscriber('/neupan/route_connection', String,
+                         self.route_connection_cb, queue_size=10)
+        rospy.Subscriber("/neupan_initial_path", Path, self.neupan_reference_path_cb, queue_size=1)
         rospy.Subscriber("/camera_right/status", String,
                          lambda msg: self.update("camera_right", self.parse_status(msg)), queue_size=10)
         rospy.Subscriber(self.global_path_topic, Path, self.global_path_cb, queue_size=2)
@@ -183,6 +198,10 @@ class SystemRunLogger:
             "safety": self.safety_topic,
             "motor": self.motor_status_topic,
             "camera_right": "/camera_right/status",
+            "neupan_failure": "/neupan/failure",
+            "neupan_reference_path": "/neupan_initial_path",
+            "camera_path_guard": "/neupan/camera_path_guard",
+            "route_connection": "/neupan/route_connection",
         }
 
     def local_time_string(self, timestamp=None):
@@ -449,6 +468,75 @@ class SystemRunLogger:
         self.update("neupan_runtime", payload)
         self.write_record({"record_type": "neupan_runtime_event", "data": payload})
 
+    def route_connection_cb(self, msg):
+        payload = self.parse_status(msg)
+        previous = self.latest.get('route_connection')
+        self.update('route_connection', payload)
+        if payload != previous:
+            self.write_record({'record_type': 'route_connection_event', 'data': payload}, force_flush=True)
+
+    def neupan_failure_cb(self, msg):
+        payload = self.parse_status(msg)
+        self.ingest_neupan_failure(payload)
+
+    def ingest_neupan_failure(self, payload, source='ros'):
+        if not isinstance(payload, dict) or not isinstance(payload.get('traceback'), str):
+            return False
+        identity = payload.get('snapshot_json') or json.dumps(payload, sort_keys=True)
+        with self.log_lock:
+            if identity in self.seen_failure_snapshots:
+                return True
+            self.update("neupan_failure", {
+                key: payload.get(key) for key in
+                ("stamp", "stage", "exception_type", "message", "snapshot_json", "snapshot_npz")
+            })
+            saved = self.write_record({"record_type": "neupan_failure_event", "data": payload,
+                                       "ingest_source": source},
+                                      force_flush=True, ignore_size_limit=True)
+            if saved:
+                self.seen_failure_snapshots.add(identity)
+            return saved
+
+    def poll_failure_files(self):
+        now = time.monotonic()
+        if now-self.last_failure_scan < 1.:
+            return
+        self.last_failure_scan = now
+        # A dead planner cannot retransmit a lost ROS event. Its fsynced JSON
+        # is the durable source, including after the logging node restarts.
+        for path in sorted(glob.glob(os.path.join(self.failure_snapshot_dir, 'neupan_failure_*.json'))):
+            if os.path.abspath(path) in self.seen_failure_snapshots:
+                continue
+            try:
+                with open(path) as stream:
+                    payload = json.load(stream)
+                if payload.get('snapshot_json') != os.path.abspath(path):
+                    continue
+                self.ingest_neupan_failure(payload, source='snapshot_file')
+            except (OSError, ValueError, AttributeError):
+                # The snapshot may still be being written; retry next scan.
+                continue
+
+    def neupan_reference_path_cb(self, msg):
+        signature = (msg.header.frame_id, tuple(
+            (p.pose.position.x, p.pose.position.y, p.pose.position.z,
+             p.pose.orientation.x, p.pose.orientation.y,
+             p.pose.orientation.z, p.pose.orientation.w) for p in msg.poses))
+        if signature == self.previous_reference_path:
+            return
+        self.previous_reference_path = signature
+        payload = {
+            "msg_stamp": self.message_stamp(msg.header),
+            "frame_id": msg.header.frame_id,
+            "poses": [{"x": p.pose.position.x, "y": p.pose.position.y,
+                       "z": p.pose.position.z,
+                       "yaw_deg": self.yaw_deg(p.pose.orientation)} for p in msg.poses],
+        }
+        self.record_navigation_event("neupan_reference_path", payload, {
+            "msg_stamp": payload["msg_stamp"], "frame_id": msg.header.frame_id,
+            "points": len(msg.poses),
+        })
+
     def local_fault_event_cb(self, msg):
         payload = self.parse_status(msg)
         self.update("local_fault_event", payload)
@@ -535,6 +623,7 @@ class SystemRunLogger:
         )
 
     def timer_cb(self, _event):
+        self.poll_failure_files()
         now = rospy.Time.now().to_sec()
         sample = {"stamp": now, "local_time": self.local_time_string(now)}
         with self.log_lock:

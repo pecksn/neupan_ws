@@ -192,6 +192,9 @@ rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.b
 | `/cmd_vel/auto`、`/cmd_vel/selected` | 对比 NeuPAN 原始速度与最终输出 |
 | `/vehicle/control_mode/status` | 模式、指令年龄、超时阈值及 `auto_timeout` / `localization_unsafe` 原因 |
 | `/neupan/runtime` | 单次求解耗时、TF 查询耗时、成功规划指令更新间隔、速度和转角 |
+| `/neupan/failure` | 规划主线程异常类型、完整堆栈、失败阶段及 JSON/NPZ 快照路径 |
+| `/neupan/camera_path_guard` | NeuPAN 独立选择摄像头/原路线/停车的状态、心跳年龄和原因 |
+| `/neupan_initial_path`、`/neupan_ref_state`、`/neupan_plan` | NeuPAN 实际参考路线、当步参考状态及优化轨迹；三套录包配置均已加入 |
 | `/Odometry`、`/odometry/lio_guarded`、`/odometry/local` | 对比原始 LIO、保护后 LIO、EKF 融合定位 |
 | `/gps_guard/local_fault_event` | 每次异常触发的位移、消息时间差、接收时间差及两种计算速度 |
 | `/gps_guard/status`、`/lio_guard/status`、`/localization_safe`、`/neupan/scan_health` | 定位、扫描与 TF 保护状态 |
@@ -201,6 +204,12 @@ rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.b
 | `/neupan/resources` | 每秒进程 CPU/内存、整机 CPU/内存使用率、I/O 等待率、交换空间及主机 CPU 占用前 10 个进程；CPU 百分比统一按整机为 100% |
 
 JSONL 除 10 Hz 快照外，直接保存原始自动指令、规划耗时、模式变化及定位异常事件，避免短暂异常被快照漏掉；完整配置只保存为独立记录。新增诊断没有改变速度选择、定位跳变判断或停车阈值。
+
+2026-10-15 增加退出诊断：规划主线程出现 Python 异常时，终端和 ROS 日志显示完整 FATAL 堆栈，并与运行日志一起放在 `tracker_logs/`，保存同名 `neupan_failure_日期_时间_*.json`（异常、阶段、路线进度、配置与数值有效性）和 `.npz`（当步车辆状态、障碍点、完整路线、速度预测及可取得的求解器输入）。原异常仍继续抛出，不自动重启。数值快照只在异常时写入；同一份系统运行 JSONL 也保存包含完整异常堆栈的 `neupan_failure_event` 并立即落盘，实际参考路线只在变化时另存完整事件，避免重复写入。
+
+异常补录：独立 `system_run_logger.py` 每秒检查同目录的异常 JSON 文件，ROS 异常事件丢失或规划进程立即退出时仍可补录，日志节点重启后也可恢复已有快照。按快照路径去重，成功写入并 fsync 后才标记已处理，失败会重试；补录事件带 `ingest_source: snapshot_file`，正常话题事件为 `ros`。异常事件不受普通日志大小上限限制。
+
+默认启动方式即可生效；`~diagnostic_log_dir` 可覆盖异常证据的父目录。进程被强制杀死或系统断电时，Python 异常处理不保证执行，此时结合资源日志与 ROS 退出记录判断。三套录包配置还补充了异常话题和实际规划轨迹，HybridNets 配置同时补录 `/scan`。
 
 整机使用率字段：`system_cpu_percent`、`system_cpu_iowait_percent`、`system_memory_percent`；容量字段：`system_memory_total_mb`、`system_memory_used_mb`、`system_memory_available_mb`、`system_swap_used_mb`。CPU 按相邻采样的 `/proc/stat` 差值计算，内存按总量减可用量计算（包含可回收缓存的可用估计），从 Linux `/proc` 读取；当前容器中这些系统计数反映主机整体，不是容器独占额度。`cpu_percent` 和 `rss_mb` 仍仅表示 NeuPAN 进程。
 
@@ -1725,13 +1734,13 @@ AT+NTRIP=addr,port,user,password,mount
 例如：
 
 ```text
-AT+NTRIP=120.253.239.161,8002,<CORS_USER>,<CORS_PASSWORD>,AUTO
-
-AT+NTRIP=120.253.239.161,8002,cndh87709,a8888783,RTCM33_GRCE
+AT+NTRIP=120.253.239.161,8002,<CORS_USER>,<CORS_PASSWORD>,RTCM33_GRCE
 
 ```
 
 **按一下”shift+Enter”键后再点击发送，**发送成功后会返回【OK】然后保存参数
+
+挂载点从上面的实际源节点中选择，例如 `RTCM33_GRCE`。
 
 ## 11.2 G90 位置与双天线定向状态（2026-10-14 更新）
 
@@ -2585,20 +2594,33 @@ rostopic echo /camera_right/status
 - 建立新校正需要左右边界有效、定位安全、JSON 和接收器 valid 信号新鲜；使用连续边界点段，不跨缺口拟合。图像为标定时的 1920×1080、旋转后坐标。
 - GPU/NUC 时钟需同步，`capture_timestamp_ns` 必须为真实采集时间；采集时间差超出 -50～500 ms、`source_age_ms` 超过 300 ms 时不能建立新校正。边界投影使用该采集时刻的 `map → base_link` TF；缺少历史 TF 时拒绝新修正并在 `/camera_right/status.reason` 记录原因，不用当前位姿代替。当前位姿仅用于路口判断与缓存维护。未解决时钟和采集时间问题前不启用视觉实车控制。
 - 每个路线点需 3 个不同帧的一致观察，缓存最多 30 s；短暂边界丢失可复用有效缓存，无缓存回退 OSM。新路线、定位异常、地图对齐变化超过 0.2 m 或 2° 会清空缓存。
+- 靠右控制开启时，由 NeuPAN 独立监督心跳，默认超时 3 s（`camera_right_guard_timeout`）。超时或心跳与路径内容/目标不匹配时，在下一控制循环切回该目标的原路线；原路线缺失或无效则持续输出零速度。同一目标切换路线时按已走距离保留进度，避免加密路线切回稀疏原路线后从起点追踪。监督不依赖靠右节点继续运行，恢复后只接收与当前原路线匹配的摄像头路径。状态和日志看 `/neupan/camera_path_guard`；当前 OSM 最大偏移为 0，回退路线为中心线。
 - 最大校正 1.5 m，按 0.15 m/s 渐进生效，路径最多 2 Hz 更新；不外推未观察路段、不移动起终点，左侧至少留 0.75 m 几何余量。短路段不保证完全达到 2 m。`camera_right_strategy:=realtime` 可切回实时策略对照。
 
 OSM 优先处理路口/转弯：读取同一 `osm_map_file` 的道路连接点，检查前方约 8 m 路线转向；处于路口附近或路线转角超过约 20° 时清空视觉缓存、沿原 OSM 路线行驶，不强制保持相机中心 2 m。右边界暂时不清晰只允许复用有效的已观察缓存，没有缓存就回到 OSM。
+
+返程掉头（2026-10-15）：室外 OSM 直连默认启用 `enable_outdoor_start_connector:=true`。新路线与当前车头相差超过 45°，或当前位置距路线超过 0.75 m 时，先从当前车姿生成仅前进的 Dubins 连接段，再接回原路线并保留终点。转弯半径同时满足规划配置与轴距/最大转角，当前至少 1.85 m；按车体外形加 0.12 m 余量检查 OSM 道路范围、单行方向及新鲜雷达观测。道路宽度优先取 `width`，其次 `lanes×3 m`，缺失时用 `osm_default_road_width`；估计宽度不能替代实测。
+
+不能连接时保持零速度，绝不把原来的反向参考线直接交给求解器。雷达 `inf/NaN`、盲区和缺少历史 TF 不算可通行空间；等待新鲜观测最多 5 s，随后或几何检查失败时拒绝该路线，需在更宽、已确认安全的区域重新下发目标。没有新增自动倒车/退车脱困，也没有修改 NeuPAN 原有倒车机制或室内 Hybrid A*。连接段完成前忽略同一目标的摄像头修正/原路线切换，避免覆盖掉头段；完成后恢复靠右更新。
+
+状态及拒绝原因（系统 JSONL 与三套录包配置均已记录）：
+
+```bash
+rostopic echo /neupan/route_connection
+```
+
+`connecting` 表示连接段执行中，`following_route` 表示正常路线跟踪，`blocked` 表示该路线被拒绝。实际下发参考路线看 `/neupan_initial_path`，OSM 原始路线仍是 `/osm_global_path`。该修复处理已知的返程衔接缺陷；旧退出日志缺少异常堆栈，不能据此宣称已证明或消除了当时退出的直接原因。
+
+已通过几何/路径接入回归与隔离 ROS1 假传感器测试；使用当前模型进行 230 步运动学闭环仿真，完成前进掉头并接回返程路线，未启动车辆。仿真仍有求解精度告警 `Solved/Inaccurate`，结果均为有限值；实车效果、坡道及旧数值异常仍需新日志验证。
 
 地面按 `base_link` 下方 0.20 m 计算（`camera_right_base_link_height_m:=0.20`，默认值），相机离地约 0.468 m；不修改标定外参。视频只投影近处合理视场内的连续路线，排除远处侧向路段，不跨缺口连线；实际导航仍保留完整路线。修正视频：[comparison.mp4](rosbag_videos/rosbag20261008_155045/right_driving_2m_ground20_fixed/comparison.mp4)。离线缓存修正 45/982 个样本，未应用全部实时保护，不代表实车控制已验收。
 
 ### 验证与录制
 
-27 项单元测试及 ROS1 隔离影子联调通过，包含采集时刻 TF 查询与缺失时拒绝新修正；尚未完成实车控制验收。平地模型尚不补偿坡道、车身俯仰；节点失效后的独立停车看门狗尚未实现。先用实时数据完成影子验证，再在封闭场地低速、可随时人工接管的条件下测试控制，不建议无监督运行。
+室外往返、窄路停车和观测不足的独立 Gazebo 仿真见 [仿真说明](src/neupan_ros/example/lxw_car_simulation/README.md#室外返程测试)，可用私有 master 自动测试，视频、日志及 rosbag 统一保存到 `videos/outdoor_simulation/日期_时间/`，不启动实车硬件。
+
+几何、时间对齐、心跳保护、长路线进度保留及异常诊断已通过单元与隔离 ROS1 故障验证；默认 3 s 心跳超时已验证。尚未完成实车控制验收，平地模型尚不补偿坡道与车身俯仰。先用实时数据完成影子验证，再在封闭场地低速、可随时人工接管的条件下测试控制。
 
 `src/vehicle_bag_recorder/config/hybridnets_data.yaml` 已包含 `/camera_right/reference_path`、`/camera_right/control_path`、`/camera_right/status`，用于后续 bag 检查；旧 bag 超过时效门槛，不能将离线结果当作实时控制验收。
 
-```bash
-python src/Test/test_camera_right.py
-```
-
-默认只运行几何单元测试；`--ros` 仅允许独立 master `http://127.0.0.1:11319` 且 `control_enabled=false` 的影子联调，禁止在车辆主 master 上运行。bag 视频与外参验证统一使用 `src/usb_camera/scripts/validate_driving_extrinsics.py`。
+之前三个独立验证脚本已清理；返程衔接回归集中在 `src/Test/test_outdoor_start_connection.py`，原有电机、开环运动及录制工具保留。bag 视频与外参验证统一使用 `src/usb_camera/scripts/validate_driving_extrinsics.py`。

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="neupan_outdoor_simulation">
+  <!-- Same equirectangular projection as the production OSM planner. -->
+  <node id="1" lat="23.0398000000" lon="113.3899223818"/>
+  <node id="2" lat="23.0398000000" lon="113.3900200000"/>
+  <node id="3" lat="23.0398000000" lon="113.3901176182"/>
+  <node id="4" lat="23.0398000000" lon="113.3902347601"/>
+  <node id="5" lat="23.0400245788" lon="113.3899223818"/>
+  <node id="6" lat="23.0400245788" lon="113.3900200000"/>
+  <node id="7" lat="23.0400245788" lon="113.3901176182"/>
+  <node id="8" lat="23.0400245788" lon="113.3902347601"/>
+  <way id="101"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/><tag k="highway" v="service"/><tag k="width" v="12"/><tag k="name" v="Wide turning test road"/></way>
+  <way id="102"><nd ref="5"/><nd ref="6"/><nd ref="7"/><nd ref="8"/><tag k="highway" v="service"/><tag k="width" v="3"/><tag k="name" v="Narrow stop test road"/></way>
+</osm>

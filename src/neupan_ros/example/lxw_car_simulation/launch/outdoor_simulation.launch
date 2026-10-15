@@ -1,0 +1,92 @@
+<launch>
+  <!-- Use outdoor_simulation.py run: it starts a private ROS/Gazebo master. -->
+  <arg name="scenario" default="wide" doc="wide / narrow / unknown"/>
+  <arg name="gui" default="false"/>
+  <arg name="rviz" default="false"/>
+  <arg name="automated" default="true"/>
+  <arg name="output_dir" default="/home/nuc/lxw/neupan_ws/videos/outdoor_simulation/manual"/>
+  <arg name="start_y" value="$(eval 25.0 if arg('scenario') == 'narrow' else 0.0)"/>
+  <arg name="simulation_dir" value="$(find neupan_ros)/example/lxw_car_simulation"/>
+  <arg name="osm_file" value="$(arg simulation_dir)/maps/outdoor_test.osm"/>
+  <env name="GAZEBO_MODEL_DATABASE_URI" value=""/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg simulation_dir)/worlds/outdoor_roads.world"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+  </include>
+
+  <group ns="outdoor_sim">
+    <!-- Isolate all simulated control, TF and perception from real-car topics. -->
+    <remap from="/tf" to="/outdoor_sim/tf"/><remap from="/tf_static" to="/outdoor_sim/tf_static"/>
+    <remap from="/odom" to="/outdoor_sim/odom"/><remap from="/joint_states" to="/outdoor_sim/joint_states"/>
+    <remap from="/scan" to="/outdoor_sim/scan"/>
+    <remap from="/initial_path" to="/outdoor_sim/osm_global_path"/>
+    <remap from="/neupan_cmd_vel" to="/outdoor_sim/cmd_vel"/>
+    <remap from="/move_base_simple/goal" to="/outdoor_sim/goal"/>
+    <remap from="/neupan_goal" to="/outdoor_sim/unused_direct_goal"/>
+    <remap from="/neupan_waypoints" to="/outdoor_sim/unused_waypoints"/>
+    <remap from="/goal_arrived" to="/outdoor_sim/goal_arrived"/>
+    <remap from="/neupan/runtime" to="/outdoor_sim/neupan/runtime"/>
+    <remap from="/neupan/failure" to="/outdoor_sim/neupan/failure"/>
+    <remap from="/neupan/camera_path_guard" to="/outdoor_sim/neupan/camera_path_guard"/>
+    <remap from="/neupan/route_connection" to="/outdoor_sim/neupan/route_connection"/>
+    <remap from="/neupan/scan_health" to="/outdoor_sim/neupan/scan_health"/>
+    <remap from="/neupan_initial_path" to="/outdoor_sim/neupan_initial_path"/>
+    <remap from="/neupan_ref_state" to="/outdoor_sim/neupan_ref_state"/>
+    <remap from="/neupan_plan" to="/outdoor_sim/neupan_plan"/>
+    <remap from="/robot_marker" to="/outdoor_sim/robot_marker"/>
+    <remap from="/dune_point_markers" to="/outdoor_sim/dune_point_markers"/>
+    <remap from="/nrmp_point_markers" to="/outdoor_sim/nrmp_point_markers"/>
+    <remap from="/odometry/global" to="/outdoor_sim/odometry/global"/>
+    <remap from="/gps/fix" to="/outdoor_sim/gps/fix"/>
+    <remap from="/osm_global_path" to="/outdoor_sim/osm_global_path"/>
+    <remap from="/osm_global_path_ll" to="/outdoor_sim/osm_global_path_ll"/>
+    <remap from="/osm_vector_map" to="/outdoor_sim/osm_vector_map"/>
+    <remap from="/initialpose" to="/outdoor_sim/initialpose"/>
+    <remap from="/hybrid_astar_subgoal" to="/outdoor_sim/subgoal"/>
+    <remap from="/clicked_point" to="/outdoor_sim/clicked_point"/>
+    <remap from="/teb_test/osm_goal" to="/outdoor_sim/internal_goal"/>
+    <remap from="/map" to="/outdoor_sim/unused_occupancy_grid"/>
+
+    <param name="robot_description" command="$(find xacro)/xacro $(arg simulation_dir)/urdf/outdoor_lxwcar.urdf.xacro"/>
+    <node pkg="gazebo_ros" type="spawn_model" name="spawn_outdoor_car" output="screen"
+          args="-urdf -param /outdoor_sim/robot_description -model outdoor_lxwcar -x 0 -y $(arg start_y) -z 0 -Y 0"/>
+    <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher"/>
+    <node pkg="tf" type="static_transform_publisher" name="map_to_odom" args="0 0 0 0 0 0 map odom 20"/>
+
+    <node pkg="neupan_ros" type="ackermann_sim_driver.py" name="virtual_base" output="screen">
+      <param name="model_name" value="outdoor_lxwcar"/><param name="cmd_topic" value="/outdoor_sim/cmd_vel"/>
+      <param name="odom_frame" value="odom"/><param name="base_frame" value="base_footprint"/>
+      <param name="wheelbase" value="0.67"/><param name="max_speed" value="1.5"/>
+      <param name="max_steer" value="0.35"/><param name="cmd_timeout" value="0.5"/>
+      <param name="y" value="$(arg start_y)"/>
+    </node>
+
+    <node pkg="neupan_ros" type="outdoor_simulation.py" name="sensors" args="bridge" output="screen" required="true"/>
+    <node pkg="osm_map_handler" type="global_astar_node" name="global_astar" output="screen" required="true">
+      <param name="osm_file" value="$(arg osm_file)"/>
+      <param name="default_lat" value="23.0398"/><param name="default_lon" value="113.39002"/>
+      <param name="strict_road_mode" value="true"/><param name="auto_set_initialpose" value="false"/>
+      <param name="start_snap_max_dist" value="1.0"/><param name="goal_snap_max_dist" value="1.0"/>
+      <param name="path_straight_spacing" value="2.5"/><param name="path_turn_spacing" value="0.8"/>
+      <param name="enable_right_lane_offset" value="false"/><param name="respect_oneway" value="true"/>
+    </node>
+    <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen" required="true">
+      <param name="config_file" value="$(find neupan_ros)/example/lxw_car/config/neupan_config_outdoor.yaml"/>
+      <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_6/model_5000.pth"/>
+      <param name="map_frame" value="map"/><param name="base_frame" value="base_link"/><param name="lidar_frame" value="laser_link"/>
+      <param name="include_initial_path_direction" value="true"/><param name="refresh_initial_path" value="true"/>
+      <param name="enable_adaptive_adjust" value="false"/><param name="outdoor_start_connector_enabled" value="true"/>
+      <param name="osm_file" value="$(arg osm_file)"/><param name="map_origin_lat" value="23.0398"/><param name="map_origin_lon" value="113.39002"/>
+      <param name="scan_range" value="0.1 20.0"/><param name="stop_on_scan_fault" value="true"/>
+      <param name="diagnostic_log_dir" value="$(arg output_dir)"/>
+    </node>
+    <node if="$(arg automated)" pkg="neupan_ros" type="outdoor_simulation.py" name="test" args="scenario" output="screen">
+      <param name="scenario" value="$(arg scenario)"/><param name="start_y" value="$(arg start_y)"/>
+      <param name="output_dir" value="$(arg output_dir)"/>
+    </node>
+    <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz" args="-d $(arg simulation_dir)/rviz/outdoor_simulation.rviz"/>
+  </group>
+</launch>

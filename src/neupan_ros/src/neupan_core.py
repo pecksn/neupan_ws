@@ -21,6 +21,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
 from neupan import neupan
+from camera_path_guard import CameraPathGuard
+from outdoor_start_connection import RoadCorridor, ScanEnvelope, StartRouteConnector
+import copy
 import json
 import threading
 import time
@@ -56,6 +59,10 @@ class neupan_core:
     def __init__(self) -> None:
 
         rospy.init_node("neupan_node", anonymous=True)
+        self.diagnostic_stage = "initialization"
+        self.diagnostic_solver_input = None
+        self.diagnostic_route_update = None
+        self.failure_pub = rospy.Publisher('/neupan/failure', String, queue_size=1, latch=True)
 
         # ros parameters
         self.planner_config_file = rospy.get_param("~config_file", None)
@@ -100,6 +107,11 @@ class neupan_core:
         self.refresh_initial_path = rospy.get_param("~refresh_initial_path", False)
         self.flip_angle = rospy.get_param("~flip_angle", False)
         self.include_initial_path_direction = rospy.get_param("~include_initial_path_direction", False)
+        self.camera_guard = CameraPathGuard(float(rospy.get_param('~camera_right_guard_timeout', 3.0))) \
+            if rospy.get_param('~camera_right_guard_enabled', False) else None
+        self.camera_guard_signature = None
+        self.camera_guard_last_state = None
+        self.camera_guard_last_publish = 0.
         self.verbose_runtime_log = bool(rospy.get_param("~verbose_runtime_log", False))
         self.enable_adaptive_adjust = rospy.get_param("~enable_adaptive_adjust", True)
         self.adaptive_far_distance = float(rospy.get_param("~adaptive_far_distance", "4.0"))
@@ -123,6 +135,25 @@ class neupan_core:
         self.neupan_planner = neupan.init_from_yaml(
             self.planner_config_file, pan=pan
         )
+        # Outdoor reference admission only. Neither the optimiser nor its
+        # existing reverse capability or the indoor Hybrid A* is changed.
+        self.start_connector = None
+        self.last_connection_status = None
+        self.last_connection_publish = 0.
+        if rospy.get_param('~outdoor_start_connector_enabled', False):
+            planner = self.neupan_planner
+            if planner.robot.kinematics != 'acker':
+                raise ValueError('Outdoor start connection requires Ackermann kinematics')
+            radius = max(float(planner.ipath.min_radius),
+                         float(planner.robot.L)/np.tan(float(planner.robot.max_speed[1, 0])))
+            try:
+                corridor = RoadCorridor.load(rospy.get_param('~osm_file'),
+                    float(rospy.get_param('~map_origin_lat')), float(rospy.get_param('~map_origin_lon')),
+                    float(rospy.get_param('~default_road_width', 6.)))
+            except Exception as error:
+                corridor = None
+                rospy.logwarn('Outdoor start connection: OSM corridor unavailable: %s', error)
+            self.start_connector = StartRouteConnector(planner.robot.vertices, radius, corridor)
         # print()
 
         # data
@@ -150,6 +181,8 @@ class neupan_core:
         # publisher
         self.vel_pub = rospy.Publisher("/neupan_cmd_vel", Twist, queue_size=10)
         self.runtime_pub = rospy.Publisher("/neupan/runtime", String, queue_size=10)
+        self.camera_guard_pub = rospy.Publisher('/neupan/camera_path_guard', String, queue_size=2, latch=True)
+        self.connection_status_pub = rospy.Publisher('/neupan/route_connection', String, queue_size=2, latch=True)
         self.last_command_monotonic = None
         self.goal_arrived_pub = rospy.Publisher("/goal_arrived", String, queue_size=1, latch=True)
         self.plan_pub = rospy.Publisher("/neupan_plan", Path, queue_size=10)
@@ -181,7 +214,12 @@ class neupan_core:
         # 1. from given path
         # 2. from waypoints
         # 3. from goal position
-        rospy.Subscriber("/initial_path", Path, self.path_callback)
+        rospy.Subscriber("/initial_path", Path,
+                         self.camera_guard.candidate_cb if self.camera_guard else self.path_callback)
+        if self.camera_guard:
+            rospy.Subscriber(rospy.get_param('~camera_right_fallback_topic', '/osm_global_path'),
+                             Path, self.camera_guard.original_cb, queue_size=1)
+            rospy.Subscriber('/camera_right/status', String, self.camera_guard_status_cb, queue_size=1)
         rospy.Subscriber("/neupan_waypoints", Path, self.waypoints_callback)
         rospy.Subscriber("/neupan_goal", PoseStamped, self.goal_callback)
         rospy.Subscriber(
@@ -200,7 +238,13 @@ class neupan_core:
 
         while not rospy.is_shutdown():
 
+            self.diagnostic_stage = "goal_update"
+            self.diagnostic_solver_input = None
             self.apply_pending_goal_request()
+            if not self.apply_camera_path_guard():
+                self.vel_pub.publish(Twist())
+                r.sleep()
+                continue
             with self.route_update_lock:
                 route_pending = self.pending_route_update is not None
             if self.waiting_for_new_goal and not route_pending:
@@ -211,6 +255,7 @@ class neupan_core:
                 r.sleep()
                 continue
 
+            self.diagnostic_stage = "vehicle_tf"
             try:
                 t0 = rospy.Time.now()
                 (trans, rot) = self.listener.lookupTransform(
@@ -247,6 +292,7 @@ class neupan_core:
                 r.sleep()
                 continue
 
+            self.diagnostic_stage = "route_update"
             self.apply_pending_route()
             if self.waiting_for_new_goal:
                 self.vel_pub.publish(Twist())
@@ -284,13 +330,20 @@ class neupan_core:
                 r.sleep()
                 continue
 
+            self.diagnostic_stage = "adjust_parameters"
             self.update_adaptive_adjust_parameters()
 
             t2 = rospy.Time.now()
             solver_started = time.monotonic()
-            action, info = self.neupan_planner(self.robot_state, self.obstacle_points)
+            self.diagnostic_stage = "solve"
+            self.diagnostic_solver_input = (self.robot_state, self.obstacle_points)
+            action, info = self.neupan_planner(*self.diagnostic_solver_input)
             solver_ms = (time.monotonic() - solver_started) * 1000.0
             t3 = rospy.Time.now()
+            if self.start_connector:
+                if self.start_connector.update_progress(self.neupan_planner.ipath.point_index):
+                    self.camera_guard_signature = None
+                self.publish_connection_status()
 
             # 计算各个阶段的耗时
             dt_tf = (t1 - t0).to_sec() * 1000
@@ -323,6 +376,7 @@ class neupan_core:
                     degrees(action[1, 0]),
                 )
 
+            self.diagnostic_stage = "publish_plan_and_command"
             # publish the path and velocity
             self.plan_pub.publish(self.generate_path_msg(info["opt_state_list"]))
             self.ref_state_pub.publish(self.generate_path_msg(info["ref_state_list"]))
@@ -353,6 +407,7 @@ class neupan_core:
                 dist = np.linalg.norm(self.robot_state[:2] - target[:2])
                 rospy.loginfo_throttle(1.0, f"Distance to destination: {dist:.2f} m")
 
+            self.diagnostic_stage = "publish_markers"
             self.point_markers_pub_dune.publish(self.generate_dune_points_markers_msg())
             self.point_markers_pub_nrmp.publish(self.generate_nrmp_points_markers_msg())
             self.robot_marker_pub.publish(self.generate_robot_marker_msg())
@@ -540,6 +595,16 @@ class neupan_core:
 
         now = rospy.Time.now()
         self.last_scan_received_time = now
+        if self.start_connector:
+            try:
+                position, rotation = self.listener.lookupTransform(
+                    self.map_frame, scan_msg.header.frame_id, scan_msg.header.stamp)
+                self.start_connector.scan = ScanEnvelope(scan_msg.ranges, scan_msg.angle_min,
+                    scan_msg.angle_increment, scan_msg.range_min, scan_msg.range_max,
+                    (position[0], position[1], self.quat_to_yaw_list(rotation)),
+                    scan_msg.header.stamp.to_sec(), time.monotonic())
+            except tf.Exception:
+                self.start_connector.scan = None
 
         if self.robot_state is None:
             self.mark_scan_fault("robot_pose_unavailable_for_scan")
@@ -677,6 +742,9 @@ class neupan_core:
         if stamp and self.arrival_path_key is not None and self.arrival_path_key[1] >= stamp:
             return
         self.minimum_path_stamp = stamp
+        if self.start_connector:
+            self.start_connector.reset()
+            self.publish_connection_status()
         self.stop = False
         self.arrive = False
         self.goal_arrived_state = False
@@ -707,6 +775,41 @@ class neupan_core:
         kind, data, path_key = update
         if kind == "path" and path_key[1] < self.minimum_path_stamp:
             return
+        self.diagnostic_route_update = (kind, data, path_key)
+        reseed = False
+        if self.start_connector and kind == 'path':
+            decision, prepared = self.start_connector.prepare(
+                data, path_key, self.robot_state[:, 0], time.monotonic(), rospy.Time.now().to_sec())
+            self.publish_connection_status()
+            if decision == 'keep':
+                self.diagnostic_route_update = None
+                return
+            if decision in ('wait', 'reject'):
+                # Keep the old numerical planner state for diagnostics, but do
+                # not run it for the rejected/new goal. Never fall back to the
+                # unconnected opposite-heading reference.
+                self.waiting_for_new_goal = True
+                self.vel_pub.publish(Twist())
+                if decision == 'wait':
+                    with self.route_update_lock:
+                        if self.pending_route_update is None:
+                            self.pending_route_update = update
+                rospy.logwarn_throttle(2., yellow_terminal_text(
+                    'Outdoor route held: %s; choose a wider clear turning area or adjust the goal'),
+                    self.start_connector.reason)
+                self.diagnostic_route_update = None
+                return
+            data = [p.reshape(4, 1) for p in prepared]
+            reseed = self.start_connector.reseed
+            self.start_connector.reseed = False
+        progress = None
+        if (not reseed and self.camera_guard is not None and kind == 'path' and
+                path_key == self.arrival_path_key):
+            ipath = self.neupan_planner.ipath
+            if ipath.curve_index == 0 and ipath.curve_number == 1:
+                old_xy = np.array([[p[0, 0], p[1, 0]] for p in ipath.cur_curve])
+                end = min(ipath.point_index+1, len(old_xy))
+                progress = float(np.linalg.norm(np.diff(old_xy[:end], axis=0), axis=1).sum())
         if kind == "path":
             self.neupan_planner.set_initial_path(data)
         elif kind == "waypoints":
@@ -715,15 +818,66 @@ class neupan_core:
             self.goal = data
             self.neupan_planner.update_initial_path_from_goal(self.robot_state, data)
         self.neupan_planner.reset()
+        if reseed:
+            xy = np.array([p[:2, 0] for p in data])
+            self.neupan_planner.ipath.point_index = int(np.argmin(
+                np.linalg.norm(xy-self.robot_state[:2, 0], axis=1)))
+        if progress is not None:
+            # Camera densification and the original route have different point
+            # counts. Preserve travelled distance, not the old numeric index.
+            ipath = self.neupan_planner.ipath
+            xy = np.array([[p[0, 0], p[1, 0]] for p in ipath.cur_curve])
+            distances = np.r_[0., np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
+            ipath.point_index = min(int(np.searchsorted(distances, progress)), len(xy)-1)
         self.arrival_path_key = path_key
         self.stop = False
         self.arrive = False
         self.goal_arrived_state = False
         self.waiting_for_new_goal = False
+        self.diagnostic_route_update = None
         self.goal_arrived_timer_callback(None)
         rospy.loginfo(yellow_terminal_text(
             "New {} accepted; arrival cleared, starting next route".format(kind)
         ))
+
+    def publish_connection_status(self):
+        status = self.start_connector.status()
+        signature = json.dumps(status, sort_keys=True)
+        now = time.monotonic()
+        if signature != self.last_connection_status or now-self.last_connection_publish >= .5:
+            self.connection_status_pub.publish(String(data=signature))
+            self.last_connection_status, self.last_connection_publish = signature, now
+
+    def camera_guard_status_cb(self, msg):
+        try:
+            status = json.loads(msg.data)
+        except (TypeError, ValueError):
+            status = None
+        self.camera_guard.status_cb(status, time.monotonic())
+
+    def apply_camera_path_guard(self):
+        if self.camera_guard is None:
+            return True
+        now = time.monotonic()
+        path, signature, state = self.camera_guard.select(now)
+        current = (state['source'], state['reason'])
+        if current != self.camera_guard_last_state or now-self.camera_guard_last_publish >= .5:
+            self.camera_guard_pub.publish(String(data=json.dumps(state)))
+            self.camera_guard_last_publish = now
+            self.camera_guard_last_state = current
+        if state['source'] == 'stop':
+            self.camera_guard_signature = None
+            with self.route_update_lock:
+                self.pending_route_update = None
+            rospy.logwarn_throttle(5., 'Camera path guard: no valid original route; holding stop')
+            return False
+        if signature != self.camera_guard_signature:
+            if not self.path_callback(copy.deepcopy(path)):
+                return False
+            self.camera_guard_signature = signature
+            if state['source'] == 'osm':
+                rospy.logwarn('Camera path guard: %s; using original OSM route', state['reason'])
+        return True
 
     def path_callback(self, path):
         path_frame = path.header.frame_id if path.header.frame_id else "map"
@@ -737,18 +891,18 @@ class neupan_core:
             path.poses = new_poses
         except Exception as e:
             rospy.logwarn("TF Error transforming path: {}".format(e))
-            return
+            return False
 
         if not path.poses or len(path.poses) == 0:
             rospy.logwarn("Received empty path from initial path topic, ignoring...")
-            return
+            return False
 
         if len(path.poses) < 2:
             rospy.logwarn(
                 "Received degenerate initial path with %d pose(s); ignoring it to avoid an invalid NeuPAN reference path.",
                 len(path.poses),
             )
-            return
+            return False
 
         initial_point_list = []
 
@@ -784,6 +938,7 @@ class neupan_core:
                 path_key += (round(float(initial_point_list[-1][0, 0]), 4),
                              round(float(initial_point_list[-1][1, 0]), 4))
             self.queue_route_update("path", initial_point_list, path_key)
+        return True
     
     def waypoints_callback(self, path):
         

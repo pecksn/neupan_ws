@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Conservative camera-ground path refinement; never publishes velocity."""
 import copy
+import hashlib
 import json
 import math
 import threading
@@ -566,7 +567,7 @@ class CameraRightPath:
         if self.control and signature != self.previous:
             self.output.publish(result)
             self.previous = signature
-        self.status.publish(String(data=json.dumps({'active':active, 'control_enabled':self.control,'strategy':getattr(self,'strategy','realtime'),'guidance_source':('camera_cache' if getattr(self,'strategy','realtime')=='segment_cache' else 'camera_realtime') if active else 'osm','osm_topology_loaded':getattr(self,'osm_map_loaded',False),'cached_points':cached_points,'distance_reference':getattr(self,'distance_reference','camera_center'),'target_center_clearance_m':getattr(self,'clearance',2.),'target_camera_center_clearance_m':float(getattr(self,'clearance',2.)+getattr(self,'origin',np.zeros(3))[1]),'ground_z_base_m':getattr(self,'ground_z',-.2),'camera_height_above_ground_m':float(getattr(self,'origin',np.zeros(3))[2]-getattr(self,'ground_z',-.2)),'wheel_geometry_verified':getattr(self,'wheel_geometry_verified',False),'camera_origin_base_m':getattr(self,'origin',np.zeros(3)).tolist(),'reason':reason,'shift_m':self.shift,'json_age_sec':now-self.received if self.received else None})))
+        self.status.publish(String(data=json.dumps({'route_stamp_ns':result.header.stamp.to_nsec(),'route_frame_id':result.header.frame_id,'control_path_digest':hashlib.sha256(json.dumps([(round(p.pose.position.x,3),round(p.pose.position.y,3)) for p in result.poses],separators=(',',':')).encode()).hexdigest(),'active':active, 'control_enabled':self.control,'strategy':getattr(self,'strategy','realtime'),'guidance_source':('camera_cache' if getattr(self,'strategy','realtime')=='segment_cache' else 'camera_realtime') if active else 'osm','osm_topology_loaded':getattr(self,'osm_map_loaded',False),'cached_points':cached_points,'distance_reference':getattr(self,'distance_reference','camera_center'),'target_center_clearance_m':getattr(self,'clearance',2.),'target_camera_center_clearance_m':float(getattr(self,'clearance',2.)+getattr(self,'origin',np.zeros(3))[1]),'ground_z_base_m':getattr(self,'ground_z',-.2),'camera_height_above_ground_m':float(getattr(self,'origin',np.zeros(3))[2]-getattr(self,'ground_z',-.2)),'wheel_geometry_verified':getattr(self,'wheel_geometry_verified',False),'camera_origin_base_m':getattr(self,'origin',np.zeros(3)).tolist(),'reason':reason,'shift_m':self.shift,'json_age_sec':now-self.received if self.received else None})))
 
 
 if __name__ == '__main__':

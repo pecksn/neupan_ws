@@ -1,66 +1,119 @@
-# lxw_car_simulation
+# LXW 车辆仿真（ROS1 / Gazebo）
 
-Gazebo simulation entry for the LXW Ackermann car with NeuPAN.
+统一按资源类型组织，室内/局部与室外文件共用目录，通过 `outdoor_` 文件名区分。不在源码目录存放测试结果。
 
-## What is included
+## 目录
 
-- `urdf/`: Ackermann URDF/Xacro with the real LXW car CAD exterior and simplified collision geometry.
-- `meshes/lxwcar_cad.stl`: binary visual mesh exported from `src/models/lxwcar.step`.
-- `launch/neupan_lxwcar_gazebo.launch`: starts Gazebo, spawns the car, starts `robot_state_publisher`, starts `neupan_node.py`, and optionally starts RViz/demo goal.
-- `worlds/lxw_car_obstacles.world`: default local static-obstacle world.
-- `worlds/gazebo_world_complex_20.world`: optional complex world from `example/gazebo_limo`.
-- `models/`: reusable fallback box and cylinder obstacle models.
-- `config/neupan_config_sim.yaml`: NeuPAN simulation config aligned with the LXW car geometry.
-- `config/rvo_config_complex.yaml`: RVO dynamic obstacle config copied from the official Gazebo LIMO example.
-- `rviz/lxw_car_simulation.rviz`: RViz view for `/scan`, TF, robot model, and NeuPAN markers/paths.
-- `scripts/publish_demo_goal.py`: optional latched goal publisher for quick smoke tests.
-- `scripts/gazebo_goal_marker.py`: follows `/move_base_simple/goal` and shows a cyan target with an orange flag in Gazebo. It has no collision geometry and does not appear in the laser scan.
+```text
+lxw_car_simulation/
+├── launch/   启动入口与组件装配
+├── scripts/  虚拟底盘、目标显示、室外测试工具
+├── config/   局部仿真与 RVO 参数
+├── maps/     室外 OSM 测试路网
+├── worlds/   Gazebo 场景（含 outdoor_roads.world）
+├── urdf/     车辆模型（含 outdoor_lxwcar.urdf.xacro）
+├── rviz/     显示配置（含 outdoor_simulation.rviz）
+├── meshes/   共用车辆 CAD 外观
+├── models/   共用箱体、圆柱障碍物
+└── README.md
+```
 
-## Sensor And Avoidance Notes
+| 文件 | 用途 |
+|---|---|
+| [launch/lxw_car_simulation.launch](launch/lxw_car_simulation.launch) | 原室内/局部仿真入口 |
+| [launch/neupan_lxwcar_gazebo.launch](launch/neupan_lxwcar_gazebo.launch) | 上述入口调用的 Gazebo 与控制组件装配 |
+| [launch/outdoor_simulation.launch](launch/outdoor_simulation.launch) | 室外 OSM 往返仿真装配，由测试脚本在独立 master 中启动 |
+| [scripts/outdoor_simulation.py](scripts/outdoor_simulation.py) | 室外一键运行、传感器桥接、自动测试和录制 |
+| [scripts/ackermann_sim_driver.py](scripts/ackermann_sim_driver.py) | 两种仿真共用的运动学虚拟底盘 |
+| [scripts/publish_demo_goal.py](scripts/publish_demo_goal.py) | 原局部仿真的演示目标发布 |
+| [scripts/gazebo_goal_marker.py](scripts/gazebo_goal_marker.py) | Gazebo 目标标记，无碰撞、不进入雷达回波 |
 
-The simulation keeps the real MID360 mounting frame at `livox_frame = 0.1 0 0.25` relative to `base_link`, matching `example/lxw_car/launch/full_system_run.launch`. Because Gazebo's `ray` sensor is only a 2D slice while the real car uses MID360 point cloud plus `pointcloud_to_laserscan`, the simulated `laser_link` is placed higher as a virtual scan slice. The obstacle worlds add taller collision cylinders so that this slice is actually visible in `/scan`.
+## ROS1 环境
 
-The CAD file uses millimetres. The exported STL bounds are about 0.938 × 0.745 × 0.359 m, so the URDF scales it by 0.001 and offsets it to centre the car and put its lowest point on the ground. The mesh is visual only; the existing joints, wheel collisions, and laser/IMU links remain active. The planner footprint and scan self-filter width are 0.75 m to cover the CAD exterior. To show the original primitive visuals for debugging, launch with `cad_visual:=false`.
-
-NeuPAN parameters in `config/neupan_config_sim.yaml` follow the real outdoor baseline. The launch enables adaptive adjustment by default; when an obstacle enters the front sector, it blends toward the avoid profile from `full_system_run.launch`.
-
-## Run
+先输入 `Neupan`、按 `e`，再执行：
 
 ```bash
 cd /home/nuc/lxw/neupan_ws
-catkin_make
-source devel/setup.bash
-roslaunch neupan_ros example/lxw_car_simulation/launch/neupan_lxwcar_gazebo.launch
+conda activate lxw
+source /opt/ros/noetic/setup.bash
+source /home/nuc/lxw/neupan_ws/devel/setup.bash
 ```
 
-Or use the package-level wrapper:
+## 室外返程测试
+
+使用 Gazebo 射线雷达、生产 OSM A*、[室外配置](../lxw_car/config/neupan_config_outdoor.yaml)、模型 `acker_robot_default_6` 与 NeuPAN 求解器。不启动实车驱动、串口、MID360、GNSS 或 GPU 接收。
+
+三组自动测试并录制 rosbag：
+
+```bash
+rosrun neupan_ros outdoor_simulation.py run --scenario all --record-bag
+```
+
+只看宽路往返，打开 Gazebo 与 RViz：
+
+```bash
+rosrun neupan_ros outdoor_simulation.py run --scenario wide --gui --rviz --record-bag
+```
+
+入口自动创建独立 ROS master 和 Gazebo master，测试结束后关闭；控制与 TF 使用 `/outdoor_sim/*`，无需配置网卡 IP。不要把室外 launch 直接加载到正在控制实车的 master，避免 `/clock` 与 `/use_sim_time` 影响实车。
+
+| 场景 | 路宽 | 过程与通过条件 |
+|---|---|---|
+| `wide` | 12 m | 前进约 10 m，再掉头返回；完成连接、到达目标、车体未越界 |
+| `narrow` | 3 m | 同样下发返程目标；确认无安全连接，持续零速度至少 2 s、无漂移 |
+| `unknown` | 12 m | 到第一目标后将回波置为 `inf`；不能把未知区域当成空路，拒绝掉头并停车 |
+
+窄路/未知场景必须因 `no_safe_forward_connection` 停车，TF 失配或传感器未就绪不能冒充通过。雷达按原始采集时刻匹配 TF，不重写时间戳。到达阈值沿用生产配置的 0.5 m，并检查 Gazebo 车体与虚拟里程计最大位置差不超过 0.25 m。
+
+室外车辆以后轴为参考点，轴距 0.67 m、规划外形 0.95×0.85 m、最小转弯半径 1.85 m；`base_link` 离地 0.20 m。OSM 路宽与 [worlds/outdoor_roads.world](worlds/outdoor_roads.world) 的物理边界一致，路网为 [maps/outdoor_test.osm](maps/outdoor_test.osm)。
+
+### 结果
+
+```text
+/home/nuc/lxw/neupan_ws/videos/outdoor_simulation/日期_时间/
+├── summary.md / summary.json
+├── wide/
+├── narrow/
+└── unknown/
+```
+
+每个场景保存 `overview.mp4`（H.264 俯视轨迹）、`navigation.jsonl`、`result.json`、`console.log` 和 `ros_logs/`；加 `--record-bag` 后保存 `simulation.bag`。异常时 JSON/NPZ 也放在该场景目录。`--output-dir` 可覆盖保存位置。
+
+视频不是摄像头画面：蓝色为 OSM 路线、绿色为实际接收参考线、粉色为局部规划、黄色为行驶轨迹。定位采用仿真真值，虚拟 GPS 仅提供接口；不验证真实 RTK、FAST-LIO、坡道、打滑或 HybridNets 靠右效果。
+
+## 原室内 / 局部仿真
+
+保持原启动方式，在 RViz 使用 `2D Nav Goal`：
 
 ```bash
 roslaunch neupan_ros lxw_car_simulation.launch
 ```
 
-Publish a goal from RViz with `2D Nav Goal`, or start with a demo goal:
+自动发布演示目标：
 
 ```bash
-roslaunch neupan_ros example/lxw_car_simulation/launch/neupan_lxwcar_gazebo.launch publish_demo_goal:=true
+roslaunch neupan_ros lxw_car_simulation.launch publish_demo_goal:=true
 ```
 
-The default launch uses local static obstacles and does not need `rvo_ros`. To use the complex dynamic world, first install/build `rvo_ros`, `libmulti_obs.so`, and the world's referenced models, then run:
+该入口不走室外 OSM A*，使用 [config/neupan_config_sim.yaml](config/neupan_config_sim.yaml)、模型 `acker_robot_default_2` 和原车辆模型；规划宽度/雷达自过滤宽度为 0.75 m。默认启用自适应避障参数，不要与室外 0.85 m 规划外形混用。原组件入口 `neupan_lxwcar_gazebo.launch` 仍可直接启动。
+
+默认场景为 `worlds/lxw_car_obstacles.world`，不依赖 RVO。可用 `cad_visual:=false` 显示基础几何外观，用 `show_goal_marker:=false` 关闭目标标记。
+
+### 动态障碍物（可选）
+
+先确保 `rvo_ros`、`libmulti_obs.so` 及场景引用的模型可用：
 
 ```bash
-roslaunch neupan_ros lxw_car_simulation.launch dynamic_obstacles:=true world_name:=$(rospack find neupan_ros)/example/lxw_car_simulation/worlds/gazebo_world_complex_20.world
+roslaunch neupan_ros lxw_car_simulation.launch \
+  dynamic_obstacles:=true \
+  world_name:=$(rospack find neupan_ros)/example/lxw_car_simulation/worlds/gazebo_world_complex_20.world
 ```
 
-## Important dependency
+默认障碍物最大速度 0.5 m/s，可用 `obstacle_max_speed:=0.8` 调整。随机目标范围为 x=[1.5,9.0]、y=[-4.0,4.0]，RVO 时间窗 2 s；随机模式连续 4 s 未移动 0.20 m 时重设目标。目标客户端最多等待服务 15 s，启动后应确认目标服务调用成功。过大的时间窗或过窄目标范围可能让人群停滞，应以模型实际位移判断运动，而非仅看配置速度。
 
-Dynamic obstacles default to a maximum speed of 0.5 m/s (RVO can slow them when avoiding one another). Set `obstacle_max_speed:=0.8` to increase this limit. The CAD body uses grey material in Gazebo; STL does not retain the original SolidWorks colours. Goal markers are enabled by default; use `show_goal_marker:=false` to disable them.
+## 共用模型与限制
 
-The dense crowd uses a 2-second RVO horizon and random goals within x=[1.5, 9.0], y=[-4.0, 4.0]. A 10-second horizon with goals confined to x=[2.5, 7.5], y=[-2.5, 2.5] caused long periods of crowd stagnation even after increasing the speed limit. Verify motion using model position changes, rather than the configured speed or a single velocity peak.
-
-In random mode, `goal_stall_timeout: 4.0` reassigns an agent's target if it has not moved 20 cm for four simulation seconds. This prevents unreachable targets from keeping the crowd stationary. Other RVO scenarios leave this recovery disabled by default.
-
-The RVO goal client waits up to 15 seconds for `set_rvo_goals` before configuring random motion. Previously, concurrent startup could lose this service call and leave the scene in its default motion mode. Check the launch log for a successful goal-service call.
-
-The vehicle motion is driven by `scripts/ackermann_sim_driver.py`, not by a custom Gazebo Ackermann plugin. It subscribes to `/neupan_cmd_vel`, integrates the Ackermann model, publishes `/odom`, broadcasts `odom -> base_footprint` (with the URDF providing `base_footprint -> base_link`), publishes wheel/steering `/joint_states`, and moves the Gazebo model through `/gazebo/set_model_state`. Commands expire after 0.5 seconds by default (`cmd_timeout` launch argument); this stops the car if the controller exits or its messages stop.
-
-The dynamic obstacle setup follows `example/gazebo_limo`: it expects `rvo_ros` and the `libmulti_obs.so` Gazebo plugin to be available in the workspace/devel environment.
+- CAD 网格 `meshes/lxwcar_cad.stl` 来自毫米单位的 STEP，按 0.001 缩放，约 0.938×0.745×0.359 m，仅作外观；简化碰撞体与传感器仍独立生效。STL 不保留 SolidWorks 颜色，Gazebo 使用灰色材质。
+- 实车 MID360 是 3D 点云再转 LaserScan；这里是较高的 2D 虚拟切片，障碍物需覆盖该高度。室内旧安装参数与室外模型分别保留，不把虚拟雷达高度当成真实安装标定。
+- 共用虚拟底盘积分 Ackermann 模型，发布里程计、TF 和轮胎/转向关节状态，再通过 `/gazebo/set_model_state` 更新车体。它不是电机或轮胎动力学插件；默认指令超时 0.5 s 自动停止（`cmd_timeout`）。
+- 仿真通过不代表实车验收。原室内仿真和 Hybrid A* 代码未因本次目录整理而改变。

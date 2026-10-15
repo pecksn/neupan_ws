@@ -73,6 +73,12 @@ topics:
   - /cmd_vel/selected
   - /vehicle/control_mode/status
   - /neupan/runtime
+  - /neupan/failure
+  - /neupan/camera_path_guard
+  - /neupan/route_connection
+  - /neupan_initial_path
+  - /neupan_ref_state
+  - /neupan_plan
   - /neupan/scan_health
   - /odometry/lio_guarded
   - /gps_guard/local_fault_event
