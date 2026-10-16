@@ -2,6 +2,8 @@
 
 This is the ROS wrapper for [NeuPAN Planner](https://github.com/hanruihua/neupan). 
 
+本工作区按职责分类：`src/neupan_core.py` 为核心规划控制实现，`src/neupan_diagnostics.py` 为异常诊断模块；可执行入口为 `scripts/neupan_node.py`。车辆和仿真案例仍在 `example/`，无需新增 `python/`。原 ROS 启动命令不变，详见 [功能包分类](../README.md)。
+
 For ROS2 Wrapper on Limo ros2 platform, please refer to [neupan_ros2](https://github.com/KevinLADLee/neupan_ros2) maintained by [KevinLADLee](https://github.com/KevinLADLee).
 
 ## Prerequisites
@@ -95,4 +97,3 @@ If you find this code or paper is helpful, please kindly star :star: this reposi
   pages={2804-2824},
   doi={10.1109/TRO.2025.3554252}}
 ```
-

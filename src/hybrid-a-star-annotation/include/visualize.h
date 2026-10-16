@@ -9,6 +9,7 @@
 #define VISUALIZE_H
 
 #include <ros/ros.h>
+#include <memory>
 #include <tf/transform_datatypes.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/PoseArray.h>
@@ -32,18 +33,20 @@ class Visualize {
   // ___________
   // CONSTRUCTOR
   /// The default constructor initializing the visualization object and setting publishers for the same.
-  Visualize() {
+  Visualize(bool enabled = true) {
+    if (!enabled) return;
+    n.reset(new ros::NodeHandle());
     // _________________
     // TOPICS TO PUBLISH
     //发布的topic，分为3D类Node和2D类Node，对应不同的Node
-    pubNode3D = n.advertise<geometry_msgs::PoseStamped>("/visualizeNodes3DPose", 100);
-    pubNodes3D = n.advertise<geometry_msgs::PoseArray>("/visualizeNodes3DPoses", 100);
-    pubNodes3Dreverse = n.advertise<geometry_msgs::PoseArray>("/visualizeNodes3DPosesReverse", 100);
-    pubNodes3DCosts = n.advertise<visualization_msgs::MarkerArray>("/visualizeNodes3DCosts", 100);
+    pubNode3D = n->advertise<geometry_msgs::PoseStamped>("/visualizeNodes3DPose", 100);
+    pubNodes3D = n->advertise<geometry_msgs::PoseArray>("/visualizeNodes3DPoses", 100);
+    pubNodes3Dreverse = n->advertise<geometry_msgs::PoseArray>("/visualizeNodes3DPosesReverse", 100);
+    pubNodes3DCosts = n->advertise<visualization_msgs::MarkerArray>("/visualizeNodes3DCosts", 100);
     
-    pubNode2D = n.advertise<geometry_msgs::PoseStamped>("/visualizeNodes2DPose", 100);
-    pubNodes2D = n.advertise<geometry_msgs::PoseArray>("/visualizeNodes2DPoses", 100);
-    pubNodes2DCosts = n.advertise<visualization_msgs::MarkerArray>("/visualizeNodes2DCosts", 100);
+    pubNode2D = n->advertise<geometry_msgs::PoseStamped>("/visualizeNodes2DPose", 100);
+    pubNodes2D = n->advertise<geometry_msgs::PoseArray>("/visualizeNodes2DPoses", 100);
+    pubNodes2DCosts = n->advertise<visualization_msgs::MarkerArray>("/visualizeNodes2DCosts", 100);
 
     // CONFIGURE THE CONTAINER
     // frame_id起的名字
@@ -79,7 +82,7 @@ class Visualize {
  private:
  //各种用途的节点的定义
   /// A handle to the ROS node
-  ros::NodeHandle n;
+  std::unique_ptr<ros::NodeHandle> n;
   /// Publisher for a single 3D node
   ros::Publisher pubNode3D;
   /// Publisher for an array of 3D forward nodes

@@ -211,7 +211,7 @@ NeuPAN 的 ROS1 封装和示例工程。
 
 主要输出话题：`/neupan_cmd_vel`、`/neupan_plan`、`/neupan_initial_path`、`/neupan_ref_state`、`/dune_point_markers`、`/nrmp_point_markers`、`/robot_marker`、`/neupan/scan_health`。
 
-### `src/neupan_ros/src/neupan_node.py`
+### `src/neupan_ros/scripts/neupan_node.py`
 
 程序入口。实例化 `neupan_core`，然后调用 `run()`。
 
@@ -256,7 +256,7 @@ Limo 差速车仿真。
 
 负责底盘串口、里程计、定位保护、路径跟踪和系统日志。
 
-### `src/base_driver_node.py`
+### `scripts/base_driver_node.py`
 
 - `RobotBaseDriver.__init__`：读取串口、车体和安全参数，打开串口，建立速度订阅、里程计发布和 TF 广播；速度订阅由 `~cmd_topic` 指定，完整系统配置为 `/cmd_vel/selected`。
 - `cmd_vel_callback`：把 `Twist.linear.x`（m/s）和 `Twist.angular.z`（转向角，rad）转换为 MCU 协议 `CMD,<轮速 rad/s>,<转角 deg>`；处理速度死区和 ±25° 转角限幅。
@@ -265,14 +265,14 @@ Limo 差速车仿真。
 - `read_from_mcu`：读取 MCU 的 `ODO` 行，解析位置和航向，设置里程计零点，计算相对位姿和速度。
 - 主循环：持续读取 MCU 数据并发布 `/odom`，必要时发布 `odom -> base_link` TF。
 
-### `src/control_mode_mux.py`
+### `scripts/control_mode_mux.py`
 
 - 订阅 `/vehicle/control_mode`、`/cmd_vel/auto` 和内部名称 `/cmd_vel/remote`。完整系统用 ROS remap 将后者接到云端 `/cmd_vel_remote`，不会额外创建 `/cmd_vel/remote` 发布话题。
 - `AUTO=0`：选择 NeuPAN 自动速度；完整系统在 `use_global_ekf:=false` 的室外配置下同时检查 `/localization_safe`。定位不安全时立即输出零速度并报告 `localization_unsafe`。
 - `MANUAL=1`：选择云端手动速度，不受定位安全状态拦截；超过默认 `1.0 s` 没有新遥控消息则输出零速度。
 - 以约 20 Hz 发布选定速度到 `/cmd_vel/selected`，并在状态变化时发布 JSON 状态到 `/vehicle/control_mode/status`。无模式消息时采用 launch 默认的 `0=AUTO`；非法模式值会被忽略。
 
-### `src/global_path_tracker.py`
+### `scripts/global_path_tracker.py`
 
 室外不经过 NeuPAN 的直接路径跟踪器。
 
@@ -292,7 +292,7 @@ Limo 差速车仿真。
 - `should_stop_at_goal`：结合点击目标、路径末端和越界条件判断是否停车。
 - 控制循环中的控制计算：根据横向误差和航向误差计算 Ackermann 转角，根据距离目标的远近调整速度。
 
-### `src/gps_fix_to_map_odom.py`
+### `scripts/gps_fix_to_map_odom.py`
 
 - `latlon_to_xy`：把经纬度转换到以 datum 为原点的局部平面坐标。
 - `fix_cb`：缓存 `NavSatFix`。
@@ -300,7 +300,7 @@ Limo 差速车仿真。
 - `build_covariance`：从 GPS 协方差构造里程计协方差。
 - `timer_cb`：周期发布 `/odometry/gps`。
 
-### `src/global_odom_bridge.py`
+### `scripts/global_odom_bridge.py`
 
 GPS 与 FAST-LIO 的全局定位安全守门器。
 
@@ -318,7 +318,7 @@ GPS 与 FAST-LIO 的全局定位安全守门器。
 
 续推试运行限制默认是累计路程 100 米或持续 600 秒（10 分钟），任一达到便将 `/localization_safe` 置为 `false`；这只是限制未校正里程计累积时间/距离，不能保证实际漂移小于某个米数。停车等待也计时，路程按每次本地位姿增量累计，因此往返运动不能抵消；新目标、到达、短暂 GPS Fixed 和里程计原点重置都不会清零预算。只有可信 GPS 完成初始化或平滑恢复到 `GPS_TRACKING` 才重置。距离和时间需用现场数据调整。
 
-### `src/lio_odom_guard.py`
+### `scripts/lio_odom_guard.py`
 
 FAST-LIO 输出保护器。
 
@@ -330,13 +330,13 @@ FAST-LIO 输出保护器。
 - `publish_corrected`：发布保护后的 LIO 里程计。
 - `lio_cb`、`wheel_cb`：处理 FAST-LIO 和轮速输入。
 
-### `src/map_odom_align_bridge.py`
+### `scripts/map_odom_align_bridge.py`
 
 - `_global_cb`：缓存全局里程计。
 - `_local_cb`：缓存局部里程计。
 - `_timer_cb`：根据全局和局部里程计实时计算并广播 `map -> odom`。
 
-### `src/system_run_logger.py`
+### `scripts/system_run_logger.py`
 
 - `topic_map`：定义需要记录的话题集合。
 - `open_log_file`：创建 JSONL 日志文件。
@@ -716,9 +716,9 @@ roslaunch vehicle_bag_recorder record.launch
 1. `src/neupan_ros/example/lxw_car/launch/full_system_run.launch`
 2. `src/neupan_ros/src/neupan_core.py`
 3. `src/osm_map_handler/scripts/gps_goal_bridge.py` 与 `src/osm_map_handler/src/global_astar_node.cpp`
-4. `src/robot_base_driver/src/control_mode_mux.py` 与 `src/robot_base_driver/src/base_driver_node.py`
-5. `src/robot_base_driver/src/global_odom_bridge.py`
-6. `src/robot_base_driver/src/global_path_tracker.py`（仅直接跟踪测试链路）
+4. `src/robot_base_driver/scripts/control_mode_mux.py` 与 `src/robot_base_driver/scripts/base_driver_node.py`
+5. `src/robot_base_driver/scripts/global_odom_bridge.py`
+6. `src/robot_base_driver/scripts/global_path_tracker.py`（仅直接跟踪测试链路）
 7. `src/lidar_curb_refinement/README.md` 与 `src/hybridnets_receiver/README.md`
 8. FAST-LIO、Livox 驱动及各包的 `config/`、`launch/`、`package.xml`、`CMakeLists.txt`
 

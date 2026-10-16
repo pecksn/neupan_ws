@@ -15,6 +15,9 @@ CollisionDetection::CollisionDetection() {
 }
 
 bool CollisionDetection::configurationTest(float x, float y, float t) {
+  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(t)) return false;
+  if (poseValidator) return poseValidator(x, y, t);
+  if (!grid) return false;
   int X = (int)x;
   int Y = (int)y;
   int iX = (int)((x - (long)x) * Constants::positionResolution);//得出X方向在cell中的偏移量
@@ -22,6 +25,7 @@ bool CollisionDetection::configurationTest(float x, float y, float t) {
   int iY = (int)((y - (long)y) * Constants::positionResolution);//Y方向在cell中的偏移量
   iY = iY > 0 ? iY : 0;
   int iT = (int)(t / Constants::deltaHeadingRad);
+  if (iT < 0 || iT >= Constants::headings) return false;
   int idx = iY * Constants::positionResolution * Constants::headings + iX * Constants::headings + iT;
   int cX;
   int cY;
@@ -35,6 +39,8 @@ bool CollisionDetection::configurationTest(float x, float y, float t) {
       if (grid->data[cY * grid->info.width + cX]) {
         return false;
       }//若grid的某个小网格存在值，说明有障碍，则返回false表示不在自由网格
+    } else {
+      return false;  // a footprint outside the map is not observed free space
     }
   }
 

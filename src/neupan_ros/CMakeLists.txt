@@ -160,11 +160,19 @@ include_directories(
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
+  scripts/neupan_node.py
   example/lxw_car_simulation/scripts/ackermann_sim_driver.py
   example/lxw_car_simulation/scripts/publish_demo_goal.py
   example/lxw_car_simulation/scripts/gazebo_goal_marker.py
   example/lxw_car_simulation/scripts/outdoor_simulation.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+# The executable resolves these implementation modules via rospkg in src/.
+install(FILES
+  src/neupan_core.py
+  src/neupan_diagnostics.py
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/src
 )
 
 ## Mark executables for installation

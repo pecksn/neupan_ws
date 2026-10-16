@@ -21,9 +21,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
 from neupan import neupan
-from camera_path_guard import CameraPathGuard
-from outdoor_start_connection import RoadCorridor, ScanEnvelope, StartRouteConnector
+from osm_camera_path_guard import CameraPathGuard
+from osm_outdoor_start_connection import RoadCorridor, ScanEnvelope, StartRouteConnector
 import copy
+from collections import deque
 import json
 import threading
 import time
@@ -136,10 +137,12 @@ class neupan_core:
             self.planner_config_file, pan=pan
         )
         # Outdoor reference admission only. Neither the optimiser nor its
-        # existing reverse capability or the indoor Hybrid A* is changed.
+        # existing reverse capability or the indoor search profile is changed.
         self.start_connector = None
         self.last_connection_status = None
         self.last_connection_publish = 0.
+        self.connection_scan_lock = threading.Lock()
+        self.connection_scan_queue = deque(maxlen=8)
         if rospy.get_param('~outdoor_start_connector_enabled', False):
             planner = self.neupan_planner
             if planner.robot.kinematics != 'acker':
@@ -153,7 +156,17 @@ class neupan_core:
             except Exception as error:
                 corridor = None
                 rospy.logwarn('Outdoor start connection: OSM corridor unavailable: %s', error)
-            self.start_connector = StartRouteConnector(planner.robot.vertices, radius, corridor)
+            method = rospy.get_param('~outdoor_connection_planner', 'hybrid_astar')
+            search = None
+            if method == 'hybrid_astar':
+                from osm_hybrid_search import CppHybridSearch
+                search = CppHybridSearch(
+                    float(rospy.get_param('~outdoor_connection_budget_sec', 1.0)),
+                    int(rospy.get_param('~outdoor_connection_max_iterations', 12000)))
+                rospy.on_shutdown(search.close)
+            elif method != 'dubins':
+                raise ValueError('outdoor_connection_planner must be hybrid_astar or dubins')
+            self.start_connector = StartRouteConnector(planner.robot.vertices, radius, corridor, search=search)
         # print()
 
         # data
@@ -293,6 +306,7 @@ class neupan_core:
                 continue
 
             self.diagnostic_stage = "route_update"
+            self.refresh_connection_scan()
             self.apply_pending_route()
             if self.waiting_for_new_goal:
                 self.vel_pub.publish(Twist())
@@ -591,20 +605,50 @@ class neupan_core:
             )
 
     # scan callback
+    def refresh_connection_scan(self):
+        """Retry capture-time TF off the subscriber thread; never restamp scans.
+
+        A scan can arrive before its TF. Keep the last fresh, aligned snapshot
+        while retrying a bounded queue rather than erasing it on one TF miss.
+        This only feeds the outdoor admission helper, not normal scan handling.
+        """
+        if self.start_connector is None:
+            return
+        now, ros_now = time.monotonic(), rospy.Time.now().to_sec()
+        with self.connection_scan_lock:
+            queued = list(self.connection_scan_queue)
+        pending = [(msg, received) for msg, received in queued if 0 <= now-received <= .5]
+        state = 'waiting_for_capture_tf' if pending else 'no_fresh_scan'
+        for scan_msg, received in reversed(pending):
+            try:
+                position, rotation = self.listener.lookupTransform(
+                    self.map_frame, scan_msg.header.frame_id, scan_msg.header.stamp)
+            except tf.Exception:
+                continue
+            evidence = ScanEnvelope(scan_msg.ranges, scan_msg.angle_min,
+                scan_msg.angle_increment, scan_msg.range_min, scan_msg.range_max,
+                (position[0], position[1], self.quat_to_yaw_list(rotation)),
+                scan_msg.header.stamp.to_sec(), received)
+            if not evidence.fresh(now, ros_now):
+                continue
+            self.start_connector.scan = evidence
+            with self.connection_scan_lock:
+                while self.connection_scan_queue and self.connection_scan_queue[0][1] <= received:
+                    self.connection_scan_queue.popleft()
+            state = 'ready'
+            break
+        evidence = self.start_connector.scan
+        if state != 'ready' and evidence is not None and evidence.fresh(now, ros_now):
+            state = 'using_previous_fresh_capture' if pending else 'ready'
+        self.start_connector.scan_transform_state = state
+
     def scan_callback(self, scan_msg):
 
         now = rospy.Time.now()
         self.last_scan_received_time = now
         if self.start_connector:
-            try:
-                position, rotation = self.listener.lookupTransform(
-                    self.map_frame, scan_msg.header.frame_id, scan_msg.header.stamp)
-                self.start_connector.scan = ScanEnvelope(scan_msg.ranges, scan_msg.angle_min,
-                    scan_msg.angle_increment, scan_msg.range_min, scan_msg.range_max,
-                    (position[0], position[1], self.quat_to_yaw_list(rotation)),
-                    scan_msg.header.stamp.to_sec(), time.monotonic())
-            except tf.Exception:
-                self.start_connector.scan = None
+            with self.connection_scan_lock:
+                self.connection_scan_queue.append((scan_msg, time.monotonic()))
 
         if self.robot_state is None:
             self.mark_scan_fault("robot_pose_unavailable_for_scan")
@@ -794,12 +838,21 @@ class neupan_core:
                     with self.route_update_lock:
                         if self.pending_route_update is None:
                             self.pending_route_update = update
-                rospy.logwarn_throttle(2., yellow_terminal_text(
-                    'Outdoor route held: %s; choose a wider clear turning area or adjust the goal'),
-                    self.start_connector.reason)
+                if self.start_connector.phase == 'searching':
+                    rospy.logwarn_throttle(2., yellow_terminal_text(
+                        'Outdoor Hybrid A*: searching local connection; holding zero speed'))
+                else:
+                    rospy.logwarn_throttle(2., yellow_terminal_text(
+                        'Outdoor route held: %s; choose a wider clear turning area or adjust the goal'),
+                        self.start_connector.reason)
                 self.diagnostic_route_update = None
                 return
             data = [p.reshape(4, 1) for p in prepared]
+            report = (self.start_connector.admission or {}).get('accepted_scan_check', {})
+            if self.start_connector.phase == 'connecting' and report.get('unverified_near_margin_points', 0):
+                rospy.logwarn_throttle(2., yellow_terminal_text(
+                    'Outdoor connection: swept body observed; %d near-field buffer samples remain '
+                    'unverified (not treated as free space)'), report['unverified_near_margin_points'])
             reseed = self.start_connector.reseed
             self.start_connector.reseed = False
         progress = None

@@ -18,6 +18,7 @@
 #include "algorithm.h"
 
 #include <boost/heap/binomial_heap.hpp>
+#include <limits>
 
 using namespace HybridAStar;
 
@@ -27,6 +28,57 @@ float aStar(Node2D& start, Node2D& goal, Node2D* nodes2D, int width, int height,
 void updateH(Node3D& start, const Node3D& goal, Node2D* nodes2D, float* dubinsLookup, int width, int height, CollisionDetection& configurationSpace, Visualize& visualization);
 //Dubins shot的路径
 Node3D* dubinsShot(Node3D& start, const Node3D& goal, CollisionDetection& configurationSpace);
+
+namespace {
+double headingDifference(double a, double b) { return std::atan2(std::sin(a-b), std::cos(a-b)); }
+
+Node3D* forwardSuccessor(const Node3D& parent, int primitive, const SearchOptions& profile, double distance) {
+  const double curvature = (primitive-2)*.5/profile.radius;
+  const double yaw = parent.getT(), theta = yaw+curvature*distance;
+  const double x = parent.getX() + (std::abs(curvature) < 1.e-12 ?
+      distance*std::cos(yaw) : (std::sin(theta)-std::sin(yaw))/curvature);
+  const double y = parent.getY() + (std::abs(curvature) < 1.e-12 ?
+      distance*std::sin(yaw) : (std::cos(yaw)-std::cos(theta))/curvature);
+  return new Node3D(x, y, Helper::normalizeHeadingRad(theta), parent.getG(), 0, &parent, primitive);
+}
+
+void forwardHeuristic(Node3D& node, const SearchOptions& profile) {
+  double best = std::numeric_limits<double>::infinity();
+  for (const auto& goal : profile.goals) {
+    double a[] = {node.getX(), node.getY(), node.getT()};
+    double b[] = {goal.getX(), goal.getY(), goal.getT()};
+    DubinsPath curve;
+    if (dubins_init(a, b, profile.radius, &curve) == 0)
+      best = std::min(best, dubins_path_length(&curve));
+  }
+  node.setH(1.1*best);
+}
+
+Node3D* forwardShot(Node3D& start, const Node3D& goal, CollisionDetection& space,
+                    SearchOptions& profile, int width, int height) {
+  double a[] = {start.getX(), start.getY(), start.getT()};
+  double b[] = {goal.getX(), goal.getY(), goal.getT()};
+  DubinsPath curve;
+  if (dubins_init(a, b, profile.radius, &curve) != 0) return nullptr;
+  const double length = dubins_path_length(&curve);
+  if (!std::isfinite(length) || start.getG()+length > profile.max_length) return nullptr;
+  const int count = std::max(1, int(std::ceil(length/profile.collision_step)));
+  std::unique_ptr<Node3D[]> nodes(new Node3D[count+1]);
+  profile.shots++;
+  for (int i = 0; i <= count; ++i) {
+    if (profile.expired()) return nullptr;
+    double q[3];
+    if (i == count) { q[0]=b[0]; q[1]=b[1]; q[2]=b[2]; }
+    else dubins_path_sample(&curve, length*i/count, q);
+    nodes[i] = Node3D(q[0], q[1], Helper::normalizeHeadingRad(q[2]),
+        start.getG()+length*i/count, 0, i ? &nodes[i-1] : &start, 2);
+    if (!nodes[i].isOnGrid(width, height) || !space.isTraversable(&nodes[i])) return nullptr;
+  }
+  Node3D* end = &nodes[count];
+  profile.shot_storage.push_back(std::move(nodes));
+  return end;
+}
+}
 
 //###################################################
 //                                    NODE COMPARISON
@@ -60,13 +112,14 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
                                int height,
                                CollisionDetection& configurationSpace,
                                float* dubinsLookup,
-                               Visualize& visualization) {
+                               Visualize& visualization,
+                               SearchOptions* options) {
 
   // PREDECESSOR AND SUCCESSOR INDEX
   int iPred, iSucc;
   float newG;
   // Number of possible directions, 3 for forward driving and an additional 3 for reversing
-  int dir = Constants::reverse ? 6 : 3;//如果是后退，那么可能的前进方向为6；否则为3
+  int dir = options ? 5 : (Constants::reverse ? 6 : 3);
   // Number of iterations the algorithm has run for stopping based on Constants::iterations
   int iterations = 0;//迭代计数
 
@@ -80,7 +133,9 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
   priorityQueue O;//open集
 
   // update h value: 计算到目标的启发式值
-  updateH(start, goal, nodes2D, dubinsLookup, width, height, configurationSpace, visualization);
+  if (!start.isOnGrid(width, height) || !goal.isOnGrid(width, height)) return nullptr;
+  if (options) forwardHeuristic(start, *options);
+  else updateH(start, goal, nodes2D, dubinsLookup, width, height, configurationSpace, visualization);
   // mark start as open
   start.open();//将start加入open 集合: 1)将点标记为open
   // push on priority queue aka open list
@@ -96,6 +151,10 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
 
   // continue until O empty
   while (!O.empty()) {
+    if (options && (options->expired() || iterations >= options->max_iterations)) {
+      options->reason = options->expired() ? "search_time_budget" : "search_iteration_limit";
+      return nullptr;
+    }
 
     //    // DEBUG
     //    Node3D* pre = nullptr;
@@ -154,7 +213,7 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
     iterations++;//记录迭代次数
 
     // RViz visualization
-    if (Constants::visualization) {
+    if (!options && Constants::visualization) {
       visualization.publishNode3DPoses(*nPred);
       visualization.publishNode3DPose(*nPred);
       d.sleep();
@@ -173,12 +232,18 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
     else if (nodes3D[iPred].isOpen()) {//如果该点是在open状态，即正在扩张的点
       // add node to closed list
       nodes3D[iPred].close();//将它的状态标记为closed
+      if (options) options->expanded++;
       // remove node from open list
       O.pop();//并从open set中移除 (先取出点来，再干活)
+      if (options) {
+        options->expanded_storage.push_back(*nPred);
+        nPred = &options->expanded_storage.back();
+      }
 
       // _________
       // GOAL TEST检测当前节点是否是终点或者是否超出解算的最大时间(最大迭代次数)
-      if (*nPred == goal || iterations > Constants::iterations) {
+      if (!options && iterations > Constants::iterations) return nullptr;
+      if (!options && *nPred == goal) {
         // DEBUG
         return nPred;
       }//检查该点是否为目标点：是的话直接返回，表示搜索结束；不是的话就继续搜索
@@ -187,7 +252,17 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
       else {//不是目标点，那么就找到目标点的点
         // _______________________
         // SEARCH WITH DUBINS SHOT//车子是在前进方向，优先考虑用Dubins去命中目标点
-        if (Constants::dubinsShot && nPred->isInRange(goal) && nPred->getPrim() < 3) {
+        if (options && (options->expanded == 1 || options->expanded % 8 == 0)) {
+          for (size_t j = 0; j < options->goals.size(); ++j) {
+            nSucc = forwardShot(*nPred, options->goals[j], configurationSpace, *options, width, height);
+            if (nSucc) {
+              options->goal_index = j;
+              options->reason = "complete_goal_connection";
+              return nSucc;
+            }
+          }
+        }
+        if (!options && Constants::dubinsShot && nPred->isInRange(goal) && nPred->getPrim() < 3) {
           nSucc = dubinsShot(*nPred, goal, configurationSpace);
           
           //如果Dubins方法能直接命中，即不需要进入Hybrid A*搜索了，直接返回结果
@@ -203,7 +278,16 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
         for (int i = 0; i < dir; i++) {//每个方向都搜索
           // create possible successor
           // 创建下一个扩展节点，这里有三种可能的方向，如果可以倒车的话是6种方向
-          nSucc = nPred->createSuccessor(i);//找到下一个点
+          nSucc = options ? forwardSuccessor(*nPred, i, *options, options->step) : nPred->createSuccessor(i);
+          bool edgeFree = true;
+          if (options) {
+            for (double distance = 0; distance < options->step; distance += options->collision_step) {
+              std::unique_ptr<Node3D> sample(forwardSuccessor(*nPred, i, *options, distance));
+              if (options->expired() || !sample->isOnGrid(width, height) || !configurationSpace.isTraversable(sample.get())) {
+                edgeFree = false; break;
+              }
+            }
+          }
           // set index of the successor
           // 设置节点遍历标识
           iSucc = nSucc->setIdx(width, height);//索引值
@@ -212,7 +296,7 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
           // 判断扩展节点是否满足约束，能则继续进行遍历
           // 首先判断产生的节点是否在范围内；其次判断产生的节点会不会产生碰撞；
           // 只有同时满足在可视范围内且不产生碰撞的节点才是合格的节点
-          if (nSucc->isOnGrid(width, height) && configurationSpace.isTraversable(nSucc)) {
+          if (edgeFree && nSucc->isOnGrid(width, height) && configurationSpace.isTraversable(nSucc)) {
 
             // ensure successor is not on closed list or it has the same index as the predecessor
             // 确定新扩展的节点不在close list中，或者没有在之前遍历过
@@ -220,8 +304,11 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
 
               // calculate new G value：更新cost-so-far
               // 更新合格点的G值
-              nSucc->updateG();
+              if (options) nSucc->setG(nPred->getG()+options->step*(1.+.04*std::abs(i-2))+
+                                     .02*options->step*std::abs(i-nPred->getPrim()));
+              else nSucc->updateG();
               newG = nSucc->getG();
+              if (options && newG > options->max_length) { delete nSucc; continue; }
 
               // if successor not on open list or found a shorter way to the cell
               // 如果扩展节点不在OPEN LIST中，或者找到了更短G值的路径，或者该节点索引与前一节点在同一网格中（用新点代替旧点）
@@ -229,7 +316,8 @@ Node3D* Algorithm::hybridAStar(Node3D& start,
               if (!nodes3D[iSucc].isOpen() || newG < nodes3D[iSucc].getG() || iPred == iSucc) {
 
                 // calculate H value: 更新cost-to-go
-                updateH(*nSucc, goal, nodes2D, dubinsLookup, width, height, configurationSpace, visualization);
+                if (options) forwardHeuristic(*nSucc, *options);
+                else updateH(*nSucc, goal, nodes2D, dubinsLookup, width, height, configurationSpace, visualization);
 
                 // if the successor is in the same cell but the C value is larger
                 if (iPred == iSucc && nSucc->getC() > nPred->getC() + Constants::tieBreaker) {

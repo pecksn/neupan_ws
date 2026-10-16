@@ -18,6 +18,9 @@ find_package(catkin REQUIRED COMPONENTS
     roscpp
     rospy
     std_msgs
+    geometry_msgs
+    nav_msgs
+    visualization_msgs
     tf
     )
 
@@ -57,7 +60,8 @@ set(HEADERS
 add_library(HYAS ${SOURCES} ${HEADERS})
 
 ## Declare a catkin package
-catkin_package()
+catkin_package(INCLUDE_DIRS include LIBRARIES HYAS
+    CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs nav_msgs visualization_msgs tf)
 
 # 查找 OMPL（支持大小写不同的配置文件名）
 find_package(ompl QUIET)
@@ -80,18 +84,22 @@ include_directories(include ${catkin_INCLUDE_DIRS})
 include_directories(include ${OMPL_INCLUDE_DIRS})
 include_directories(include include)
 
+target_link_libraries(HYAS ${catkin_LIBRARIES} ${OMPL_LIBRARIES})
+
 add_executable(tf_broadcaster src/tf_broadcaster.cpp)
 target_link_libraries(tf_broadcaster ${catkin_LIBRARIES})
 
-add_executable(hybrid_astar src/main.cpp ${HEADERS} ${SOURCES})
-target_link_libraries(hybrid_astar ${catkin_LIBRARIES})
-target_link_libraries(hybrid_astar ${OMPL_LIBRARIES})
+add_executable(hybrid_astar src/main.cpp)
+target_link_libraries(hybrid_astar HYAS ${catkin_LIBRARIES} ${OMPL_LIBRARIES})
 
-install(TARGETS ${PROJECT_NAME} tf_broadcaster
+install(TARGETS ${PROJECT_NAME} tf_broadcaster HYAS
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     )
+
+# Legacy public headers use unqualified includes (algorithm.h, node3d.h).
+install(DIRECTORY include/ DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION})
 
 install(DIRECTORY launch/
     DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch

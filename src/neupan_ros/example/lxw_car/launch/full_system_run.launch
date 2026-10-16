@@ -123,8 +123,11 @@
     <arg name="default_control_mode" default="0" />
     <arg name="auto_command_timeout" default="0.5" />
     <arg name="remote_command_timeout" default="1.0" />
-    <arg name="outdoor_use_hybrid_astar" default="false" doc="室外是否启用 Hybrid A*；false 时 NeuPAN 直接跟踪 OSM A* 路径" />
+    <arg name="outdoor_use_hybrid_astar" default="false" doc="旧整段栅格Hybrid A*入口；新局部掉头连接不使用此开关，保持false" />
     <arg name="enable_outdoor_start_connector" default="true" doc="仅室外OSM直连：返程方向冲突时检查前进掉头连接，不可行则停车；不修改倒车能力" />
+    <arg name="outdoor_connection_planner" default="hybrid_astar" doc="起始/掉头连接：共享C++ hybrid_astar；dubins用于旧策略对照" />
+    <arg name="outdoor_connection_budget_sec" default="1.0" />
+    <arg name="outdoor_connection_max_iterations" default="12000" />
     <arg name="outdoor_initial_path_topic" default="/osm_global_path" doc="室外 NeuPAN 初始路径来源话题；可选 /osm_global_path 或 /sPath" />
     <arg name="outdoor_control_path_topic" value="/camera_right/control_path" if="$(arg enable_camera_right_control)" />
     <arg name="outdoor_control_path_topic" value="$(arg lidar_curb_refined_path_topic)" if="$(eval arg('enable_lidar_curb_control') and not arg('enable_camera_right_control'))" />
@@ -466,6 +469,9 @@
         <group unless="$(arg outdoor_use_hybrid_astar)">
             <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
                 <param name="outdoor_start_connector_enabled" value="$(eval arg('enable_outdoor_start_connector') and arg('outdoor_initial_path_topic') == '/osm_global_path')" />
+                <param name="outdoor_connection_planner" value="$(arg outdoor_connection_planner)" />
+                <param name="outdoor_connection_budget_sec" value="$(arg outdoor_connection_budget_sec)" />
+                <param name="outdoor_connection_max_iterations" value="$(arg outdoor_connection_max_iterations)" />
                 <param name="osm_file" value="$(arg osm_map_file)" />
                 <param name="map_origin_lat" value="$(arg map_origin_lat)" />
                 <param name="map_origin_lon" value="$(arg map_origin_lon)" />
@@ -504,7 +510,7 @@
     </group>
 
     <include if="$(eval arg('outdoor_mode') and (arg('enable_camera_right_path') or arg('enable_camera_right_control')))"
-             file="$(find robot_base_driver)/launch/camera_right_path.launch">
+             file="$(find osm_map_handler)/launch/camera_right_path.launch">
         <arg name="control_enabled" value="$(arg enable_camera_right_control)" />
         <arg name="input_path_topic" value="$(arg outdoor_initial_path_topic)" />
         <arg name="center_clearance_m" value="$(arg camera_right_center_clearance_m)" />

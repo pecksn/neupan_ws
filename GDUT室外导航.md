@@ -183,7 +183,7 @@ rosbag info /home/nuc/lxw/neupan_ws/rosbags/rosbagYYYYMMDD_HHMMSS/具体文件.b
 
 ### 运行卡顿诊断（2026-10-08 更新）
 
-资源采集由独立节点 `robot_base_driver/src/system_resource_monitor.py` 完成，全系统随 `enable_system_log` 自动启动；`system_run_logger.py` 负责保存。`neupan_core.py` 仅保留规划耗时/指令间隔记录，不再读取主机资源或生成配置快照。主机进程排名由主机端 `host_process_monitor.py` 采集，独立 ROS 节点读取其快照；两者不在规划计算进程内运行。
+资源采集由独立节点 `robot_base_driver/scripts/system_resource_monitor.py` 完成，全系统随 `enable_system_log` 自动启动；`system_run_logger.py` 负责保存。`neupan_core.py` 仅保留规划耗时/指令间隔记录，不再读取主机资源或生成配置快照。主机进程排名由主机端 `host_process_monitor.py` 采集，独立 ROS 节点读取其快照；两者不在规划计算进程内运行。
 
 全系统默认写入 `tracker_logs/system_run_full_日期_时间.jsonl`；普通及 HybridNets 录包配置均已加入下列诊断话题，重启后生效，录包命令不变。
 
@@ -660,7 +660,7 @@ sudo update-alternatives --config python3
 
 ```bash
 chmod 777 * src/neupan_ros/src/neupan_core.py
-chmod 777 * src/neupan_ros/src/neupan_node.py
+chmod 777 * src/neupan_ros/scripts/neupan_node.py
 
 # 然后必须重新 catkin_make
 cd /home/nuc/lxw/neupan_ws && catkin_make && source devel/setup.bash
@@ -1765,8 +1765,8 @@ AT+NTRIP=120.253.239.161,8002,<CORS_USER>,<CORS_PASSWORD>,RTCM33_GRCE
 
 - `src/wheeltec_gps_driver/src/libnmea_navsat_driver/unicore.py`：PVTSLNA 字段解析与 CRC32。
 - `src/wheeltec_gps_driver/src/libnmea_navsat_driver/driver.py`：发布解状态并检查 HDT 航向是否允许发布。
-- `src/robot_base_driver/src/global_odom_bridge.py`：定位保护独立检查定向状态。
-- `src/robot_base_driver/src/system_run_logger.py`：记录解状态及更新年龄。
+- `src/robot_base_driver/scripts/global_odom_bridge.py`：定位保护独立检查定向状态。
+- `src/robot_base_driver/scripts/system_run_logger.py`：记录解状态及更新年龄。
 
 协议字段依据：N4 Products Commands and Logs Reference Book V2 R1.2，
 7.3.23 节表 7-81。`bestpos_type` 是位置类型，`heading_type` 是定向类型。
@@ -1923,7 +1923,7 @@ GGA 中 `gps_qual=4` 为位置固定解，`5` 为浮动解，`1` 为单点定位
 
 # 十二、道路视觉与相机
 
-当前主导航使用 MID360 路缘、OSM 和 NeuPAN。GPU 板负责相机与 HybridNets 推理；NUC 接收视频和 JSON，可生成叠加图、输出 `/dev/video0` 并录包。视觉结果尚未接入车辆控制。
+当前主导航使用 MID360 避障、OSM 和 NeuPAN。GPU 板负责相机与 HybridNets 推理；NUC 接收视频和 JSON，可生成叠加图、输出 `/dev/video0` 并录包。雷达路缘与摄像头靠右控制均默认关闭；摄像头控制已提供显式开关，见下文“摄像头靠右控制”，尚未完成实车验收。
 
 ## 12.1 MID360 激光雷达路缘检测
 
@@ -2551,7 +2551,9 @@ RSSM+雷达encoder+neupan
 
 ## 摄像头靠右控制
 
-独立节点 `src/robot_base_driver/src/camera_right_path.py` 使用道路段校正缓存，目标是相机光学中心横向距右边界约 2 m（不是三维斜距，也不是车轮距离）。它只修正全局参考路径，不改原 OSM 文件、不直接发布速度；速度和转角仍由 NeuPAN 计算，雷达避障、定位保护、指令超时和人工接管保留。默认关闭视觉控制。
+独立节点 `osm_map_handler/camera_right_path.py` 使用道路段校正缓存，目标是相机光学中心横向距右边界约 2 m（不是三维斜距，也不是车轮距离）。它只修正全局参考路径，不改原 OSM 文件、不直接发布速度；速度和转角仍由 NeuPAN 计算，雷达避障、定位保护、指令超时和人工接管保留。默认关闭视觉控制。
+
+代码统一归属 [`src/osm_map_handler`](src/osm_map_handler/README.md)：OSM A*、返程连接、相机路径修正与路径选择策略集中管理，公共 Python 模块以 `osm_` 前缀平铺在 `src/`，不套同名文件夹。`neupan_ros` 保留局部优化、控制接入与独立心跳监督。室外掉头适配也在该包，通过独立 worker 调用 `hybrid_astar` 的共享 C++ 核心，不复制第二套搜索算法。全系统命令和话题不变，单独启动相机路径用 `roslaunch osm_map_handler camera_right_path.launch`。
 
 ### 启动命令
 
@@ -2599,9 +2601,13 @@ rostopic echo /camera_right/status
 
 OSM 优先处理路口/转弯：读取同一 `osm_map_file` 的道路连接点，检查前方约 8 m 路线转向；处于路口附近或路线转角超过约 20° 时清空视觉缓存、沿原 OSM 路线行驶，不强制保持相机中心 2 m。右边界暂时不清晰只允许复用有效的已观察缓存，没有缓存就回到 OSM。
 
-返程掉头（2026-10-15）：室外 OSM 直连默认启用 `enable_outdoor_start_connector:=true`。新路线与当前车头相差超过 45°，或当前位置距路线超过 0.75 m 时，先从当前车姿生成仅前进的 Dubins 连接段，再接回原路线并保留终点。转弯半径同时满足规划配置与轴距/最大转角，当前至少 1.85 m；按车体外形加 0.12 m 余量检查 OSM 道路范围、单行方向及新鲜雷达观测。道路宽度优先取 `width`，其次 `lanes×3 m`，缺失时用 `osm_default_road_width`；估计宽度不能替代实测。
+返程掉头（2026-10-16）：室外 OSM 直连默认启用 `enable_outdoor_start_connector:=true`、`outdoor_connection_planner:=hybrid_astar`。新路线与车头相差超过 45°，或当前位置距路线超过 0.75 m 时，用共享 C++ Hybrid A* 在 16×16 m、0.1 m 分辨率的局部图中搜索仅前进连接段，再接回原路线并保留终点。独立进程默认搜索预算 1 s、最多 12000 次迭代；等待期间停车，返回后用最新且采集 TF 对齐的扫描复查完整路径。正常路段仍走原 OSM A*，不是整段栅格重规划；不要打开旧 `outdoor_use_hybrid_astar` 分支。旧方案对照可设置 `outdoor_connection_planner:=dubins`，失败不会自动切换方案。
 
-不能连接时保持零速度，绝不把原来的反向参考线直接交给求解器。雷达 `inf/NaN`、盲区和缺少历史 TF 不算可通行空间；等待新鲜观测最多 5 s，随后或几何检查失败时拒绝该路线，需在更宽、已确认安全的区域重新下发目标。没有新增自动倒车/退车脱困，也没有修改 NeuPAN 原有倒车机制或室内 Hybrid A*。连接段完成前忽略同一目标的摄像头修正/原路线切换，避免覆盖掉头段；完成后恢复靠右更新。
+转弯半径同时满足规划配置与轴距/最大转角，当前至少 1.85 m；检查实际车体加 0.12 m 余量、OSM 道路范围、单行方向及雷达观测。道路宽度优先取 `width`，其次 `lanes×3 m`，缺失时用 `osm_default_road_width`；估计宽度不能替代实测。
+
+不能连接时保持零速度，绝不把原来的反向参考线直接交给求解器。雷达 `inf/NaN`、盲区和缺少历史 TF 不算可通行空间；等待新鲜观测最多 5 s，随后或几何检查失败时拒绝该路线，需在更宽、已确认安全的区域重新下发目标。没有新增自动倒车/退车脱困，NeuPAN 原有倒车机制和室内默认搜索配置保留；共享核心补上迭代耗尽不返回半条路径、越界及地图未就绪保护。连接段完成前忽略同一目标的摄像头修正/原路线切换，避免覆盖掉头段；完成后恢复靠右更新。
+
+2026-10-16 兼容近场过滤：原雷达安装外参、FAST-LIO `blind=0.5 m`、扫描 `range_min=0.4 m` 均不改。只调整掉头准入检查：当前实际车身占用区免查回波，未来车身进入的车外区域仍须观测；额外 12 cm 缓冲区继续拦截已知障碍，但落在近场过滤圆内的缓冲采样点可保持“未验证”，不当成空地，也不代表完整余量已验证。终端黄色提示，`admission.accepted_scan_check.unverified_near_margin_points` 记录点数。车身本体进入近场盲区、外侧无回波或道路空间不足仍停车；采集时刻 TF 最多缓存 8 帧短队列重试，观测有效期仍是 0.5 s，不改时间戳、不使用最新 TF 替代。
 
 状态及拒绝原因（系统 JSONL 与三套录包配置均已记录）：
 
@@ -2609,7 +2615,7 @@ OSM 优先处理路口/转弯：读取同一 `osm_map_file` 的道路连接点�
 rostopic echo /neupan/route_connection
 ```
 
-`connecting` 表示连接段执行中，`following_route` 表示正常路线跟踪，`blocked` 表示该路线被拒绝。实际下发参考路线看 `/neupan_initial_path`，OSM 原始路线仍是 `/osm_global_path`。该修复处理已知的返程衔接缺陷；旧退出日志缺少异常堆栈，不能据此宣称已证明或消除了当时退出的直接原因。
+`searching` 表示停车搜索，`connecting` 执行连接段，`following_route` 正常跟踪，`blocked` 表示该路线被拒绝。`admission` 是准入快照，不是实时避障结果；`search` 记录算法、耗时、展开节点等统计，`scan_stamp_sec` 为初始扫描时间，`completion_scan_stamp_sec` 为返回后复查时间。Hybrid A* 的 `road_rejected` / `scan_rejected` 按拒绝的采样姿态计数，不是整条路线数；扫描原因区分近场盲区、车身未知区、障碍/遮挡及缓冲区未知。`scan_transform_state` 给出采集 TF 状态。实际参考路线看 `/neupan_initial_path`，原路线仍为 `/osm_global_path`。旧退出日志缺少异常堆栈，不能据此宣称已证明或消除了当时退出的直接原因。
 
 已通过几何/路径接入回归与隔离 ROS1 假传感器测试；使用当前模型进行 230 步运动学闭环仿真，完成前进掉头并接回返程路线，未启动车辆。仿真仍有求解精度告警 `Solved/Inaccurate`，结果均为有限值；实车效果、坡道及旧数值异常仍需新日志验证。
 
@@ -2617,10 +2623,14 @@ rostopic echo /neupan/route_connection
 
 ### 验证与录制
 
-室外往返、窄路停车和观测不足的独立 Gazebo 仿真见 [仿真说明](src/neupan_ros/example/lxw_car_simulation/README.md#室外返程测试)，可用私有 master 自动测试，视频、日志及 rosbag 统一保存到 `videos/outdoor_simulation/日期_时间/`，不启动实车硬件。
+室外往返、窄路停车、观测不足和转弯区障碍的独立 Gazebo 仿真见 [仿真说明](src/neupan_ros/example/lxw_car_simulation/README.md#室外返程测试)。按实车安装及过滤参数生成点云并调用生产扫描节点，可用私有 master 自动测试，视频、日志及 rosbag 统一保存到 `videos/outdoor_simulation/日期_时间/`，不启动实车硬件。
+
+2026-10-16 共享 Hybrid A* 四场景均通过：[结果与录像](videos/outdoor_simulation/20261016_113623/summary.md)。宽路完成前进掉头返程，终点误差约 0.488 m（阈值 0.5 m），搜索约 26 ms；窄路/未知回波/实体障碍均拒绝并持续零速度。旧 Dubins 对照保留在 [092222 报告](videos/outdoor_simulation/20261016_092222/summary.md)。原实车雷达、标定与室外模型配置未修改；不代表最小实车掉头宽度或实车控制验收。
+
+同日补充 [21 次同起点窄路对照](videos/outdoor_simulation/20261016_142251_width_comparison/comparison.md)：两者在 9 m 道路均 2/2 完成。新版 8.75 m 仅 1/2 完成（成功时余量约 1.7 cm，另一次包络越界约 1.45 cm），8.5 m 两次均越界；原曲线在这些宽度拒绝并停车。当前没有可靠的更窄实控优势，需先处理紧弯跟踪误差与安全余量，不能按偶发成功宽度进行实车极限掉头。测试只扩展仿真入口，未改变生产规划算法；临时文件及重复录像已清理。
 
 几何、时间对齐、心跳保护、长路线进度保留及异常诊断已通过单元与隔离 ROS1 故障验证；默认 3 s 心跳超时已验证。尚未完成实车控制验收，平地模型尚不补偿坡道与车身俯仰。先用实时数据完成影子验证，再在封闭场地低速、可随时人工接管的条件下测试控制。
 
 `src/vehicle_bag_recorder/config/hybridnets_data.yaml` 已包含 `/camera_right/reference_path`、`/camera_right/control_path`、`/camera_right/status`，用于后续 bag 检查；旧 bag 超过时效门槛，不能将离线结果当作实时控制验收。
 
-之前三个独立验证脚本已清理；返程衔接回归集中在 `src/Test/test_outdoor_start_connection.py`，原有电机、开环运动及录制工具保留。bag 视频与外参验证统一使用 `src/usb_camera/scripts/validate_driving_extrinsics.py`。
+之前三个独立验证脚本已清理；返程衔接回归集中在 `src/Test/tests/test_outdoor_start_connection.py`，原有电机、开环运动及录制工具保留。bag 视频与外参验证统一使用 `src/usb_camera/scripts/validate_driving_extrinsics.py`。自维护功能包按 [功能包分类](src/README.md) 区分核心模块、可执行脚本和测试，不按 Python/C++ 一刀切；原启动命令与控制参数不变。

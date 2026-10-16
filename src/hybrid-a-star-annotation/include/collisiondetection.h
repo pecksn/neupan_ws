@@ -2,6 +2,7 @@
 #define COLLISIONDETECTION_H
 
 #include <nav_msgs/OccupancyGrid.h>
+#include <functional>
 
 #include "constants.h"
 #include "lookup.h"
@@ -43,6 +44,8 @@ class CollisionDetection {
  public:
   /// Constructor
   CollisionDetection(); //构造函数
+  explicit CollisionDetection(std::function<bool(float, float, float)> validator)
+      : poseValidator(std::move(validator)) {}
 
 
   /*!
@@ -104,6 +107,7 @@ class CollisionDetection {
  private:
   /// The occupancy grid
   nav_msgs::OccupancyGrid::Ptr grid;
+  std::function<bool(float, float, float)> poseValidator;
   /// The collision lookup table
   Constants::config collisionLookup[Constants::headings * Constants::positions];
 };

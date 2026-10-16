@@ -5,7 +5,6 @@ from collections import Counter
 import json
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 import cv2
 import numpy as np
@@ -28,7 +27,7 @@ def dense_route(points):
 
 def compare_existing_cache(output):
     """Matched-frame temporal comparison, excluding live control safety gates."""
-    from camera_right_path import SegmentCache,bounded_offsets,load_osm_junctions,osm_guidance_context,project_ground_path
+    from osm_camera_path_refinement import SegmentCache,bounded_offsets,load_osm_junctions,osm_guidance_context,project_ground_path
     configuration=json.loads((output/'report.json').read_text())
     target_clearance=configuration.get('target_camera_clearance_m',2.)
     ground_z=-configuration.get('base_link_height_m',.20)
@@ -186,7 +185,7 @@ def plot_existing_audit(output):
 def candidate_overlay(image, stamp, packets, matrix, distortion, rotation, origin,
                       route=None, transforms=None,clearance=2.0,ground_z=-.2):
     """Reuse control geometry, without claiming to run the full planner/gates."""
-    from camera_right_path import boundary_curve, lane_target,project_ground_path
+    from osm_camera_path_refinement import boundary_curve, lane_target,project_ground_path
     available = [entry for entry in packets if entry[0] <= stamp]
     reason, candidate = 'JSON missing or stale', False
     packet_time = None
@@ -312,7 +311,6 @@ def main():
     OUT = args.output
     OUT.mkdir(parents=True, exist_ok=True)
     if args.compare_cache_existing:
-        sys.path.insert(0,str(ROOT/'src/robot_base_driver/src'))
         compare_existing_cache(OUT)
         return
     if args.plot_existing_audit:
@@ -328,7 +326,6 @@ def main():
     report['target_camera_clearance_m']=args.center_clearance
     report['base_link_height_m']=args.base_link_height
     if args.camera_right_candidate:
-        sys.path.insert(0,str(ROOT/'src/robot_base_driver/src'))
         report['mode']='offline_camera_geometry_only_not_neupan_control'
         report['excluded_control_gates']=['global route alignment/corridor','TF freshness','localization safety','receiver health','capture freshness','confirmation and smoothing','NeuPAN planning']
     route=None

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""ROS executable entry; planner and diagnostics remain in the package's src/."""
 import os
 import sys
 

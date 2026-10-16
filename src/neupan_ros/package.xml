@@ -74,6 +74,7 @@
   <exec_depend>tf</exec_depend>
   <exec_depend>rospkg</exec_depend>
   <exec_depend>hybridnets_receiver</exec_depend>
+  <exec_depend>osm_map_handler</exec_depend>
 
 
   <!-- The export tag contains other, unspecified, tags -->

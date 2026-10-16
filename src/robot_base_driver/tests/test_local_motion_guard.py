@@ -5,7 +5,7 @@ from collections import deque
 from pathlib import Path
 import unittest
 
-source = Path(__file__).resolve().parents[1] / 'src/global_odom_bridge.py'
+source = Path(__file__).resolve().parents[1] / 'scripts/global_odom_bridge.py'
 with source.open() as stream:
     tree = ast.parse(stream.read())
 definition = next(node for node in tree.body

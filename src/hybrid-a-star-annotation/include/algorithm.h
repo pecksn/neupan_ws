@@ -18,6 +18,12 @@
 #ifndef ALGORITHM_H
 #define ALGORITHM_H
 
+#include <chrono>
+#include <deque>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include <ompl/base/spaces/ReedsSheppStateSpace.h>
 #include <ompl/base/spaces/DubinsStateSpace.h>
 #include <ompl/base/spaces/SE2StateSpace.h>
@@ -34,6 +40,25 @@ namespace HybridAStar {
 class Node3D;
 class Node2D;
 class Visualize;
+
+// Optional bounded forward-search profile. A null profile keeps the original
+// indoor vehicle, primitives, heuristic and reverse setting.
+struct SearchOptions {
+  double radius = 18.5;                 // grid cells, not metres
+  double step = 3.6;
+  double collision_step = .8;
+  double max_length = 200.;
+  int max_iterations = 12000;
+  int expanded = 0;
+  int shots = 0;
+  int goal_index = -1;
+  std::string reason = "search_exhausted";
+  std::chrono::steady_clock::time_point deadline;
+  std::vector<Node3D> goals;
+  std::vector<std::unique_ptr<Node3D[]>> shot_storage;
+  std::deque<Node3D> expanded_storage; // immutable predecessor poses
+  bool expired() const { return std::chrono::steady_clock::now() >= deadline; }
+};
 
 /*!
  * \brief A class that encompasses the functions central to the search.
@@ -66,7 +91,8 @@ class Algorithm {
                              int height,
                              CollisionDetection& configurationSpace,
                              float* dubinsLookup,
-                             Visualize& visualization);
+                             Visualize& visualization,
+                             SearchOptions* options = nullptr);
 
 };
 }

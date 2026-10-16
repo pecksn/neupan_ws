@@ -41,9 +41,9 @@ source /home/nuc/lxw/neupan_ws/devel/setup.bash
 
 ## 室外返程测试
 
-使用 Gazebo 射线雷达、生产 OSM A*、[室外配置](../lxw_car/config/neupan_config_outdoor.yaml)、模型 `acker_robot_default_6` 与 NeuPAN 求解器。不启动实车驱动、串口、MID360、GNSS 或 GPU 接收。
+使用 Gazebo 射线雷达、生产点云转扫描节点、OSM A*、[室外配置](../lxw_car/config/neupan_config_outdoor.yaml)、模型 `acker_robot_default_6` 与 NeuPAN 求解器。不启动实车驱动、串口、MID360、GNSS 或 GPU 接收。
 
-三组自动测试并录制 rosbag：
+四组自动测试并录制 rosbag：
 
 ```bash
 rosrun neupan_ros outdoor_simulation.py run --scenario all --record-bag
@@ -55,6 +55,8 @@ rosrun neupan_ros outdoor_simulation.py run --scenario all --record-bag
 rosrun neupan_ros outdoor_simulation.py run --scenario wide --gui --rviz --record-bag
 ```
 
+默认使用共享 C++ Hybrid A* 的室外前进连接模式，独立进程限时搜索，失败保持停车。旧 Dubins 对照加 `--connection-planner dubins`；它不是室内模式，也不打开旧整段栅格规划分支。
+
 入口自动创建独立 ROS master 和 Gazebo master，测试结束后关闭；控制与 TF 使用 `/outdoor_sim/*`，无需配置网卡 IP。不要把室外 launch 直接加载到正在控制实车的 master，避免 `/clock` 与 `/use_sim_time` 影响实车。
 
 | 场景 | 路宽 | 过程与通过条件 |
@@ -62,24 +64,47 @@ rosrun neupan_ros outdoor_simulation.py run --scenario wide --gui --rviz --recor
 | `wide` | 12 m | 前进约 10 m，再掉头返回；完成连接、到达目标、车体未越界 |
 | `narrow` | 3 m | 同样下发返程目标；确认无安全连接，持续零速度至少 2 s、无漂移 |
 | `unknown` | 12 m | 到第一目标后将回波置为 `inf`；不能把未知区域当成空路，拒绝掉头并停车 |
+| `obstacle` | 12 m | 到第一目标后在左右转弯区加入实体障碍；道路仍宽，必须因雷达障碍证据拒绝掉头并停车 |
 
-窄路/未知场景必须因 `no_safe_forward_connection` 停车，TF 失配或传感器未就绪不能冒充通过。雷达按原始采集时刻匹配 TF，不重写时间戳。到达阈值沿用生产配置的 0.5 m，并检查 Gazebo 车体与虚拟里程计最大位置差不超过 0.25 m。
+后三组必须因 `no_safe_forward_connection` 停车，并通过 `admission` 分别确认道路范围、车身未观测、已观测障碍的拒绝依据；TF 失配或传感器未就绪不能冒充通过。雷达按原始采集时刻匹配 TF，不重写时间戳。到达阈值沿用生产配置的 0.5 m，并检查 Gazebo 车体与虚拟里程计最大位置差不超过 0.25 m。
+
+2026-10-16 起，脚本只读实车 launch 与 FAST-LIO 配置，将当前雷达/IMU 安装关系、三维 `blind=0.5 m` 和扫描参数写入每次结果清单。虚拟雷达在 `(0.1,0,0.35) m` 采样，经 LiDAR→IMU 点云变换，再交给真实 `pointcloud_to_laserscan_node` 按 `base_link`、`range_min=0.4 m`、高度 `[0.2,0.8] m` 投影；不再直接把较小盲区的理想 LaserScan 交给规划器。原实车雷达配置没有修改。
+
+掉头检查区分实际车身与额外 `0.12 m` 缓冲区：实际车身未来进入的车外区域必须有有效观测；已知障碍仍检查缓冲区。仅位于近场过滤圆内的额外缓冲采样点可以保持未知，不将其认作空地，状态明确记录 `unverified_near_margin_points`、`margin_fully_observed=false`。这不代表完整 12 cm 余量已经得到观测验证；车身本体进入盲区、外侧未知区、碰到障碍或缺少新鲜 TF 仍拒绝。采集时刻 TF 延迟会短队列重试，保留上一份仍在 0.5 s 有效期内的对齐扫描，不用最新 TF 代替。
 
 室外车辆以后轴为参考点，轴距 0.67 m、规划外形 0.95×0.85 m、最小转弯半径 1.85 m；`base_link` 离地 0.20 m。OSM 路宽与 [worlds/outdoor_roads.world](worlds/outdoor_roads.world) 的物理边界一致，路网为 [maps/outdoor_test.osm](maps/outdoor_test.osm)。
 
 ### 结果
+
+共享 Hybrid A*：[20261016_113623 四场景报告](../../../../videos/outdoor_simulation/20261016_113623/summary.md)。四组均通过，宽路返程误差约 0.488 m（到达阈值 0.5 m），搜索约 26 ms；后三组拒绝后持续零速度，未启动实车。旧 Dubins 对照保留在 [20261016_092222](../../../../videos/outdoor_simulation/20261016_092222/summary.md)。这些场景不代表实车最小掉头宽度。
 
 ```text
 /home/nuc/lxw/neupan_ws/videos/outdoor_simulation/日期_时间/
 ├── summary.md / summary.json
 ├── wide/
 ├── narrow/
-└── unknown/
+├── unknown/
+└── obstacle/
 ```
 
-每个场景保存 `overview.mp4`（H.264 俯视轨迹）、`navigation.jsonl`、`result.json`、`console.log` 和 `ros_logs/`；加 `--record-bag` 后保存 `simulation.bag`。异常时 JSON/NPZ 也放在该场景目录。`--output-dir` 可覆盖保存位置。
+每个场景保存 `overview.mp4`（H.264 俯视轨迹）、`navigation.jsonl`、`result.json`、`console.log`、`run_manifest.json`、自动生成的 `scan_parameters.json` 和 `ros_logs/`；加 `--record-bag` 后保存 `simulation.bag`。异常时 JSON/NPZ 也放在该场景目录。`--output-dir` 可覆盖保存位置。
 
 视频不是摄像头画面：蓝色为 OSM 路线、绿色为实际接收参考线、粉色为局部规划、黄色为行驶轨迹。定位采用仿真真值，虚拟 GPS 仅提供接口；不验证真实 RTK、FAST-LIO、坡道、打滑或 HybridNets 靠右效果。
+
+### 两种掉头方案的窄路对比
+
+同一个入口可从完全相同的静止车姿 `(10,0,0)`，对照原 Dubins 曲线与共享 Hybrid A*，不先靠边、不倒车。每种宽度调用完整 OSM→连接段→NeuPAN→Gazebo 链路，以实际完成返程且车身不越界为准，不仅检查能否生成路径。
+
+```bash
+rosrun neupan_ros outdoor_simulation.py compare \
+  --widths 10 9 8 7 6 5 --width-step 0.25 --repeats 2
+```
+
+初筛后自动在完成/未完成之间细化到 0.25 m，再复测临界宽度。Hybrid A* 沿用生产 1 s 搜索预算；搜索耗尽只能说明当前算法/预算未找到路线，不是物理上绝对不能掉头。若临界结果重复不一致，报告不应当作稳定最小宽度。
+
+结果在 `videos/outdoor_simulation/日期_时间_width_comparison/`：保留 `comparison.md`、全部数值 `comparison.json`、临界/异常视频与轨迹日志。若最窄成功宽度复测失败，自动向更宽的已完成案例验证，区分偶发成功和重复通过。结束后删除本轮 `_work/` 中生成的场景/地图、内部 ROS 日志和重复录像，并按专属日志目录清理残留仿真子进程；不清理历史实车 rosbag 或日志。该命令不改实车、室内或规划器配置。
+
+2026-10-16 [21 次窄路对照](../../../../videos/outdoor_simulation/20261016_142251_width_comparison/comparison.md)：两者重复全部完成的最窄已测宽度均为 9 m（2/2）。新版 8.75 m 为 1/2 完成，另一次包络越界；8.5 m 两次均越界，8 m 也未走完，不能将离线路径生成成功当作实车能力提升。当前应先处理紧弯跟踪余量；这不是实车安全路宽结论。
 
 ## 原室内 / 局部仿真
 
@@ -114,6 +139,6 @@ roslaunch neupan_ros lxw_car_simulation.launch \
 ## 共用模型与限制
 
 - CAD 网格 `meshes/lxwcar_cad.stl` 来自毫米单位的 STEP，按 0.001 缩放，约 0.938×0.745×0.359 m，仅作外观；简化碰撞体与传感器仍独立生效。STL 不保留 SolidWorks 颜色，Gazebo 使用灰色材质。
-- 实车 MID360 是 3D 点云再转 LaserScan；这里是较高的 2D 虚拟切片，障碍物需覆盖该高度。室内旧安装参数与室外模型分别保留，不把虚拟雷达高度当成真实安装标定。
+- 实车 MID360 是 3D 点云；室外这里仅生成安装高度处的二维射线切片并转成点云，复现实车外参/过滤/投影链，不模拟真实扫描花纹、遮挡、噪声、低矮障碍或完整 FAST-LIO。室内旧虚拟传感器参数单独保留，不作为实车标定。
 - 共用虚拟底盘积分 Ackermann 模型，发布里程计、TF 和轮胎/转向关节状态，再通过 `/gazebo/set_model_state` 更新车体。它不是电机或轮胎动力学插件；默认指令超时 0.5 s 自动停止（`cmd_timeout`）。
-- 仿真通过不代表实车验收。原室内仿真和 Hybrid A* 代码未因本次目录整理而改变。
+- 仿真通过不代表实车验收。室内默认车辆/搜索配置保持原样；共享 Hybrid A* 仅额外修复失败返回及边界保护。

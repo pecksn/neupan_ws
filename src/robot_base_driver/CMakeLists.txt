@@ -28,15 +28,14 @@ include_directories(
 )
 
 catkin_install_python(PROGRAMS
-  src/base_driver_node.py
-  src/control_mode_mux.py
-  src/gps_fix_to_map_odom.py
-  src/global_odom_bridge.py
-  src/global_path_tracker.py
-  src/lio_odom_guard.py
-  src/map_odom_align_bridge.py
-  src/system_run_logger.py
-  src/system_resource_monitor.py
-  src/camera_right_path.py
+  scripts/base_driver_node.py
+  scripts/control_mode_mux.py
+  scripts/gps_fix_to_map_odom.py
+  scripts/global_odom_bridge.py
+  scripts/global_path_tracker.py
+  scripts/lio_odom_guard.py
+  scripts/map_odom_align_bridge.py
+  scripts/system_run_logger.py
+  scripts/system_resource_monitor.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

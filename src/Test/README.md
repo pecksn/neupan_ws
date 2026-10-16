@@ -1,15 +1,21 @@
 # test_motion_tools
 
+`scripts/` 放人工运动测试和采集工具，`tests/` 放自动回归；两者不要混用。目录约定见 [功能包分类](../README.md)。
+
 ## 室外返程路径衔接回归（不驱动车辆）
 
-在 ROS1 的 `lxw` 环境运行；覆盖反向目标、前进连接、空间/观测不足停车、靠右路径切换及室内配置隔离。
+在 ROS1 的 `lxw` 环境运行；覆盖反向目标、前进连接、实车 0.4 m 扫描过滤、近场缓冲区未验证标记、车身进入盲区拒绝、缓冲区障碍、采集 TF 延迟重试、空间/观测不足停车、靠右路径切换及室内配置隔离。规划与路径策略归属 `osm_map_handler`，另检查迁移后的引用及独立 3 s 心跳回退；NeuPAN 仅保留控制接入。
 
 ```bash
 cd /home/nuc/lxw/neupan_ws
-python src/Test/test_outdoor_start_connection.py -v
+python src/Test/tests/test_outdoor_start_connection.py -v
 ```
 
-加 `NEUPAN_ROS_SMOKE=1` 可同时运行隔离 ROS1 进程测试：独立临时 master、假传感器和测试速度话题，不启动底盘驱动。
+编译后加两个开关可同时运行真实 C++ 搜索与隔离 ROS1 入口测试：独立临时 master、原室内 Hybrid A*、假传感器和测试速度话题，不启动底盘驱动。包含异步取消、超时停车、迭代耗尽不返回半条路径、最新扫描复查及车辆移动拒绝。
+
+```bash
+NEUPAN_CPP_SMOKE=1 NEUPAN_ROS_SMOKE=1 python src/Test/tests/test_outdoor_start_connection.py -v
+```
 
 ## 左右电机映射测试
 

@@ -1,4 +1,8 @@
-"""Select a live camera path or its matching original route independently of the producer."""
+"""Reference-route selection policy, run independently by the control consumer.
+
+Owned by the map/path package; importing this module does not start a ROS node.
+The consumer must keep checking the producer's heartbeat in its own process.
+"""
 import hashlib
 import json
 import math

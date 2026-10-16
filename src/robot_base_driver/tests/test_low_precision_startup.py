@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import rospy
 from global_odom_bridge import GlobalOdomBridge
 from nav_msgs.msg import Odometry

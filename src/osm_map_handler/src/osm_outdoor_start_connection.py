@@ -1,6 +1,6 @@
-"""Forward-only outdoor route-start repair; no changes to NeuPAN or Hybrid A*.
+"""Outdoor reference-route start repair, owned by osm_map_handler.
 
-Pure geometry and admission checks. A failed connection must NOT fall back to
+Reference admission and bounded search orchestration. A failed connection must NOT fall back to
 the original, oppositely directed route. Road tags and 2-D scan evidence do not
 certify drivable terrain; field validation on level, closed roads is required.
 """
@@ -100,7 +100,12 @@ class RoadCorridor:
 
 
 class ScanEnvelope:
-    """Finite returns bound observed free space; synthetic inf bins are unknown."""
+    """Separate swept-body coverage from the extra clearance buffer.
+
+    Unknown space is never admitted for the moving body. Only the portion of
+    the *extra buffer* inside the scan's near exclusion is allowed to remain
+    unverified; that is reported, not relabelled as observed free space.
+    """
     def __init__(self, ranges, angle_min, increment, range_min, range_max, pose, stamp, received):
         self.ranges = np.asarray(ranges, float).copy()
         self.angle_min, self.increment = angle_min, increment
@@ -110,10 +115,21 @@ class ScanEnvelope:
     def fresh(self, now, ros_now):
         return (0 <= now-self.received <= .5 and -.05 <= ros_now-self.stamp <= .5 and
                 self.increment > 0 and math.isfinite(self.increment) and
-                math.isfinite(self.angle_min) and np.isfinite(self.pose).all() and len(self.ranges) > 10)
+                math.isfinite(self.angle_min) and np.isfinite(self.pose).all() and
+                math.isfinite(self.range_min) and math.isfinite(self.range_max) and
+                0 <= self.range_min < self.range_max and len(self.ranges) > 10)
 
-    def contains(self, poses, vertices, current):
-        points = footprint_points(poses, vertices)
+    @staticmethod
+    def _in_current_body(points, vertices, current):
+        d = points-np.asarray(current)[:2]
+        c, s = math.cos(current[2]), math.sin(current[2])
+        bx, by = c*d[:, 0]+s*d[:, 1], -s*d[:, 0]+c*d[:, 1]
+        lower, upper = np.min(vertices, axis=1), np.max(vertices, axis=1)
+        # Match float-grid numerical precision; not physical body inflation.
+        return ((bx >= lower[0]-2.e-6) & (bx <= upper[0]+2.e-6) &
+                (by >= lower[1]-2.e-6) & (by <= upper[1]+2.e-6))
+
+    def _query(self, points):
         d = points-self.pose[:2]
         c, s = math.cos(self.pose[2]), math.sin(self.pose[2])
         bx, by = c*d[:, 0]+s*d[:, 1], -s*d[:, 0]+c*d[:, 1]
@@ -123,15 +139,42 @@ class ScanEnvelope:
         inside = (index >= 0) & (index < len(self.ranges))
         measured = self.ranges[np.clip(index, 0, len(self.ranges)-1)]
         radius = np.hypot(bx, by)
-        clear = (inside & np.isfinite(measured) & (measured >= self.range_min) &
-                 (measured <= self.range_max) & (radius >= self.range_min) & (radius+.06 < measured))
-        # Exempt only the actual, currently occupied body, not its blind sectors.
-        d = points-np.asarray(current)[:2]
-        c, s = math.cos(current[2]), math.sin(current[2])
-        bx, by = c*d[:, 0]+s*d[:, 1], -s*d[:, 0]+c*d[:, 1]
-        lower, upper = np.min(vertices, axis=1), np.max(vertices, axis=1)
-        clear |= (bx >= lower[0]) & (bx <= upper[0]) & (by >= lower[1]) & (by <= upper[1])
-        return bool(clear.all())
+        valid = (inside & np.isfinite(measured) & (measured >= self.range_min) &
+                 (measured <= self.range_max))
+        clear = valid & (radius >= self.range_min) & (radius+.06 < measured)
+        blocked = valid & (radius+.06 >= measured)
+        return clear, blocked, radius < self.range_min
+
+    def check(self, poses, vertices, current):
+        body = footprint_points(poses, vertices, margin=0.)
+        buffer = footprint_points(poses, vertices)
+        body_clear, body_blocked, body_near = self._query(body)
+        buffer_clear, buffer_blocked, buffer_near = self._query(buffer)
+        occupied_body = self._in_current_body(body, vertices, current)
+        occupied_buffer = self._in_current_body(buffer, vertices, current)
+        body_unknown = ~body_clear & ~body_blocked & ~occupied_body
+        buffer_unknown = ~buffer_clear & ~buffer_blocked & ~occupied_buffer
+        # Do not remove the initial pose or exempt an entire blind circle.
+        # Every future, non-current-body sample still needs actual observation.
+        reason = 'ok'
+        if np.any(body_blocked & ~occupied_body) or np.any(buffer_blocked & ~occupied_buffer):
+            reason = 'observed_obstacle_or_occlusion'
+        elif np.any(body_unknown & body_near):
+            reason = 'swept_body_enters_near_blind_zone'
+        elif np.any(body_unknown):
+            reason = 'swept_body_unobserved'
+        elif np.any(buffer_unknown & ~buffer_near):
+            reason = 'clearance_buffer_unobserved'
+        return {'ok': reason == 'ok', 'reason': reason,
+                'body_unknown_points': int(np.count_nonzero(body_unknown)),
+                'body_near_blind_points': int(np.count_nonzero(body_unknown & body_near)),
+                'unverified_near_margin_points': int(np.count_nonzero(buffer_unknown & buffer_near)),
+                'unverified_outer_margin_points': int(np.count_nonzero(buffer_unknown & ~buffer_near)),
+                'margin_fully_observed': not bool(np.any(buffer_unknown)),
+                'scan_range_min_m': float(self.range_min), 'clearance_margin_m': .12}
+
+    def contains(self, poses, vertices, current):
+        return self.check(poses, vertices, current)['ok']
 
 
 def dubins_candidates(start, goal, radius, step=.12):
@@ -156,21 +199,27 @@ def dubins_candidates(start, goal, radius, step=.12):
 
 
 class StartRouteConnector:
-    def __init__(self, vertices, radius, corridor, candidates=dubins_candidates):
+    def __init__(self, vertices, radius, corridor, candidates=dubins_candidates, search=None):
         self.vertices, self.radius = np.asarray(vertices, float), float(radius)
         if not np.isfinite(self.vertices).all() or not math.isfinite(radius) or radius <= 0:
             raise ValueError('invalid start-connection vehicle geometry')
         self.corridor, self.candidates = corridor, candidates
-        self.scan = None  # immutable snapshots assigned by the scan callback
+        self.search = search
+        self.scan = None  # immutable capture-aligned snapshots assigned by the control loop
+        self.scan_transform_state = 'waiting_for_scan'
         self.reset()
 
     def reset(self):
+        if self.search is not None:
+            self.search.cancel()
+        self.search_route = self.search_start = None
         self.key = None
         self.phase, self.reason = 'idle', 'waiting_for_route'
         self.prefix_count = 0
         self.first_seen = None
         self.heading_error_deg = self.start_gap = None
         self.reseed = False
+        self.admission = None
 
     def prepare(self, points, key, pose, now, ros_now):
         try:
@@ -183,6 +232,8 @@ class StartRouteConnector:
             self.key, self.phase, self.reason = key, 'blocked', str(error)
             return 'reject', None
         if key == self.key:
+            if self.phase == 'searching':
+                return self.poll_search(pose, now, ros_now)
             if self.phase == 'connecting':
                 return 'keep', None  # camera/fallback must not erase the U-turn
             if self.phase == 'blocked':
@@ -213,6 +264,23 @@ class StartRouteConnector:
         arc = np.r_[0., np.cumsum(np.linalg.norm(np.diff(route[nearest:, :2], axis=0), axis=1))]
         anchors = sorted(set(nearest+min(int(np.searchsorted(arc, distance)), len(arc)-1)
                              for distance in (1.5, 3., 4.5)))
+        if self.search is not None:
+            from osm_hybrid_search import search_request
+            goals = [(i, route[i, :3]) for i in anchors if np.linalg.norm(route[i, :2]-pose[:2]) <= 6.]
+            self.search_route, self.search_start = route.copy(), pose.copy()
+            self.admission = {'candidate_count': len(goals), 'scan_stamp_sec': float(evidence.stamp),
+                              'road_rejected': 0, 'scan_rejected': {}}
+            try:
+                if not goals:
+                    raise ValueError('no local route anchors')
+                request = search_request(pose, self.vertices, self.radius, self.corridor,
+                    evidence, goals, self.search.budget_sec, self.search.max_iterations)
+                self.search.submit(request)
+            except (ValueError, RuntimeError, OSError) as error:
+                self.phase, self.reason = 'blocked', 'connection_search_unavailable: '+str(error)
+                return 'reject', None
+            self.phase, self.reason = 'searching', 'connection_hybrid_astar_searching'
+            return 'wait', None
         candidates = []
         try:
             for anchor in anchors:
@@ -222,9 +290,16 @@ class StartRouteConnector:
         except (ValueError, ArithmeticError) as error:
             self.phase, self.reason = 'blocked', 'connection_geometry_failed: '+str(error)
             return 'reject', None
+        self.admission = {'candidate_count': len(candidates), 'scan_stamp_sec': float(evidence.stamp),
+                          'road_rejected': 0,
+                          'scan_rejected': {}, 'last_rejected_scan_check': None}
         for _, anchor, path in sorted(candidates, key=lambda item: item[0]):
-            if (self.corridor.contains(path, self.vertices) and
-                    evidence.contains(path, self.vertices, pose)):
+            if not self.corridor.contains(path, self.vertices):
+                self.admission['road_rejected'] += 1
+                continue
+            report = evidence.check(path, self.vertices, pose)
+            if report['ok']:
+                self.admission['accepted_scan_check'] = report
                 prefix = np.column_stack((path, np.ones(len(path))))
                 # Keep the final goal and heading. Do not resample a valid curve
                 # back into a short, oppositely directed straight line.
@@ -232,8 +307,65 @@ class StartRouteConnector:
                 self.prefix_count = len(prefix)
                 self.phase, self.reason = 'connecting', 'forward_connection_ready'
                 return 'apply', connected
+            counts = self.admission['scan_rejected']
+            counts[report['reason']] = counts.get(report['reason'], 0)+1
+            self.admission['last_rejected_scan_check'] = report
         self.phase, self.reason = 'blocked', 'no_safe_forward_connection'
         return 'reject', None
+
+    def poll_search(self, pose, now, ros_now):
+        result = self.search.poll()
+        if result is None:
+            return 'wait', None
+        self.phase, self.reason = 'blocked', 'no_safe_forward_connection'
+        stats = result.get('stats', {})
+        self.admission['search'] = dict(stats, reason=result.get('reason', 'missing_reason'))
+        self.admission['road_rejected'] = stats.get('road_rejected', 0)
+        self.admission['scan_rejected'] = stats.get('scan_rejected', {})
+        if result.get('success') is not True:
+            return 'reject', None
+        try:
+            curve = np.asarray(result['path'], float).reshape(-1, 3)
+            anchor = result['anchor']
+            if not isinstance(anchor, int) or isinstance(anchor, bool) or not 0 <= anchor < len(self.search_route):
+                raise ValueError('invalid anchor')
+            if len(curve)<2 or len(curve)>1000 or not np.isfinite(curve).all():
+                raise ValueError('invalid curve')
+            if (np.linalg.norm(curve[0, :2]-self.search_start[:2])>.02 or
+                abs(wrap(curve[0, 2]-self.search_start[2]))>.02 or
+                np.linalg.norm(curve[-1, :2]-self.search_route[anchor, :2])>.02 or
+                abs(wrap(curve[-1, 2]-self.search_route[anchor, 2]))>.02):
+                raise ValueError('incomplete goal connection')
+            ds = np.linalg.norm(np.diff(curve[:, :2], axis=0), axis=1)
+            dt = np.arctan2(np.sin(np.diff(curve[:, 2])), np.cos(np.diff(curve[:, 2])))
+            if np.any(ds<1.e-6) or np.max(ds)>.12 or ds.sum()>20.1 or np.any(abs(dt)/ds>1/self.radius+.001):
+                raise ValueError('invalid sampling or curvature')
+            direction = np.diff(curve[:, :2], axis=0)
+            heading = np.column_stack((np.cos(curve[:-1, 2]), np.sin(curve[:-1, 2])))
+            if np.any(np.sum(direction*heading, axis=1) <= 0):
+                raise ValueError('non-forward path')
+            tangent = np.arctan2(direction[:, 1], direction[:, 0])
+            heading_error = tangent-curve[:-1, 2]-dt/2
+            if np.any(abs(np.arctan2(np.sin(heading_error), np.cos(heading_error))) > .03):
+                raise ValueError('path heading disagrees with its motion')
+            if np.linalg.norm(pose[:2]-self.search_start[:2])>.05 or abs(wrap(pose[2]-self.search_start[2]))>.035:
+                raise ValueError('vehicle moved during search; resend goal')
+            if self.scan is None or not self.scan.fresh(now, ros_now):
+                raise ValueError('fresh scan unavailable on search completion')
+            if not self.corridor.contains(curve, self.vertices):
+                raise ValueError('road revalidation failed')
+            report = self.scan.check(curve, self.vertices, pose)
+            self.admission['completion_scan_stamp_sec'] = float(self.scan.stamp)
+            self.admission['accepted_scan_check' if report['ok'] else 'last_rejected_scan_check'] = report
+            if not report['ok']:
+                raise ValueError('latest scan rejected: '+report['reason'])
+        except (ValueError, TypeError, KeyError) as error:
+            self.admission['result_rejected'] = str(error)
+            return 'reject', None
+        prefix = np.column_stack((curve, np.ones(len(curve))))
+        self.prefix_count = len(prefix)
+        self.phase, self.reason = 'connecting', 'forward_hybrid_connection_ready'
+        return 'apply', np.vstack((prefix, self.search_route[anchor+1:]))
 
     def update_progress(self, index):
         if self.phase == 'connecting' and index >= self.prefix_count-1:
@@ -246,4 +378,6 @@ class StartRouteConnector:
         return {'phase': self.phase, 'reason': self.reason, 'route_key': self.key,
                 'heading_error_deg': self.heading_error_deg, 'start_gap_m': self.start_gap,
                 'min_turn_radius_m': self.radius, 'connection_points': self.prefix_count,
-                'suspend_camera_control': self.phase == 'connecting'}
+                'scan_transform_state': self.scan_transform_state, 'admission': self.admission,
+                'planner': 'shared_cpp_hybrid_astar' if self.search is not None else 'dubins',
+                'suspend_camera_control': self.phase in ('searching', 'connecting')}

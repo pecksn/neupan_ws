@@ -1,5 +1,7 @@
 # robot_base_driver
 
+底盘、定位保护、控制选择和日志节点统一放 `scripts/`；回归放 `tests/`，消息、参数和启动文件仍分别放 `msg/`、`config/`、`launch/`。`host_process_monitor.py` 继续在主机执行，不随分类改成容器内采集。节点文件名与原启动命令不变，不新增无用途的 `src/` 或 `python/`；见 [功能包分类](../README.md)。
+
 ## 电机遥测与报警
 
 下位机可按行发送：

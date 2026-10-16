@@ -114,6 +114,7 @@ void Planner::setMap(const nav_msgs::OccupancyGrid::Ptr map) {
 //###################################################
 //这是回调函数，当接收到始点时自动调用
 void Planner::setStart(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& initial) {
+  if (!grid) { ROS_WARN("Hybrid A*: waiting for occupancy grid before start"); return; }
   float origin_x = grid ? grid->info.origin.position.x : 0.0;
   float origin_y = grid ? grid->info.origin.position.y : 0.0;
   float x = (initial->pose.pose.position.x - origin_x) / Constants::cellSize;
@@ -145,6 +146,7 @@ void Planner::setStart(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr&
 //                                    INITIALIZE GOAL
 //###################################################
 void Planner::setGoal(const geometry_msgs::PoseStamped::ConstPtr& end) {
+  if (!grid) { ROS_WARN("Hybrid A*: waiting for occupancy grid before goal"); return; }
   // retrieving goal position
   float origin_x = grid ? grid->info.origin.position.x : 0.0;
   float origin_y = grid ? grid->info.origin.position.y : 0.0;
