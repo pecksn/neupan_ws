@@ -23,7 +23,9 @@ osm_map_handler/
 
 公共模块直接放在 `src/`，不再嵌套同名文件夹，也不新增 `python/`。模块用 `osm_` 前缀避免与其他功能包重名，通过 catkin 安装后跨包导入。入口 `camera_right_path.py` 只负责启动，`osm_camera_path_refinement.py` 保留唯一一份功能实现；原节点名、话题与启动命令不变。
 
-通用 C++ 混合 A* 由独立 ROS 包 `hybrid_astar`（`src/hybrid-a-star-annotation`）导出 `HYAS` 库，室内入口与室外 worker 共用搜索核心，不复制第二套 Python 算法。室外仅在路线起始方向/位置不匹配时按需搜索前进连接段，正常路段仍走 OSM A*，不重算整条路线。
+通用 C++ 混合 A* 由独立 ROS 包 `hybrid_astar`（`src/hybrid-a-star-annotation`）导出 `HYAS` 库，室内入口与室外 worker 共用搜索核心，不复制第二套 Python 算法。室外仅在新路线接入处的行驶方向与车头夹角 ≥135°、需要掉头时搜索前进连接段，正常路段仍走 OSM A*，不重算整条路线。
+
+非掉头路线保持原 NeuPAN 跟踪、局部避障及扫描/定位保护，不受新增的距离、车身道路准入或掉头扫描检查限制。普通起步、同向偏移、90° 路口转弯，以及目标在车后但路线方向未反向，都不会仅因此调用混合 A*。已移除先前的 20°/2 m 普通接回扩展及对应两个参数。连续路线距离和顶点距离只作诊断，不再触发搜索；普通跟踪不代表经过完整扫掠认证。
 
 室外采用 16×16 m、0.1 m 分辨率的局部图，按车辆外形、至少 1.85 m 转弯半径和 5 种前进曲率搜索；未知回波不能当空地。独立进程搜索时停车，默认 `outdoor_connection_budget_sec:=1.0`、`outdoor_connection_max_iterations:=12000`。返回后用最新、采集时刻 TF 对齐的扫描再次检查完整连接段；车辆移动、观测不足、超时或失败均拒绝，不自动回退反向参考线。
 
@@ -48,6 +50,6 @@ python -c 'from osm_outdoor_start_connection import StartRouteConnector; from os
 
 修改公共模块后重新执行 `catkin_make --pkg osm_map_handler` 并重启相关节点，使 devel 导出与源码一致。不在入口脚本中手动修改其他包的 `sys.path`。
 
-状态看 `/neupan/route_connection`：`searching` 正在停车搜索，`connecting` 执行连接段，`following_route` 正常跟踪，`blocked` 需重新选择安全区域下发目标。`admission.search` 记录搜索耗时、展开节点与拒绝统计，`completion_scan_stamp_sec` 记录返回后复查扫描的时间。
+状态看 `/neupan/route_connection`：`searching` 正在停车搜索，`connecting` 执行连接段，`following_route` 正常跟踪，`blocked` 需重新选择安全区域下发目标。`reason: normal_route_tracking` 表示沿原路线跟踪、不调用掉头搜索；`connection_kind: uturn`、`uturn_required: true` 表示该新路线触发掉头处理，阈值见 `uturn_heading_threshold_deg`。`start_gap_m` 为连续路线距离，`nearest_vertex_gap_m` 保留顶点距离供排查。`admission.search` 记录搜索耗时、展开节点与拒绝统计，`completion_scan_stamp_sec` 记录返回后复查扫描的时间。
 
 回归入口：[`src/Test/tests/test_outdoor_start_connection.py`](../Test/tests/test_outdoor_start_connection.py)，覆盖隔离室内入口、室外搜索/取消/超时及扫描复查，不启动实车硬件。目录按 [功能包分类](../README.md) 管理。完整仿真见 [四场景报告](../../videos/outdoor_simulation/20261016_113623/summary.md)：宽路完成返程，窄路/未知/障碍均停车；不代表最小实车掉头宽度或实车验收。结果仍放 `videos/`，不放本包。

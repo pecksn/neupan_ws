@@ -60,6 +60,14 @@
     <!-- 桥底/隧道GPS保护参数。协方差单位为m^2，恢复速率单位为m/s和deg/s。 -->
     <arg name="gps_guard_enable" default="true" doc="GPS失锁时切换到FAST-LIO本地续推" />
     <arg name="low_precision_startup" default="false" doc="允许粗GPS位置加固定双天线航向初始化；仅稳定定位分支(use_global_ekf=false)生效" />
+    <arg name="gps_guard_allow_nonfixed_runtime" default="true" doc="仅稳定定位分支：初始化后允许合格Float/差分位置慢速校正；不采用未固定GNSS航向，不等同RTK精度" />
+    <arg name="gps_guard_runtime_position_max_covariance" default="4.0" />
+    <arg name="gps_guard_runtime_position_max_hdop" default="2.5" />
+    <arg name="gps_guard_runtime_position_min_satellites" default="8" />
+    <arg name="gps_guard_runtime_position_stable_sec" default="5.0" />
+    <arg name="gps_guard_runtime_position_consistency_m" default="0.75" />
+    <arg name="gps_guard_runtime_position_max_error_m" default="3.0" />
+    <arg name="gps_guard_runtime_position_correction_rate" default="0.10" />
     <arg name="gps_guard_min_fix_status" default="2" doc="最低可接受NavSatFix状态；2对应当前驱动的RTK类解" />
     <arg name="gps_guard_required_gga_quality" default="4" doc="只允许GGA quality=4，即RTK Fixed" />
     <arg name="gps_guard_min_satellites" default="8" doc="恢复GPS所需最少卫星数" />
@@ -124,7 +132,7 @@
     <arg name="auto_command_timeout" default="0.5" />
     <arg name="remote_command_timeout" default="1.0" />
     <arg name="outdoor_use_hybrid_astar" default="false" doc="旧整段栅格Hybrid A*入口；新局部掉头连接不使用此开关，保持false" />
-    <arg name="enable_outdoor_start_connector" default="true" doc="仅室外OSM直连：返程方向冲突时检查前进掉头连接，不可行则停车；不修改倒车能力" />
+    <arg name="enable_outdoor_start_connector" default="true" doc="仅室外OSM直连：新路线局部方向与车头夹角至少135度时检查前进掉头；其他路线保持原NeuPAN跟踪" />
     <arg name="outdoor_connection_planner" default="hybrid_astar" doc="起始/掉头连接：共享C++ hybrid_astar；dubins用于旧策略对照" />
     <arg name="outdoor_connection_budget_sec" default="1.0" />
     <arg name="outdoor_connection_max_iterations" default="12000" />
@@ -167,6 +175,14 @@
         <arg name="global_odom_heading_filter_window_sec" value="$(arg global_odom_heading_filter_window_sec)" />
         <arg name="gps_guard_enable" value="$(arg gps_guard_enable)" />
         <arg name="low_precision_startup" value="$(arg low_precision_startup)" />
+        <arg name="gps_guard_allow_nonfixed_runtime" value="$(arg gps_guard_allow_nonfixed_runtime)" />
+        <arg name="gps_guard_runtime_position_max_covariance" value="$(arg gps_guard_runtime_position_max_covariance)" />
+        <arg name="gps_guard_runtime_position_max_hdop" value="$(arg gps_guard_runtime_position_max_hdop)" />
+        <arg name="gps_guard_runtime_position_min_satellites" value="$(arg gps_guard_runtime_position_min_satellites)" />
+        <arg name="gps_guard_runtime_position_stable_sec" value="$(arg gps_guard_runtime_position_stable_sec)" />
+        <arg name="gps_guard_runtime_position_consistency_m" value="$(arg gps_guard_runtime_position_consistency_m)" />
+        <arg name="gps_guard_runtime_position_max_error_m" value="$(arg gps_guard_runtime_position_max_error_m)" />
+        <arg name="gps_guard_runtime_position_correction_rate" value="$(arg gps_guard_runtime_position_correction_rate)" />
         <arg name="gps_guard_min_fix_status" value="$(arg gps_guard_min_fix_status)" />
         <arg name="gps_guard_required_gga_quality" value="$(arg gps_guard_required_gga_quality)" />
         <arg name="gps_guard_min_satellites" value="$(arg gps_guard_min_satellites)" />

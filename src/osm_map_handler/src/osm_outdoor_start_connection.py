@@ -1,7 +1,7 @@
-"""Outdoor reference-route start repair, owned by osm_map_handler.
+"""Outdoor U-turn connection, owned by osm_map_handler.
 
-Reference admission and bounded search orchestration. A failed connection must NOT fall back to
-the original, oppositely directed route. Road tags and 2-D scan evidence do not
+Non-U-turn references retain the original NeuPAN tracking flow. A failed U-turn
+must NOT fall back to the original, oppositely directed route. Road tags and 2-D scan evidence do not
 certify drivable terrain; field validation on level, closed roads is required.
 """
 import math
@@ -199,6 +199,10 @@ def dubins_candidates(start, goal, radius, step=.12):
 
 
 class StartRouteConnector:
+    # A nearly reversed route requires a U-turn. A position offset or a normal
+    # corner alone must never activate this added connection planner.
+    UTURN_MIN_HEADING_DEG = 135.
+
     def __init__(self, vertices, radius, corridor, candidates=dubins_candidates, search=None):
         self.vertices, self.radius = np.asarray(vertices, float), float(radius)
         if not np.isfinite(self.vertices).all() or not math.isfinite(radius) or radius <= 0:
@@ -218,6 +222,10 @@ class StartRouteConnector:
         self.prefix_count = 0
         self.first_seen = None
         self.heading_error_deg = self.start_gap = None
+        self.vertex_gap = self.route_segment_index = self.projection_overrun = None
+        self.projected_route_point = None
+        self.connection_kind = 'undecided'
+        self.uturn_required = False
         self.reseed = False
         self.admission = None
 
@@ -243,14 +251,36 @@ class StartRouteConnector:
         else:
             self.reset()
             self.key, self.first_seen = key, now
-        nearest = int(np.argmin(np.linalg.norm(route[:, :2]-np.asarray(pose)[:2], axis=1)))
-        direction = route[min(nearest+1, len(route)-1), :2]-route[max(0, nearest-1), :2]
+        # OSM straight sections are sampled at 2.5 m. Distance to a vertex
+        # falsely treats a car halfway between vertices as far off the road.
+        delta = np.diff(route[:, :2], axis=0)
+        length_squared = np.sum(delta*delta, axis=1)
+        fractions = np.clip(np.sum((pose[:2]-route[:-1, :2])*delta, axis=1)/length_squared, 0., 1.)
+        projections = route[:-1, :2]+fractions[:, None]*delta
+        distances = np.linalg.norm(projections-pose[:2], axis=1)
+        segment = int(np.argmin(distances))
+        direction = delta[segment]
+        projection = projections[segment]
+        nearest = segment+int(fractions[segment] >= .5)
         yaw = math.atan2(float(direction[1]), float(direction[0]))
         self.heading_error_deg = math.degrees(abs(wrap(yaw-pose[2])))
-        self.start_gap = float(np.linalg.norm(route[nearest, :2]-np.asarray(pose)[:2]))
-        if self.heading_error_deg <= 45. and self.start_gap <= .75:
-            self.phase, self.reason = 'following_route', 'start_aligned'
+        self.start_gap = float(distances[segment])
+        self.vertex_gap = float(np.min(np.linalg.norm(route[:, :2]-pose[:2], axis=1)))
+        self.route_segment_index = segment
+        self.projected_route_point = projection.tolist()
+        self.projection_overrun = float(np.dot(pose[:2]-projection, direction)/math.sqrt(length_squared[segment]))
+        self.uturn_required = self.heading_error_deg >= self.UTURN_MIN_HEADING_DEG-1.e-9
+        if not self.uturn_required:
+            # Restore the original tracking path for EVERY non-U-turn route.
+            # Distance, current-body road membership, scan availability and a
+            # goal behind the vehicle are NOT new ordinary-route admission
+            # gates. Existing local avoidance/localization safety still runs.
+            self.connection_kind = 'normal_route'
+            self.admission = {'mode': 'original_neupan_tracking',
+                'swept_path_prevalidated': False, 'scan_policy': 'normal_neupan_scan_safety'}
+            self.phase, self.reason = 'following_route', 'normal_route_tracking'
             return 'apply', route
+        self.connection_kind = 'uturn'
         evidence = self.scan
         if evidence is None or not evidence.fresh(now, ros_now):
             if now-self.first_seen > 5.:
@@ -377,6 +407,13 @@ class StartRouteConnector:
     def status(self):
         return {'phase': self.phase, 'reason': self.reason, 'route_key': self.key,
                 'heading_error_deg': self.heading_error_deg, 'start_gap_m': self.start_gap,
+                'nearest_vertex_gap_m': self.vertex_gap,
+                'route_segment_index': self.route_segment_index,
+                'projected_route_point': self.projected_route_point,
+                'projection_overrun_m': self.projection_overrun,
+                'connection_kind': self.connection_kind,
+                'uturn_required': self.uturn_required,
+                'uturn_heading_threshold_deg': self.UTURN_MIN_HEADING_DEG,
                 'min_turn_radius_m': self.radius, 'connection_points': self.prefix_count,
                 'scan_transform_state': self.scan_transform_state, 'admission': self.admission,
                 'planner': 'shared_cpp_hybrid_astar' if self.search is not None else 'dubins',

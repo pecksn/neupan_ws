@@ -136,7 +136,7 @@ class neupan_core:
         self.neupan_planner = neupan.init_from_yaml(
             self.planner_config_file, pan=pan
         )
-        # Outdoor reference admission only. Neither the optimiser nor its
+        # Outdoor U-turn connection only. Neither the optimiser nor its
         # existing reverse capability or the indoor search profile is changed.
         self.start_connector = None
         self.last_connection_status = None
@@ -842,9 +842,14 @@ class neupan_core:
                     rospy.logwarn_throttle(2., yellow_terminal_text(
                         'Outdoor Hybrid A*: searching local connection; holding zero speed'))
                 else:
+                    admission = self.start_connector.admission or {}
+                    detail = (admission.get('search') or {}).get('reason',
+                        admission.get('result_rejected', self.start_connector.reason))
                     rospy.logwarn_throttle(2., yellow_terminal_text(
-                        'Outdoor route held: %s; choose a wider clear turning area or adjust the goal'),
-                        self.start_connector.reason)
+                        'Outdoor route held: %s; kind=%s detail=%s scan_rejected=%s; '
+                        'check observation/road alignment before resending the goal'),
+                        self.start_connector.reason, self.start_connector.connection_kind,
+                        detail, admission.get('scan_rejected', {}))
                 self.diagnostic_route_update = None
                 return
             data = [p.reshape(4, 1) for p in prepared]

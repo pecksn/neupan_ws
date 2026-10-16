@@ -2,6 +2,22 @@
 
 底盘、定位保护、控制选择和日志节点统一放 `scripts/`；回归放 `tests/`，消息、参数和启动文件仍分别放 `msg/`、`config/`、`launch/`。`host_process_monitor.py` 继续在主机执行，不随分类改成容器内采集。节点文件名与原启动命令不变，不新增无用途的 `src/` 或 `python/`；见 [功能包分类](../README.md)。
 
+## 无 Fixed 的运行中定位
+
+`global_odom_bridge.py` 中独立的位置校正策略允许初始化后的合格 Float／差分位置慢速纠偏，不采用未固定 GNSS 航向。连续新样本与 LIO 一致、完成纠偏后才恢复续推预算，非收到一帧就重置。完整条件见 [室外导航](../../GDUT室外导航.md#运行中不要求-fixed-的位置校正2026-10-16)。
+
+NeuPAN 全系统默认 `gps_guard_allow_nonfixed_runtime:=true`；本包 `navigation_core.launch` 及节点默认 false，以保留其他调用者的原行为。100 m / 600 s 无可信位置续推限制、LIO 异常停车与启动固定航向要求保留。`/gps_guard/status` 的 `runtime_position` 记录质量检查与预算恢复；新模式为 `GPS_POSITION_TRACKING`，不是 RTK 高精度状态。
+
+不启动底盘的回归：
+
+```bash
+python3 -m unittest discover -s src/robot_base_driver/tests -p 'test_*.py' -q
+```
+
+Fixed、粗位置启动、运行中校正统一验证源时间；重复 GPS 样本不重复纠偏或推进窗口。Fixed 失效时先启动续推预算，配对等待不能绕过限额；短暂配对等待不会清空已有稳定窗口。`/gps_guard/status.last_processed_gps_source_ns` 可核对最后处理的真实样本。
+
+编译后设置 `GPS_RUNTIME_ROS_SMOKE=1` 可额外运行独立临时 ROS master 和假消息联调：Fixed 正常初始化→时间配对持续失配触发保护→合格 Float 恢复并超过测试预算继续运行→Fixed 恢复→重复旧 Fixed 源数据再次触发保护；不连接车辆 master。2026-10-16 本包 61 项、OSM/相机/NeuPAN 入口 101 项全部通过，详见[自测记录](../../videos/localization_runtime/20261016_nonfixed/summary.md)。
+
 ## 电机遥测与报警
 
 下位机可按行发送：

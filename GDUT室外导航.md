@@ -1828,9 +1828,7 @@ G90 用户手册第 44 页的 `gps_qual` 列表只说明位置状态，第 45 �
 ### 定位保护、启动与续推
 
 默认高精度模式首次初始化仍要求可靠位置和航向。位置通过 GGA `gps_qual=4`、协方差、
-卫星数、HDOP 等条件判断，不能只看 `position_fixed`。已初始化后 GPS 退化
-沿用 FAST-LIO 本地续推，保留 100 米 / 600 秒限制；此次新增独立定向判断，
-没有加入“仅靠 GNSS 航向校正桥底续推”的功能。
+卫星数、HDOP 等条件判断，不能只看 `position_fixed`。初始化后，室外全系统默认允许合格的非 Fixed 位置慢速校正，详见下面的运行中策略；完全没有可信位置校正时沿用 FAST-LIO 续推，保留最近一次合格校正后的 100 米 / 600 秒限制。未加入“仅靠 GNSS 航向延长续推预算”的功能。
 
 ### 高精度与低精度启动开关
 
@@ -1859,16 +1857,13 @@ roslaunch neupan_ros full_system_run.launch \
 
 开关打开后优先尝试高精度初始化；质量或位置稳定性达不到高精度要求时才
 采用低精度条件。低精度初始化取稳定窗口中的平均平移、有效定向建立
-一次全局参考，随后进入 `LOCAL_DEAD_RECKONING`，不再用浮动/单点 GPS
-持续修改地图对齐，避免轨迹追随位置噪声。100 米 / 600 秒预算从初始化时
-开始计时，停车等待也计入。可靠 RTK 恢复后通过原有稳定窗口和平滑校正
-回到 `GPS_TRACKING`。后续目标点沿用当前参考，不会重新执行粗位置初始化。
+一次全局参考，随后进入 `LOCAL_DEAD_RECKONING`，100 米 / 600 秒预算从初始化时开始，停车等待也计入。新的运行中非 Fixed 位置策略在独立条件通过后才纠偏及恢复预算，不沿用启动时宽松的 100 m² 条件；单点解不用于运行中校正。关闭运行中策略后则保持原来的冻结参考与续推预算。可靠 RTK 位置和航向恢复后，通过原有稳定窗口和平滑校正回到 `GPS_TRACKING`。后续目标点沿用当前参考，不会重新执行粗位置初始化。
 
 `/gps_guard/status` 新增：
 
 - `low_precision_startup_enabled`：开关状态。
 - `initialization_precision`：实际首次初始化采用 `high` 或 `low`，尚未初始化为 null。
-- `global_reference_precision`：当前参考为 `high` 或 `low`；低精度启动恢复可靠 RTK 后为 high。
+- `global_reference_precision`：初始参考为 `high` / `low`；运行中位置校正可为 `runtime_float` / `runtime_differential` / `runtime_fixed_position_only`，均不宣称完整 Fixed 位置+航向精度；恢复可靠 RTK 后为 `high`。
 - `low_precision_limits`：本次运行的低精度检查阈值。
 
 相关原因包括 `low_precision_stability_check` 和初始化瞬间的
@@ -1887,7 +1882,7 @@ roslaunch neupan_ros full_system_run.launch \
 可在 `g90_nmea.launch` 和 `wheeltec_dual_rtk_driver_nmea.launch` 中设置；
 `global_odom_bridge` 也有同名私有参数。2.5 秒是定向状态的超时阈值，
 不替代 `/heading` 自身的新鲜度检查；默认航向消息超时仍为 0.5 秒。
-缺少 PVTSLNA 时默认停止发布航向，并阻止可靠 GPS 初始化或校正。
+缺少 PVTSLNA 时默认停止发布航向，并阻止可靠 GPS 初始化或完整位置+航向校正；已初始化后的独立位置校正不依赖未固定或缺失的 GNSS 航向。
 
 `/gps_guard/status` 的相关拒绝原因：
 
@@ -1896,6 +1891,20 @@ roslaunch neupan_ros full_system_run.launch \
 - `heading_solution_unfixed`：定向未固定或有效性检查失败。
 
 实际 `reason` 还可能先报告位置或本地里程计异常，因为定位检查按顺序执行。
+
+### 运行中不要求 Fixed 的位置校正（2026-10-16）
+
+全系统默认 `gps_guard_allow_nonfixed_runtime:=true`，仅稳定定位分支 `use_global_ekf=false` 生效；原始 `navigation_core.launch` 和节点私有参数默认关闭，避免改变其他系统。可显式设置为 false 恢复原 Fixed 校正策略。启动门槛、室内定位、正常规划、掉头与相机靠右逻辑不变。
+
+运行中接受 GGA `2/4/5` 的合格位置，拒绝 SINGLE、无解、未知协方差、无效坐标和旧数据。默认卫星≥8、HDOP≤2.5、水平协方差≤4 m²；GPS fix、投影里程计和 LIO 的源时间必须新鲜且匹配。保持原地图航向对齐，不采用未固定的 GNSS 航向，车辆朝向随 LIO 变化。
+
+使用新 GPS 样本与 LIO 构成的地图平移候选，至少 8 个不同源时间样本、连续≥5 s，候选相对窗口中值的散布≤0.75 m；相邻候选跳变超过 1 m、样本中断超过 1 s 或来源类型变化时重新确认。候选与当前地图平移偏差超过 3 m 时拒绝，不自动拉回。通过后最多以 0.10 m/s 缓慢修正平移，残差≤0.5 m 才恢复续推预算，最多每个 5 s 窗口恢复一次。0.5 m 是候选一致性残差，不是对真实定位误差的保证；Float／差分精度仍可能明显低于 RTK。
+
+`GPS_POSITION_TRACKING` 表示位置校正有效；`runtime_position` 记录 `enabled/active/reason/profile/samples/residual_m/budget_renewals/last_budget_renewal_sec` 和实际门槛。终端每 5 s 黄色提示该粗位置模式；JSONL 与原录包配置已有 `/gps_guard/status`，不需新增录制话题。没有可靠位置时重新累计 100 m / 600 s，LIO 超时/跳变保护始终保留；不能靠旧报文或单帧 Float 重置预算。
+
+源时间保护对 Fixed、粗位置启动和运行中校正统一生效：检查 GPS fix、投影、GGA、LIO 的新鲜度、顺序与时间配对；使用 GNSS 航向时另查航向及解状态源时间。同一 GPS 源样本只处理一次，重复转发不能累计启动/恢复窗口、重复纠偏或恢复预算。Fixed 失效时先进入续推并启动预算，再等待配对；短暂配对等待保留已有窗口，但不新增样本或发放预算，持续失配仍受 100 m / 600 s 限制。状态中的 `last_processed_gps_source_ns` 用于核对样本是否真的更新；[自测记录](videos/localization_runtime/20261016_nonfixed/summary.md)。
+
+全系统可调参数为 `gps_guard_runtime_position_max_covariance`、`gps_guard_runtime_position_max_hdop`、`gps_guard_runtime_position_min_satellites`、`gps_guard_runtime_position_stable_sec`、`gps_guard_runtime_position_consistency_m`、`gps_guard_runtime_position_max_error_m` 和 `gps_guard_runtime_position_correction_rate`。这是低速封闭场地待实车验证的降级模式，不能当作 RTK 精度或完全无 GPS 无限续推。ECOS 求解异常未在本次修改中处理。
 
 ### 查看与验证
 
@@ -2594,14 +2603,14 @@ rostopic echo /camera_right/status
 ### 核心条件与回退
 
 - 建立新校正需要左右边界有效、定位安全、JSON 和接收器 valid 信号新鲜；使用连续边界点段，不跨缺口拟合。图像为标定时的 1920×1080、旋转后坐标。
-- GPU/NUC 时钟需同步，`capture_timestamp_ns` 必须为真实采集时间；采集时间差超出 -50～500 ms、`source_age_ms` 超过 300 ms 时不能建立新校正。边界投影使用该采集时刻的 `map → base_link` TF；缺少历史 TF 时拒绝新修正并在 `/camera_right/status.reason` 记录原因，不用当前位姿代替。当前位姿仅用于路口判断与缓存维护。未解决时钟和采集时间问题前不启用视觉实车控制。
+- GPU/NUC 时钟需同步，`capture_timestamp_ns` 必须为真实采集时间；采集时间差超出 -50～500 ms、`source_age_ms` 超过 300 ms 时不能建立新校正。未解决时钟和采集时间问题前不启用视觉实车控制。
 - 每个路线点需 3 个不同帧的一致观察，缓存最多 30 s；短暂边界丢失可复用有效缓存，无缓存回退 OSM。新路线、定位异常、地图对齐变化超过 0.2 m 或 2° 会清空缓存。
 - 靠右控制开启时，由 NeuPAN 独立监督心跳，默认超时 3 s（`camera_right_guard_timeout`）。超时或心跳与路径内容/目标不匹配时，在下一控制循环切回该目标的原路线；原路线缺失或无效则持续输出零速度。同一目标切换路线时按已走距离保留进度，避免加密路线切回稀疏原路线后从起点追踪。监督不依赖靠右节点继续运行，恢复后只接收与当前原路线匹配的摄像头路径。状态和日志看 `/neupan/camera_path_guard`；当前 OSM 最大偏移为 0，回退路线为中心线。
 - 最大校正 1.5 m，按 0.15 m/s 渐进生效，路径最多 2 Hz 更新；不外推未观察路段、不移动起终点，左侧至少留 0.75 m 几何余量。短路段不保证完全达到 2 m。`camera_right_strategy:=realtime` 可切回实时策略对照。
 
 OSM 优先处理路口/转弯：读取同一 `osm_map_file` 的道路连接点，检查前方约 8 m 路线转向；处于路口附近或路线转角超过约 20° 时清空视觉缓存、沿原 OSM 路线行驶，不强制保持相机中心 2 m。右边界暂时不清晰只允许复用有效的已观察缓存，没有缓存就回到 OSM。
 
-返程掉头（2026-10-16）：室外 OSM 直连默认启用 `enable_outdoor_start_connector:=true`、`outdoor_connection_planner:=hybrid_astar`。新路线与车头相差超过 45°，或当前位置距路线超过 0.75 m 时，用共享 C++ Hybrid A* 在 16×16 m、0.1 m 分辨率的局部图中搜索仅前进连接段，再接回原路线并保留终点。独立进程默认搜索预算 1 s、最多 12000 次迭代；等待期间停车，返回后用最新且采集 TF 对齐的扫描复查完整路径。正常路段仍走原 OSM A*，不是整段栅格重规划；不要打开旧 `outdoor_use_hybrid_astar` 分支。旧方案对照可设置 `outdoor_connection_planner:=dubins`，失败不会自动切换方案。
+返程掉头（2026-10-16）：室外 OSM 直连默认启用 `enable_outdoor_start_connector:=true`、`outdoor_connection_planner:=hybrid_astar`。只有新路线接入处的行驶方向与车头夹角 ≥135°、需要掉头时，才用共享 C++ Hybrid A* 在 16×16 m、0.1 m 分辨率的局部图中搜索仅前进连接段，再接回原路线并保留终点。距离按连续路线段计算，仅作诊断，不再触发搜索。其他路线保持原 NeuPAN 跟踪、局部避障及扫描/定位保护，不新增距离、道路或掉头观测准入门槛；普通起步、同向偏移、90° 转弯不受影响。已移除先前的 20°/2 m 普通接回扩展及两个参数。掉头搜索预算 1 s、最多 12000 次迭代；等待期间停车，返回后用最新且采集 TF 对齐的扫描复查完整路径。正常路段仍走原 OSM A*，不是整段栅格重规划；不要打开旧 `outdoor_use_hybrid_astar` 分支。旧方案对照可设置 `outdoor_connection_planner:=dubins`，失败不会自动切换方案。
 
 转弯半径同时满足规划配置与轴距/最大转角，当前至少 1.85 m；检查实际车体加 0.12 m 余量、OSM 道路范围、单行方向及雷达观测。道路宽度优先取 `width`，其次 `lanes×3 m`，缺失时用 `osm_default_road_width`；估计宽度不能替代实测。
 
@@ -2615,7 +2624,7 @@ OSM 优先处理路口/转弯：读取同一 `osm_map_file` 的道路连接点�
 rostopic echo /neupan/route_connection
 ```
 
-`searching` 表示停车搜索，`connecting` 执行连接段，`following_route` 正常跟踪，`blocked` 表示该路线被拒绝。`admission` 是准入快照，不是实时避障结果；`search` 记录算法、耗时、展开节点等统计，`scan_stamp_sec` 为初始扫描时间，`completion_scan_stamp_sec` 为返回后复查时间。Hybrid A* 的 `road_rejected` / `scan_rejected` 按拒绝的采样姿态计数，不是整条路线数；扫描原因区分近场盲区、车身未知区、障碍/遮挡及缓冲区未知。`scan_transform_state` 给出采集 TF 状态。实际参考路线看 `/neupan_initial_path`，原路线仍为 `/osm_global_path`。旧退出日志缺少异常堆栈，不能据此宣称已证明或消除了当时退出的直接原因。
+`searching` 表示停车搜索，`connecting` 执行连接段，`following_route` 正常跟踪，`blocked` 表示该路线被拒绝。`reason: normal_route_tracking` 表示保留原跟踪、不启动掉头搜索；`connection_kind: uturn`、`uturn_required: true` 表示该新路线触发掉头，角度阈值见 `uturn_heading_threshold_deg`。`start_gap_m` 为连续路线距离，`nearest_vertex_gap_m` 为顶点距离，仅用于排查。`admission` 是准入快照，不是实时避障结果；`search` 记录算法、耗时、展开节点等统计，`scan_stamp_sec` 为初始扫描时间，`completion_scan_stamp_sec` 为返回后复查时间。Hybrid A* 的 `road_rejected` / `scan_rejected` 按拒绝的采样姿态计数，不是整条路线数；扫描原因区分近场盲区、车身未知区、障碍/遮挡及缓冲区未知。`scan_transform_state` 给出采集 TF 状态。实际参考路线看 `/neupan_initial_path`，原路线仍为 `/osm_global_path`。旧退出日志缺少异常堆栈，不能据此宣称已证明或消除了当时退出的直接原因。
 
 已通过几何/路径接入回归与隔离 ROS1 假传感器测试；使用当前模型进行 230 步运动学闭环仿真，完成前进掉头并接回返程路线，未启动车辆。仿真仍有求解精度告警 `Solved/Inaccurate`，结果均为有限值；实车效果、坡道及旧数值异常仍需新日志验证。
 
@@ -2630,6 +2639,8 @@ rostopic echo /neupan/route_connection
 同日补充 [21 次同起点窄路对照](videos/outdoor_simulation/20261016_142251_width_comparison/comparison.md)：两者在 9 m 道路均 2/2 完成。新版 8.75 m 仅 1/2 完成（成功时余量约 1.7 cm，另一次包络越界约 1.45 cm），8.5 m 两次均越界；原曲线在这些宽度拒绝并停车。当前没有可靠的更窄实控优势，需先处理紧弯跟踪误差与安全余量，不能按偶发成功宽度进行实车极限掉头。测试只扩展仿真入口，未改变生产规划算法；临时文件及重复录像已清理。
 
 几何、时间对齐、心跳保护、长路线进度保留及异常诊断已通过单元与隔离 ROS1 故障验证；默认 3 s 心跳超时已验证。尚未完成实车控制验收，平地模型尚不补偿坡道与车身俯仰。先用实时数据完成影子验证，再在封闭场地低速、可随时人工接管的条件下测试控制。
+
+同日按“仅掉头使用混合 A*”收紧触发条件：[验证报告](videos/outdoor_simulation/20261016_normal_rejoin_fix/summary.md)。101 项回归通过，15:37 日志中的四次目标保持原路线跟踪；隔离 ROS1 验证 3 m 偏移、90° 转弯不进入搜索，反向且观测不足仍停车。没有原始扫描，不能将接入回放等同实车避障验收。
 
 `src/vehicle_bag_recorder/config/hybridnets_data.yaml` 已包含 `/camera_right/reference_path`、`/camera_right/control_path`、`/camera_right/status`，用于后续 bag 检查；旧 bag 超过时效门槛，不能将离线结果当作实时控制验收。
 

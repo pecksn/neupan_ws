@@ -62,12 +62,149 @@ class ConnectionTests(unittest.TestCase):
         decision, result = state.prepare(source, ('map', 1), (0, 0, 0), 1, 1)
         self.assertEqual(decision, 'apply')
         np.testing.assert_array_equal(result, source)
-        self.assertEqual(state.reason, 'start_aligned')
+        self.assertEqual(state.reason, 'normal_route_tracking')
 
     def test_nonfinite_vehicle_pose_is_held_before_solver(self):
         state = connector()
         self.assertEqual(state.prepare(route(), ('map', 1), (np.nan, 0, 0), 1, 1), ('reject', None))
         self.assertEqual(state.phase, 'blocked')
+
+    def test_sparse_route_uses_segment_distance_not_distance_to_a_vertex(self):
+        state = connector()
+        source = np.array([[0., 0., 0., 1.], [2.5, 0., 0., 1.], [5., 0., 0., 1.]])
+        decision, result = state.prepare(source, ('map', 1), (1.25, 0., 0.), 1., 1.)
+        self.assertEqual(decision, 'apply')
+        np.testing.assert_array_equal(result, source)
+        self.assertEqual(state.reason, 'normal_route_tracking')
+        self.assertAlmostEqual(state.start_gap, 0.)
+        self.assertAlmostEqual(state.status()['nearest_vertex_gap_m'], 1.25)
+
+    def test_logged_same_direction_offset_does_not_start_a_uturn_search(self):
+        backend = SimpleNamespace(cancel=Mock(), submit=Mock())
+        for yaw_error in (2.1764, 2.2978, 2.4218, 2.4044):
+            state = StartRouteConnector(VERTICES, 1.85,
+                RoadCorridor([[-30, 0, 30, 0, 3., 0]]), search=backend)
+            state.scan = production_scan(distance=np.inf)  # unknown, never relabelled free
+            source = route(origin=(0., 1.46))
+            original_ranges = state.scan.ranges.copy()
+            decision, result = state.prepare(source, ('map', 1), (0., 0., math.radians(yaw_error)), 1., 1.)
+            self.assertEqual(decision, 'apply')
+            self.assertEqual(state.phase, 'following_route')
+            self.assertEqual(state.reason, 'normal_route_tracking')
+            self.assertEqual(state.status()['connection_kind'], 'normal_route')
+            self.assertFalse(state.status()['uturn_required'])
+            self.assertFalse(state.admission['swept_path_prevalidated'])
+            self.assertEqual(state.admission['scan_policy'], 'normal_neupan_scan_safety')
+            np.testing.assert_array_equal(result, source)
+            np.testing.assert_array_equal(state.scan.ranges, original_ranges)
+        backend.submit.assert_not_called()
+
+    def test_reverse_heading_with_same_offset_still_requires_strict_observation(self):
+        state = connector(12.)
+        source = route(math.pi, origin=(0., 1.46))
+        state.scan = production_scan(distance=np.inf)
+        self.assertEqual(state.prepare(source, ('map', 1), (0., 0., 0.), 1., 1.), ('reject', None))
+        self.assertEqual(state.phase, 'blocked')
+        self.assertEqual(state.connection_kind, 'uturn')
+        self.assertTrue(state.uturn_required)
+
+    def test_non_uturn_does_not_add_an_osm_body_admission_gate(self):
+        backend = SimpleNamespace(cancel=Mock(), submit=Mock())
+        state = StartRouteConnector(VERTICES, 1.85,
+            RoadCorridor([[-30, 0, 30, 0, 1., 0]]), search=backend)
+        state.scan = production_scan()
+        source = route()
+        self.assertFalse(state.corridor.contains([[0., 1.46, 0.]], VERTICES))
+        decision, result = state.prepare(source, ('map', 1), (0., 1.46, 0.), 1., 1.)
+        self.assertEqual(decision, 'apply')
+        np.testing.assert_array_equal(result, source)
+        backend.submit.assert_not_called()
+
+    def test_large_offset_alone_keeps_original_tracking_without_map_or_scan(self):
+        for gap in (.76, 1.46, 2.01, 5., 10.):
+            with self.subTest(gap=gap):
+                backend = SimpleNamespace(cancel=Mock(), submit=Mock())
+                state = StartRouteConnector(VERTICES, 1.85, None, search=backend)
+                source = route(origin=(0., gap))
+                decision, result = state.prepare(source, ('map', 1), (0., 0., 0.), 1., 1.)
+                self.assertEqual(decision, 'apply')
+                np.testing.assert_array_equal(result, source)
+                self.assertFalse(state.uturn_required)
+                backend.submit.assert_not_called()
+
+    def test_normal_corners_and_non_reversed_headings_never_start_search(self):
+        for degrees in (0., 20., 21., 45., 50., 90., 120., 134.9, -50., -90., -120., -134.9):
+            with self.subTest(degrees=degrees):
+                backend = SimpleNamespace(cancel=Mock(), submit=Mock())
+                state = StartRouteConnector(VERTICES, 1.85, None, search=backend)
+                source = route(math.radians(degrees))
+                decision, result = state.prepare(source, ('map', 1), (0., 0., 0.), 1., 1.)
+                self.assertEqual(decision, 'apply')
+                self.assertEqual(state.reason, 'normal_route_tracking')
+                np.testing.assert_array_equal(result, source)
+                backend.submit.assert_not_called()
+
+    def test_goal_behind_alone_does_not_start_search_if_route_is_not_reversed(self):
+        backend = SimpleNamespace(cancel=Mock(), submit=Mock())
+        state = StartRouteConnector(VERTICES, 1.85, None, search=backend)
+        source = route()
+        decision, result = state.prepare(source, ('map', 1), (21.2, 0., 0.), 1., 1.)
+        self.assertEqual(decision, 'apply')
+        self.assertGreater(state.projection_overrun, .25)
+        self.assertEqual(state.connection_kind, 'normal_route')
+        np.testing.assert_array_equal(result, source)
+        backend.submit.assert_not_called()
+
+    def test_only_reversed_route_at_or_above_135_degrees_uses_search(self):
+        for degrees in (135., 150., 175., 180., -135., -150., -175., -180.):
+            with self.subTest(degrees=degrees):
+                backend = SimpleNamespace(cancel=Mock(), submit=Mock(), budget_sec=1., max_iterations=12000)
+                state = StartRouteConnector(VERTICES, 1.85,
+                    RoadCorridor([[-30, 0, 30, 0, 10., 0]]), search=backend)
+                state.scan = production_scan()
+                self.assertEqual(state.prepare(route(math.radians(degrees)), ('map', 1), (0., 0., 0.), 1., 1.)[0], 'wait')
+                self.assertEqual(state.phase, 'searching')
+                self.assertEqual(state.connection_kind, 'uturn')
+                self.assertTrue(state.status()['uturn_required'])
+                self.assertEqual(state.status()['uturn_heading_threshold_deg'], 135.)
+                backend.submit.assert_called_once()
+
+    def test_dubins_comparator_is_also_uturn_only(self):
+        candidates = Mock(side_effect=AssertionError('non-U-turn searched'))
+        state = StartRouteConnector(VERTICES, 1.85, None, candidates=candidates)
+        source = route(math.pi/2, origin=(0., 5.))
+        self.assertEqual(state.prepare(source, ('map', 1), (0., 0., 0.), 1., 1.)[0], 'apply')
+        candidates.assert_not_called()
+
+    def test_non_uturn_does_not_read_added_corridor_or_scan_validators(self):
+        corridor = SimpleNamespace(contains=Mock(side_effect=AssertionError('new road gate')))
+        evidence = SimpleNamespace(fresh=Mock(side_effect=AssertionError('new scan gate')))
+        state = StartRouteConnector(VERTICES, 1.85, corridor)
+        state.scan = evidence
+        self.assertEqual(state.prepare(route(math.pi/2), ('map', 1), (0., 0., 0.), 1., 1.)[0], 'apply')
+        corridor.contains.assert_not_called()
+        evidence.fresh.assert_not_called()
+
+    def test_non_uturn_replacement_cancels_pending_uturn_search(self):
+        backend = SimpleNamespace(cancel=Mock(), submit=Mock(), budget_sec=1., max_iterations=12000)
+        state = StartRouteConnector(VERTICES, 1.85,
+            RoadCorridor([[-30, 0, 30, 0, 10., 0]]), search=backend)
+        state.scan = production_scan()
+        state.prepare(route(math.pi), ('map', 1), (0., 0., 0.), 1., 1.)
+        self.assertEqual(state.phase, 'searching')
+        backend.cancel.reset_mock()
+        source = route(math.pi/2)
+        decision, result = state.prepare(source, ('map', 2), (0., 0., 0.), 1., 1.)
+        self.assertEqual(decision, 'apply')
+        np.testing.assert_array_equal(result, source)
+        backend.cancel.assert_called_once()
+        backend.submit.assert_called_once()  # only the previous U-turn
+
+    def test_deprecated_normal_rejoin_parameters_are_not_exposed(self):
+        root = ET.parse(ROOT/'src/neupan_ros/example/lxw_car/launch/full_system_run.launch').getroot()
+        names = {arg.get('name') for arg in root.findall('arg')}
+        self.assertNotIn('outdoor_normal_rejoin_heading_deg', names)
+        self.assertNotIn('outdoor_normal_rejoin_max_gap_m', names)
 
     def test_reverse_heading_is_not_admitted_without_scan(self):
         state = connector()
@@ -489,6 +626,16 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(node.arrive)
         self.assertEqual(node.arrival_path_key, ('map', 1))
 
+    def test_normal_offset_reaches_the_planner_without_disabling_scan_safety(self):
+        node, apply = self.node()
+        source = route(origin=(0., 1.46))
+        node.pending_route_update = ('path', [p.reshape(4, 1) for p in source], ('map', 1))
+        node.start_connector.scan = production_scan(distance=np.inf)
+        apply(node)
+        node.neupan_planner.set_initial_path.assert_called_once()
+        self.assertFalse(node.waiting_for_new_goal)
+        self.assertEqual(node.start_connector.reason, 'normal_route_tracking')
+
     def test_missing_scan_requeues_new_goal_and_holds_zero(self):
         node, apply = self.node()
         node.pending_route_update = ('path', [p.reshape(4, 1) for p in route(math.pi)], ('map', 1))
@@ -803,7 +950,7 @@ class RosProcessTest(unittest.TestCase):
                 '_dune_checkpoint:='+str(base/'model/acker_robot_default_6/model_5000.pth'),
                 '_refresh_initial_path:=true', '_include_initial_path_direction:=true',
                 '_enable_adaptive_adjust:=false', '_outdoor_start_connector_enabled:=true',
-                '_osm_file:=/home/nuc/lxw/ros_maps/map.osm', '_map_origin_lat:=23.0398',
+                '_osm_file:='+str(ROOT/'src/neupan_ros/example/lxw_car_simulation/maps/outdoor_test.osm'), '_map_origin_lat:=23.0398',
                 '_map_origin_lon:=113.39002', '/neupan_cmd_vel:=/connection_test/cmd_vel']
             # Only planner + this fake-sensor process are launched. The private
             # master has no base driver or control mux, and commands are remapped.
@@ -844,15 +991,15 @@ class RosProcessTest(unittest.TestCase):
 
             wait_for(lambda: paths.get_num_connections() > 0 and goals.get_num_connections() > 0)
 
-            def publish_goal_and_path(yaw):
+            def publish_goal_and_path(yaw, origin=(0., 0.)):
                 goal = PoseStamped()
                 goal.header.frame_id, goal.header.stamp = 'map', rospy.Time.now()
-                goal.pose.position.x = 20*math.cos(yaw)
-                goal.pose.position.y = 20*math.sin(yaw)
+                goal.pose.position.x = origin[0]+20*math.cos(yaw)
+                goal.pose.position.y = origin[1]+20*math.sin(yaw)
                 goal.pose.orientation.w = 1.
                 path = RosPath()
                 path.header.frame_id, path.header.stamp = 'map', goal.header.stamp
-                for point in route(yaw):
+                for point in route(yaw, origin=origin):
                     pose = PoseStamped()
                     pose.header = path.header
                     pose.pose.position.x, pose.pose.position.y = point[:2]
@@ -860,9 +1007,28 @@ class RosProcessTest(unittest.TestCase):
                     path.poses.append(pose)
                 goals.publish(goal)
                 paths.publish(path)
+                return path.header.stamp.to_nsec()
 
             publish_goal_and_path(0.)
             wait_for(lambda: any(v > .05 for _, v in commands))
+            # Real planner/transport regression for the 2026-10-16 incident:
+            # ~1.46 m lateral OSM offset, same direction and unknown scan rays.
+            # It must solve under the normal scan-health chain, not be held by
+            # the stricter full-turn observation admission.
+            offset_started = time.monotonic()
+            offset_key = publish_goal_and_path(0., origin=(0., 1.46))
+            wait_for(lambda: statuses and statuses[-1].get('route_key') == ['map', offset_key] and
+                statuses[-1]['reason'] == 'normal_route_tracking')
+            wait_for(lambda: any(stamp > offset_started+.15 and v > .05 for stamp, v in commands))
+            # Outside the discarded 20deg/2m extension, the real adapter must
+            # still use the original tracking flow, not search or reject.
+            for yaw, origin in ((0., (0., 3.)), (math.pi/2, (0., 0.))):
+                normal_key = publish_goal_and_path(yaw, origin=origin)
+                wait_for(lambda: statuses and statuses[-1].get('route_key') == ['map', normal_key] and
+                    statuses[-1]['reason'] == 'normal_route_tracking')
+                self.assertFalse(statuses[-1]['uturn_required'])
+                self.assertEqual(statuses[-1]['phase'], 'following_route')
+                self.assertNotIn('search', statuses[-1].get('admission') or {})
             # Exercise the relocated roslaunch entry, not just source imports.
             # Shadow mode only publishes reference paths; the private master
             # still has no hardware driver or selected-command consumer.
@@ -876,8 +1042,11 @@ class RosProcessTest(unittest.TestCase):
             wait_for(lambda: bool(camera_statuses))
             self.assertIsNone(camera_process.poll(), 'relocated camera node exited')
             self.assertFalse(camera_statuses[-1]['control_enabled'])
-            publish_goal_and_path(math.pi)
-            wait_for(lambda: statuses and statuses[-1]['phase'] == 'blocked')
+            turn_key = publish_goal_and_path(math.pi)
+            wait_for(lambda: statuses and statuses[-1].get('route_key') == ['map', turn_key] and
+                statuses[-1]['phase'] == 'blocked')
+            self.assertTrue(statuses[-1]['uturn_required'])
+            self.assertEqual(statuses[-1]['connection_kind'], 'uturn')
             blocked_time = time.monotonic()
             time.sleep(.7)
             tail = [v for stamp, v in commands if stamp > blocked_time+.2]

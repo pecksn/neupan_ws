@@ -33,26 +33,31 @@ class StartupTests(unittest.TestCase):
     def sample(self, b, second, quality=5, covariance=16, x=10, heading=True):
         self.now = rospy.Time.from_sec(second)
         local = Odometry()
+        local.header.stamp = self.now
         local.pose.pose.orientation.w = 1
         b.last_local_odom = local
         b.last_local_recv = self.now
         b.local_bad_until = rospy.Time(0)
         gps = Odometry()
+        gps.header.stamp = self.now
         gps.pose.pose.position.x = x
         gps.pose.pose.position.y = 20
         b.gps_odom_cb(gps)
         fix = NavSatFix()
+        fix.header.stamp = self.now
         fix.latitude, fix.longitude = 23.04, 113.39
         fix.status.status = 2 if quality in (4, 5) else (0 if quality == 1 else -1)
         fix.position_covariance[0] = fix.position_covariance[4] = covariance
         b.fix_cb(fix)
         gga = Gpgga()
+        gga.header.stamp = self.now
         gga.gps_qual, gga.num_sats, gga.hdop = quality, 12, 1.0
         b.gga_cb(gga)
-        b.last_solution = {'heading_fixed': heading, 'heading_valid': heading}
+        b.last_solution = {'stamp': self.now.to_sec(), 'heading_fixed': heading, 'heading_valid': heading}
         b.last_solution_recv = self.now
         b.last_heading_yaw = math.pi / 2
         b.last_heading_recv = self.now
+        b.last_heading_stamp = self.now
 
     def initialize_low(self, b):
         for t in (100, 101, 102):

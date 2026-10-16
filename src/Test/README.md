@@ -6,6 +6,8 @@
 
 在 ROS1 的 `lxw` 环境运行；覆盖反向目标、前进连接、实车 0.4 m 扫描过滤、近场缓冲区未验证标记、车身进入盲区拒绝、缓冲区障碍、采集 TF 延迟重试、空间/观测不足停车、靠右路径切换及室内配置隔离。规划与路径策略归属 `osm_map_handler`，另检查迁移后的引用及独立 3 s 心跳回退；NeuPAN 仅保留控制接入。
 
+另覆盖稀疏路线段距离、日志中的 1.46 m 同向起步、仅 ≥135° 反向路线触发掉头，以及普通转弯/大偏移/目标在身后但路线未反向时保留原跟踪、不新增道路或扫描准入门槛。隔离 ROS1 测试检查偏移起步确实生成非零测试指令，3 m 偏移和 90° 转弯不进入搜索，反向且观测不足时持续零速度。
+
 ```bash
 cd /home/nuc/lxw/neupan_ws
 python src/Test/tests/test_outdoor_start_connection.py -v
@@ -16,6 +18,16 @@ python src/Test/tests/test_outdoor_start_connection.py -v
 ```bash
 NEUPAN_CPP_SMOKE=1 NEUPAN_ROS_SMOKE=1 python src/Test/tests/test_outdoor_start_connection.py -v
 ```
+
+## 相机路径几何回归（不驱动车辆）
+
+从旧目录迁入的测试使用当前 `osm_map_handler` 模块，不再引用已删除的底盘包旧脚本。需要 `lxw` 环境中的 OpenCV / NumPy；默认仅运行几何、缓存、投影和回退测试，不启动 ROS。
+
+```bash
+python src/Test/tests/test_camera_right_refinement.py
+```
+
+`--ros` 是历史影子联调入口，要求预先启动独立 `127.0.0.1:11319` master 和影子节点，并保留原 20261008 测试 bag；不会自动启动这些依赖，禁止指向实车 master。
 
 ## 左右电机映射测试
 
