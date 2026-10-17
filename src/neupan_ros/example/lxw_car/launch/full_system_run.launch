@@ -131,6 +131,7 @@
     <arg name="default_control_mode" default="0" />
     <arg name="auto_command_timeout" default="0.5" />
     <arg name="remote_command_timeout" default="1.0" />
+    <arg name="localization_safety_timeout" default="1.0" doc="自动模式定位安全信号断流停车时限（秒），不要求 GPS Fixed" />
     <arg name="outdoor_use_hybrid_astar" default="false" doc="旧整段栅格Hybrid A*入口；新局部掉头连接不使用此开关，保持false" />
     <arg name="enable_outdoor_start_connector" default="true" doc="仅室外OSM直连：新路线局部方向与车头夹角至少135度时检查前进掉头；其他路线保持原NeuPAN跟踪" />
     <arg name="outdoor_connection_planner" default="hybrid_astar" doc="起始/掉头连接：共享C++ hybrid_astar；dubins用于旧策略对照" />
@@ -288,6 +289,7 @@
         <param name="default_mode" value="$(arg default_control_mode)" />
         <param name="auto_timeout" value="$(arg auto_command_timeout)" />
         <param name="remote_timeout" value="$(arg remote_command_timeout)" />
+        <param name="localization_safety_timeout" value="$(arg localization_safety_timeout)" />
         <param name="safety_topic" value="/localization_safe" />
         <param name="enable_auto_localization_safety_stop" value="$(arg outdoor_mode)" unless="$(arg use_global_ekf)" />
         <param name="enable_auto_localization_safety_stop" value="false" if="$(arg use_global_ekf)" />

@@ -1904,6 +1904,8 @@ roslaunch neupan_ros full_system_run.launch \
 
 源时间保护对 Fixed、粗位置启动和运行中校正统一生效：检查 GPS fix、投影、GGA、LIO 的新鲜度、顺序与时间配对；使用 GNSS 航向时另查航向及解状态源时间。同一 GPS 源样本只处理一次，重复转发不能累计启动/恢复窗口、重复纠偏或恢复预算。Fixed 失效时先进入续推并启动预算，再等待配对；短暂配对等待保留已有窗口，但不新增样本或发放预算，持续失配仍受 100 m / 600 s 限制。状态中的 `last_processed_gps_source_ns` 用于核对样本是否真的更新；[自测记录](videos/localization_runtime/20261016_nonfixed/summary.md)。
 
+2026-10-17 补充安全信号断流保护：室外默认定位分支下，`control_mode_mux` 用单调接收时钟检查 `/localization_safe`，默认 1 秒未更新就令自动速度归零（再加正常调度下最多一个 20 Hz 发布周期，不是实测制动距离）。全系统参数 `localization_safety_timeout:=1.0` 可调；未收到、超时、明确不安全分别记为 `localization_safety_missing`、`localization_safety_timeout`、`localization_unsafe`，状态变化时终端黄色 WARN。重新收到新鲜 true 且自动指令未过期后恢复放行；手动接管、室内及原 `use_global_ekf` 分支行为不变，不新增 Fixed 要求。`/vehicle/control_mode/status` 每 0.5 秒更新有效安全状态、收到的原值、心跳年龄和时限；原 JSONL/录包已包含该话题，无需增加录包配置。这只检查安全消息是否持续到达，不等于修复 LIO 数据本身延迟或 ECOS 异常。
+
 全系统可调参数为 `gps_guard_runtime_position_max_covariance`、`gps_guard_runtime_position_max_hdop`、`gps_guard_runtime_position_min_satellites`、`gps_guard_runtime_position_stable_sec`、`gps_guard_runtime_position_consistency_m`、`gps_guard_runtime_position_max_error_m` 和 `gps_guard_runtime_position_correction_rate`。这是低速封闭场地待实车验证的降级模式，不能当作 RTK 精度或完全无 GPS 无限续推。ECOS 求解异常未在本次修改中处理。
 
 ### 查看与验证

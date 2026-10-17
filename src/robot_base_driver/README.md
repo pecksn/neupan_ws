@@ -18,6 +18,19 @@ Fixed、粗位置启动、运行中校正统一验证源时间；重复 GPS 样�
 
 编译后设置 `GPS_RUNTIME_ROS_SMOKE=1` 可额外运行独立临时 ROS master 和假消息联调：Fixed 正常初始化→时间配对持续失配触发保护→合格 Float 恢复并超过测试预算继续运行→Fixed 恢复→重复旧 Fixed 源数据再次触发保护；不连接车辆 master。2026-10-16 本包 61 项、OSM/相机/NeuPAN 入口 101 项全部通过，详见[自测记录](../../videos/localization_runtime/20261016_nonfixed/summary.md)。
 
+## 自动模式定位安全信号超时
+
+`control_mode_mux.py` 在启用 `enable_auto_localization_safety_stop` 时，必须持续收到 `/localization_safe`。默认 `~localization_safety_timeout=1.0` 秒，以单调接收时钟计时：未收到、超时或收到 false 均输出零自动速度。收到新鲜 true 后仍检查原自动指令超时；手动遥控及未启用本项的调用者不受影响，不检查 GPS 是否 Fixed。
+
+NeuPAN 全系统已传入同名参数 `localization_safety_timeout`，原启动命令即可生效。`/vehicle/control_mode/status` 每 0.5 秒发布 `localization_safe`（包含超时判断的有效值）、`localization_safe_reported`（收到的原值）、`localization_safety_reason/age_sec/timeout_sec`，随原 JSONL 和 rosbag 记录；不同拦截原因在终端 WARN 提示。原 Bool 话题没有源时间，本项仅判断消息是否持续到达，不能代替上游定位数据质量检查。
+
+回归在 `tests/test_control_mode_mux.py`，17 项消息级测试加 1 项隔离 ROS 联调；2026-10-17 验证规划器连续发速度时，安全信号断流约 1.04 秒后选定速度归零，并验证手动接管及有效信号恢复。不启动底盘：
+
+```bash
+MUX_SAFETY_ROS_SMOKE=1 python3 -m unittest discover \
+  -s src/robot_base_driver/tests -p 'test_control_mode_mux.py' -q
+```
+
 ## 电机遥测与报警
 
 下位机可按行发送：
