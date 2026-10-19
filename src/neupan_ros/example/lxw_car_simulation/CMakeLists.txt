@@ -1,5 +1,20 @@
 # This directory is part of neupan_ros, not a second ROS package.
 # Missing navigation dependencies must not prevent the normal NeuPAN build.
+find_package(gazebo QUIET)
+find_package(roscpp QUIET)
+find_package(gazebo_msgs QUIET)
+if(gazebo_FOUND AND roscpp_FOUND AND gazebo_msgs_FOUND)
+  link_directories(${GAZEBO_LIBRARY_DIRS})
+  add_library(lxw_sim_pose SHARED src/sim_pose_world_plugin.cpp)
+  target_compile_features(lxw_sim_pose PRIVATE cxx_std_14)
+  target_compile_options(lxw_sim_pose PRIVATE -Wall -Wextra)
+  target_include_directories(lxw_sim_pose PRIVATE ${GAZEBO_INCLUDE_DIRS} ${roscpp_INCLUDE_DIRS} ${gazebo_msgs_INCLUDE_DIRS})
+  target_link_libraries(lxw_sim_pose ${GAZEBO_LIBRARIES} ${roscpp_LIBRARIES})
+  install(TARGETS lxw_sim_pose LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
+else()
+  message(WARNING "Skipping LXW comparison pose plugin; Gazebo/roscpp/gazebo_msgs development dependencies are required for planner_comparison.world")
+endif()
+
 option(BUILD_LXW_GAZEBO_TEB "Build the Gazebo-only TEB controller" ON)
 if(BUILD_LXW_GAZEBO_TEB)
   set(_lxw_teb_components roscpp geometry_msgs nav_msgs sensor_msgs std_msgs

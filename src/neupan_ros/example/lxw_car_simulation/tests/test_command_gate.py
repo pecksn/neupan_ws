@@ -30,12 +30,17 @@ def run(folder):
         import time
         import rospy
         from geometry_msgs.msg import Twist
+        from gazebo_msgs.msg import ModelStates
         from nav_msgs.msg import Odometry
         from sensor_msgs.msg import LaserScan
         from std_msgs.msg import Bool
         rospy.init_node('simulation_gate_regression', anonymous=True, disable_signals=True)
-        odom, enabled = [None], [True]
+        odom, enabled, models = [None], [True], [None]
         rospy.Subscriber('/odom', Odometry, lambda m: odom.__setitem__(0, m), queue_size=1)
+        rospy.Subscriber('/planner_sim/model_states', ModelStates, lambda m: models.__setitem__(0,m), queue_size=1)
+        def actual_x():
+            assert models[0] is not None and 'lxwcar' in models[0].name, 'Missing Gazebo body state'
+            return models[0].pose[models[0].name.index('lxwcar')].position.x
         pub = rospy.Publisher('/planner_sim/raw_cmd', Twist, queue_size=1)
         scans = rospy.Publisher('/planner_sim/scan_enabled', Bool, queue_size=1, latch=True)
         def command(_event):
@@ -46,20 +51,26 @@ def run(folder):
         rospy.sleep(1)
         assert odom[0] is not None
         start_x = odom[0].pose.pose.position.x
+        start_actual = actual_x()
         rospy.sleep(1)
+        result['fresh_command_odometry_displacement_m'] = odom[0].pose.pose.position.x-start_x
+        result['fresh_command_gazebo_displacement_m'] = actual_x()-start_actual
         assert odom[0].pose.pose.position.x-start_x > .15, 'Car did not move under fresh commands'
+        assert actual_x()-start_actual > .15, 'Gazebo body did not follow fresh commands'
         enabled[0] = False
         rospy.sleep(.8)
         assert abs(odom[0].twist.twist.linear.x) < .001, 'Expired command did not stop the car'
-        first = odom[0].pose.pose.position.x; rospy.sleep(.3)
+        first = odom[0].pose.pose.position.x; first_actual = actual_x(); rospy.sleep(.3)
         assert abs(odom[0].pose.pose.position.x-first) < .005, 'Car drifted after command expiry'
+        assert abs(actual_x()-first_actual) < .005, 'Gazebo body drifted after command expiry'
         result['command_timeout_stops_gazebo_car'] = True
         enabled[0] = True; rospy.sleep(.5)
         assert odom[0].twist.twist.linear.x > .2
         scans.publish(Bool(data=False)); rospy.sleep(.8)
         assert abs(odom[0].twist.twist.linear.x) < .001, 'Missing scans did not stop the car'
-        first = odom[0].pose.pose.position.x; rospy.sleep(.3)
+        first = odom[0].pose.pose.position.x; first_actual = actual_x(); rospy.sleep(.3)
         assert abs(odom[0].pose.pose.position.x-first) < .005, 'Car drifted after scan expiry'
+        assert abs(actual_x()-first_actual) < .005, 'Gazebo body drifted after scan expiry'
         result['scan_timeout_stops_gazebo_car'] = True
         scans.publish(Bool(data=True)); rospy.sleep(.6)
         assert odom[0].twist.twist.linear.x > .2, 'Fresh scan recovery failed'

@@ -183,3 +183,5 @@ roslaunch neupan_ros lxw_car_simulation.launch \
 - 实车 MID360 是 3D 点云；室外这里仅生成安装高度处的二维射线切片并转成点云，复现实车外参/过滤/投影链，不模拟真实扫描花纹、遮挡、噪声、低矮障碍或完整 FAST-LIO。室内旧虚拟传感器参数单独保留，不作为实车标定。
 - 共用虚拟底盘积分 Ackermann 模型，发布里程计、TF 和轮胎/转向关节状态，再通过 `/gazebo/set_model_state` 更新车体。它不是电机或轮胎动力学插件；默认指令超时 0.5 s 自动停止（`cmd_timeout`）。
 - 仿真通过不代表实车验收。局部仿真的后轴参考与限速修正见上；室外配置、实车参数与共享 Hybrid A* 本轮未修改。
+
+最新完整对比与视频入口：[2026-10-19 自适应 NeuPAN / TEB](../../../../videos/planner_comparison/20261019_adaptive_full_comparison/presentation/README.md)。旧失败结果已清理，本轮失败及审计异常完整保留。
