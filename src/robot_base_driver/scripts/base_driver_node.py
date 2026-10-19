@@ -61,6 +61,9 @@ def parse_motor_telemetry(line):
     return values, states
 
 class RobotBaseDriver:
+    SPEED_DEAD_ZONE_MPS = 0.05
+    MAX_STEERING_DEG = 25.0
+
     def __init__(self):
         rospy.init_node('robot_base_driver')
 
@@ -72,7 +75,16 @@ class RobotBaseDriver:
         
         # 机器人运动学参数 (Ackermann)
         self.wheelbase = rospy.get_param('~wheelbase', 0.67) # 轴距 (m)
-        self.wheel_radius = rospy.get_param('~wheel_radius', 0.1275) # 轮半径 (m)
+        # Validate before opening the serial port or installing callbacks.
+        self.wheel_radius = self.positive_finite_parameter('wheel_radius', 0.1275)
+        self.max_forward_speed_mps = self.positive_finite_parameter('max_forward_speed_mps', 1.5)
+        self.max_reverse_speed_mps = self.positive_finite_parameter('max_reverse_speed_mps', 1.5)
+        self.max_forward_wheel_speed = self.max_forward_speed_mps / self.wheel_radius
+        self.max_reverse_wheel_speed = self.max_reverse_speed_mps / self.wheel_radius
+        if not all(math.isfinite(v) and v > 0.0 for v in (
+                self.max_forward_wheel_speed, self.max_reverse_wheel_speed)):
+            rospy.logfatal('Invalid wheel radius/speed limits: converted wheel limits must be finite and positive')
+            raise ValueError('wheel radius/speed limits cannot be represented in rad/s')
         self.enable_localization_safety_stop = rospy.get_param(
             '~enable_localization_safety_stop', False
         )
@@ -145,6 +157,27 @@ class RobotBaseDriver:
         self.last_odom_stamp = None
         self.odom_speed_mps = 0.0
 
+    @staticmethod
+    def positive_finite_parameter(name, default):
+        raw = rospy.get_param('~' + name, default)
+        try:
+            if isinstance(raw, bool):
+                raise ValueError('boolean is not a motion limit')
+            value = float(raw)
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError('must be finite and positive')
+        except (TypeError, ValueError, OverflowError):
+            rospy.logfatal('Invalid ~%s=%r: expected a finite positive number', name, raw)
+            raise ValueError('invalid ~' + name)
+        return value
+
+    @staticmethod
+    def finite_controls(*values):
+        try:
+            return all(math.isfinite(value) for value in values)
+        except (TypeError, ValueError, OverflowError):
+            return False
+
     def cmd_vel_callback(self, msg):
         """
         接收选定的最终速度，转换为下位机指令并通过串口发送
@@ -157,6 +190,12 @@ class RobotBaseDriver:
         # 【修改】Neupan 直接输出的是转向角 (rad)
         steering_angle = msg.angular.z 
 
+        if not self.finite_controls(v, steering_angle):
+            rospy.logwarn_throttle(2.0, 'Rejected non-finite Twist control: speed=%r m/s, steering=%r rad; sending stop',
+                                   v, steering_angle)
+            self.send_serial_command(0.0, 0.0)
+            return
+
         if self.enable_localization_safety_stop and not self.localization_safe:
             v = 0.0
             steering_angle = 0.0
@@ -164,9 +203,16 @@ class RobotBaseDriver:
                 1.0, "Localization unsafe: blocking planner command and holding stop"
             )
 
-        # 【新增】电机死区处理：过滤掉过小的速度，防止电机异响和震荡
-        dead_zone = 0.05 # 5cm/s
-        if abs(v) < dead_zone:
+        bounded_v = max(-self.max_reverse_speed_mps, min(self.max_forward_speed_mps, v))
+        max_steering_rad = math.radians(self.MAX_STEERING_DEG)
+        bounded_steering = max(-max_steering_rad, min(max_steering_rad, steering_angle))
+        if bounded_v != v or bounded_steering != steering_angle:
+            rospy.logwarn_throttle(2.0, 'Clamped Twist control: speed=%r -> %r m/s, steering=%r -> %r rad',
+                                   v, bounded_v, steering_angle, bounded_steering)
+        v, steering_angle = bounded_v, bounded_steering
+
+        # Preserve the existing speed dead zone and stationary steering reset.
+        if abs(v) < self.SPEED_DEAD_ZONE_MPS:
              v = 0.0
              # 处于静止状态时，强制回正方向，避免原地左右摆头
              steering_angle = 0.0
@@ -177,13 +223,6 @@ class RobotBaseDriver:
         # 转换为角度
         steering_deg = math.degrees(steering_angle)
 
-        # 【修复】增加转向角物理限幅 (例如 +/- 33度)，防止出现 90度的无效指令
-        max_steering_deg = 25.0 
-        if steering_deg > max_steering_deg:
-            steering_deg = max_steering_deg
-        elif steering_deg < -max_steering_deg:
-            steering_deg = -max_steering_deg
-        
         # 构造指令: CMD,<油门>,<转向>
         self.send_serial_command(throttle, steering_deg)
 
@@ -197,6 +236,31 @@ class RobotBaseDriver:
             rospy.loginfo("Localization recovered; planner commands are enabled")
 
     def send_serial_command(self, throttle, steering_deg):
+        # Final defense also covers callers that bypass cmd_vel_callback.
+        if not self.finite_controls(throttle, steering_deg):
+            rospy.logwarn_throttle(2.0, 'Rejected non-finite serial control: wheel=%r rad/s, steering=%r deg; sending stop',
+                                   throttle, steering_deg)
+            throttle, steering_deg = 0.0, 0.0
+        else:
+            bounded_throttle = max(-self.max_reverse_wheel_speed,
+                                   min(self.max_forward_wheel_speed, throttle))
+            bounded_steering = max(-self.MAX_STEERING_DEG, min(self.MAX_STEERING_DEG, steering_deg))
+            if bounded_throttle != throttle or bounded_steering != steering_deg:
+                rospy.logwarn_throttle(2.0, 'Clamped serial control: wheel=%r -> %r rad/s, steering=%r -> %r deg',
+                                       throttle, bounded_throttle, steering_deg, bounded_steering)
+            throttle, steering_deg = bounded_throttle, bounded_steering
+            if abs(throttle) < self.SPEED_DEAD_ZONE_MPS / self.wheel_radius:
+                throttle, steering_deg = 0.0, 0.0
+
+        # The protocol has 0.01 rad/s resolution. At a configured boundary,
+        # round inward rather than allowing decimal rounding to exceed it.
+        throttle = float(f'{throttle:.2f}')
+        if throttle > self.max_forward_wheel_speed:
+            throttle = max(0.0, throttle - 0.01)
+        elif throttle < -self.max_reverse_wheel_speed:
+            throttle = min(0.0, throttle + 0.01)
+        if throttle == 0.0:
+            throttle, steering_deg = 0.0, 0.0
         command = f"CMD,{throttle:.2f},{steering_deg:.2f}\n"
         if self.serial and self.serial.is_open:
             try:

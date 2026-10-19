@@ -31,6 +31,21 @@ MUX_SAFETY_ROS_SMOKE=1 python3 -m unittest discover \
   -s src/robot_base_driver/tests -p 'test_control_mode_mux.py' -q
 ```
 
+## 最终速度输入保护（任务02）
+
+`base_driver_node.py` 在回调及最终串口发送层拒绝非有限速度/转角：任一实际控制字段为NaN/Inf时，立即发送 `CMD,0.00,0.00`，不能保留上一条运动指令。有限大值按独立正反向软件上限及原±25°转角限制处理；保留0.05 m/s死区、停车回正、倒车和电机仅报警行为，不新增变化率限制。
+
+`max_forward_speed_mps`、`max_reverse_speed_mps` 默认均为1.5 m/s，`wheel_radius` 默认0.1275 m；三者须有限且大于0，换算后的轮速限值也须有限且大于0，否则在打开串口前报错。默认速度来自当前室外规划的±1.5软件边界，不代表硬件安全极速。串口保持轮速rad/s、转角deg，限值附近向内量化避免0.01 rad/s四舍五入越界。告警2秒节流。
+
+三个参数可从 `driver.launch`、`navigation_core.launch` 或 `full_system_run.launch` 覆盖；旧实车入口继承默认保护，不依赖mux是否启用。详见[统一任务记录](../../PROJECT_ANALYSIS_CN.md)。任务03尚未实施，不影响既有MCU失联停车或电机报警策略。
+
+模拟串口回归，不打开真实串口或启动底盘：
+
+```bash
+/usr/bin/python3 -m unittest discover \
+  -s src/robot_base_driver/tests -p 'test_base_driver_command_limits.py' -q
+```
+
 ## 电机遥测与报警
 
 下位机可按行发送：

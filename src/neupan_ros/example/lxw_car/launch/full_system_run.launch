@@ -1,4 +1,8 @@
 <launch>
+    <!-- Final driver limits; m/s, finite and >0. Not certified hardware maxima. -->
+    <arg name="max_forward_speed_mps" default="1.5" />
+    <arg name="max_reverse_speed_mps" default="1.5" />
+    <arg name="wheel_radius" default="0.1275" doc="驱动换算轮半径，米，有限且大于零" />
     <!-- ==================== 1. 全局运行模式配置 ==================== -->
     <arg name="outdoor_mode"        default="false" doc="true: 室外GPS地图 | false: 室内栅格地图"/>
     <!-- 开启此项提供高精度激光里程计 /Odometry -->
@@ -161,6 +165,9 @@
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
         <arg name="cmd_topic" value="/cmd_vel/selected" />
+        <arg name="wheel_radius" value="$(arg wheel_radius)" />
+        <arg name="max_forward_speed_mps" value="$(arg max_forward_speed_mps)" />
+        <arg name="max_reverse_speed_mps" value="$(arg max_reverse_speed_mps)" />
         <arg name="outdoor_mode" value="$(arg outdoor_mode)" />
         <arg name="datum_lat" value="$(arg map_origin_lat)" />
         <arg name="datum_lon" value="$(arg map_origin_lon)" />

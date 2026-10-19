@@ -6,6 +6,9 @@
     <!-- 机器人参数 -->
     <arg name="wheelbase" default="0.67"/>
     <arg name="wheel_radius" default="0.1275"/>
+    <!-- Software limits, m/s, finite and >0; not validated hardware maxima. -->
+    <arg name="max_forward_speed_mps" default="1.5"/>
+    <arg name="max_reverse_speed_mps" default="1.5"/>
 
     <!-- 坐标系参数 -->
     <arg name="base_frame" default="base_link"/>
@@ -27,6 +30,8 @@
         <param name="baudrate" value="$(arg baudrate)"/>
         <param name="wheelbase" value="$(arg wheelbase)"/>
         <param name="wheel_radius" value="$(arg wheel_radius)"/>
+        <param name="max_forward_speed_mps" value="$(arg max_forward_speed_mps)"/>
+        <param name="max_reverse_speed_mps" value="$(arg max_reverse_speed_mps)"/>
         <param name="base_frame" value="$(arg base_frame)"/>
         <param name="odom_frame" value="$(arg odom_frame)"/>
         <param name="publish_tf" value="$(arg publish_tf)"/>

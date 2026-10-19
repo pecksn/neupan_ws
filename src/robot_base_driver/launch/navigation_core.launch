@@ -19,6 +19,8 @@
     <arg name="odom_frame" default="odom"/>
     <arg name="wheelbase" default="0.67"/>
     <arg name="wheel_radius" default="0.1275"/>
+    <arg name="max_forward_speed_mps" default="1.5"/>
+    <arg name="max_reverse_speed_mps" default="1.5"/>
     <arg name="cmd_topic" default="/neupan_cmd_vel"/>
     <arg name="gps_frame" default="gps_link"/>
     <arg name="gps_port" default="/dev/wheeltec_gnss" />
@@ -80,6 +82,8 @@
         <arg name="odom_frame" value="$(arg odom_frame)"/>
         <arg name="wheelbase" value="$(arg wheelbase)"/>
         <arg name="wheel_radius" value="$(arg wheel_radius)"/>
+        <arg name="max_forward_speed_mps" value="$(arg max_forward_speed_mps)"/>
+        <arg name="max_reverse_speed_mps" value="$(arg max_reverse_speed_mps)"/>
         <arg name="cmd_topic" value="$(arg cmd_topic)"/>
         <arg name="publish_tf" value="false" />
         <arg name="enable_localization_safety_stop" value="$(arg enable_localization_safety_stop)" />
