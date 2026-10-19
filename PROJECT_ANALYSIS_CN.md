@@ -1,4 +1,4 @@
-# NeuPAN 室内外导航项目分析
+# 阿克曼无人车室外导航：项目架构与技术方案基线
 
 > 本文档用于帮助理解 `/home/nuc/lxw/neupan_ws` 的整体结构、运行链路和主要函数职责。
 >
@@ -6,13 +6,27 @@
 >
 > 以下控制链路以 `neupan_ros/example/lxw_car/launch/full_system_run.launch` 为准；其他测试 launch 可能仍直接使用 `/neupan_cmd_vel`。这是静态代码分析，不能代替实车运行检查。
 >
-> 最近核对：2026-10-08。分析使用 codegraph 定位核心类和函数，并以源码及 launch 中的实际订阅、发布、参数和 remap 为准。
+> 最近核对：2026-10-19；源码基线 `1aed6ca`。分析使用 codegraph 定位核心类、调用关系，再以源码及 launch 中的实际订阅、发布、参数和 remap 交叉核对。本文区分代码事实、分析判断和待实车验证项；不是实车验收报告。
+
+## 0. 技术负责人视角与使用约定
+
+当前项目已具备室外导航的完整软件链路：GNSS/LIO/轮式里程计定位、OSM 路网规划、NeuPAN 局部优化、自动/手动仲裁和串口执行。近期工作主要集中在桥底定位退化、返程掉头、视觉靠右和故障可观测性。**软件机制存在不等于实车鲁棒性已验证**，后续方案应先锁定场景、配置和数据，再修改对应层。
+
+- **主线入口**：[full_system_run.launch](src/neupan_ros/example/lxw_car/launch/full_system_run.launch)，室外必须显式 `outdoor_mode:=true`；文件默认仍为室内。
+- **现场操作入口**：[核心启动指令.md](核心启动指令.md)；本文件描述架构及设计约束，避免维护第二套易漂移的现场命令。
+- **源码职责**：[src/README.md](src/README.md)。OSM/路径准备归 `osm_map_handler`，局部优化归 `neupan_ros`，定位/底盘归 `robot_base_driver`。
+- **事实优先级**：实际启动参数与运行数据 → 当前源码 → 包说明 → 历史调试记录。配置注释与数值不一致时，以运行参数为准。
+- **方案边界**：MCU 固件、GPU 推理程序、云端任务服务并未在本次核心源码审查中形成完整闭环；不能从 ROS 接口反推它们已有看门狗、同步或任务重试机制。
+
+后续快速定位：控制/任务看第 2、4、5 节；定位看第 2.9、5、23 节；视觉/掉头看第 2.8、2.10、6 节；参数、风险与验收看第 24～27 节。
 
 ## 1. 项目总体结构
 
 ```mermaid
 flowchart LR
-    GPU[GPU 板 HybridNets] --> RX[hybridnets_receiver<br/>独立感知]
+    GPU[GPU 板 HybridNets] --> RX[hybridnets_receiver]
+    RX --> CAM[相机靠右路径修正]
+    CAM -. 显式启用控制及心跳检查 .-> NP
     GPS[GPS/NMEA] --> LOC[GPS/LIO 定位保护]
     IMU[Livox IMU] --> LIO[FAST-LIO]
     LIDAR[Livox MID360] --> LIO
@@ -108,7 +122,7 @@ OSM A* -> /osm_global_path
   -> /osm_global_path_curb_refined
 ```
 
-`enable_lidar_curb:=true` 只启动检测；还需 `enable_lidar_curb_control:=true` 才会把 NeuPAN 的初始路径切换到修正路径。默认两个开关都是 `false`。HybridNets 接收器是独立感知输入，当前不直接生成 NeuPAN 路径或底盘速度。
+`enable_lidar_curb:=true` 只启动检测；还需 `enable_lidar_curb_control:=true` 才会把 NeuPAN 的初始路径切换到修正路径。默认两个开关都是 `false`。HybridNets 接收器自身不生成路径或底盘速度；其 JSON 已可经相机靠右模块间接影响控制，见 2.8 节。
 
 ### 2.5 云端接口与手动接管
 
@@ -134,11 +148,13 @@ OSM A* -> /osm_global_path
 | `starting` | 节点刚启动；随后由定时器更新状态 |
 | `auto_active` | 自动源及时且通过已启用的定位门控；仍可能转发零速度 |
 | `auto_timeout` | 自动源不存在或超过自动超时，输出零速度 |
-| `localization_unsafe` | 自动模式定位门控未通过，输出零速度 |
+| `localization_unsafe` | 自动模式收到明确不安全状态，输出零速度 |
+| `localization_safety_missing` | 门控已启用但尚未收到定位安全消息，输出零速度 |
+| `localization_safety_timeout` | 定位安全心跳年龄达到默认 1 秒，输出零速度；旧的 true 不继续放行 |
 | `remote_active` | 手动源及时，转发其速度；仍可能转发零速度 |
 | `remote_timeout` | 手动源不存在或超过手动超时，输出零速度 |
 
-状态话题为 latched JSON 字符串，实际结构是 `{"mode":1,"mode_name":"MANUAL","reason":"remote_active"}`。`active` 只表示速度源可用，不保证车辆正在运动；还需看 `/cmd_vel/selected` 的数值及串口执行情况。
+状态话题为 latched JSON 字符串，包含 `mode`、`mode_name`、`reason`，以及速度源年龄、超时阈值、定位安全值和心跳年龄等字段；状态变化或每约 0.5 秒更新。定位心跳使用单调时钟计龄，速度源超时仍使用 ROS 时间。`active` 只表示速度源可用，不保证车辆正在运动；还需看 `/cmd_vel/selected` 的数值及串口执行情况。
 
 ### 2.7 连续目标与桥底再次出发
 
@@ -149,6 +165,44 @@ NeuPAN 终端会把“已到达并等待新目标”“新目标已接收、等�
 完整系统启动时，Livox SDK 的常规初始化和 `Data Handler` 等驱动输出写入 ROS 日志文件，不持续占用综合启动终端；单独启动 `rviz_MID360.launch` 时默认仍输出到屏幕，方便驱动调试。NeuPAN 的雷达 TF 等待、雷达失效安全停车和障碍物触发停车继续在综合启动终端周期提示，不受该设置影响。
 
 首次启动仍需稳定 GPS 建立定位基准；到达后不重启系统，新目标不会重置 `global_odom_bridge`。桥底 GPS 非 Fixed 时可使用已初始化的全局变换和本地里程计继续规划、行驶，但本地里程计、TF、LaserScan 与定位安全状态仍必须正常，续推预算也不能超限。保存并冻结上一次终点坐标不能替代当前本地里程计位置。
+
+### 2.8 相机靠右路径：当前已有可选控制链
+
+```text
+/hybridnets/result_json + 原始 OSM 路径 + 采集时刻 TF + 相机标定
+  -> camera_right_path.py -> osm_camera_path_refinement.CameraRightPath
+  -> /camera_right/control_path + /camera_right/status
+  -> neupan_core 内的 CameraPathGuard
+  -> NeuPAN 局部优化 -> /cmd_vel/auto
+```
+
+`enable_camera_right_path=false`、`enable_camera_right_control=false` 是完整系统默认值；仅启用验证路径不接管控制。路径选择优先级为：相机控制路径 > 路沿修正路径 > `outdoor_initial_path_topic`。同时开启两个控制开关并不代表融合了两个感知源。
+
+默认 `strategy=segment_cache`，按道路段确认和缓存；另有 `realtime` 策略。当前默认距离基准为 `camera_center`，相机光学中心距右边界的平面横向目标距离为 2.0 米，并非右轮净距 2 米。轮距、胎宽和 `base_link` 高度分别影响不同的几何换算，不能混用。
+
+消费进程中的 `CameraPathGuard.select` 独立核对原路线、候选路线 frame/时间戳、心跳确认的路径摘要和 3 秒心跳期限。过期或不匹配回退原路线；原路线也无效则停车。生产端依赖真实采集时间和当时 TF；“网络持续收到 JSON”不等于观测有效。此机制仍依赖 NeuPAN 进程本身正常运行。
+
+### 2.9 定位退化：启动、运行校正、完全失锁分开处理
+
+| 阶段/模式 | 当前策略 | 关键边界 |
+| --- | --- | --- |
+| 默认初始化 | 高质量位置与固定有效双天线航向，稳定确认 | 无定位基准时不能凭空进入桥底续推 |
+| `low_precision_startup=true` | 放宽初始位置，仍要求固定有效航向 | 粗起点会引入地图平移误差 |
+| Fixed 正常跟踪/恢复 | 质量、跳变、稳定窗口和平滑校正 | 不以一帧 Fixed 直接重置预算 |
+| 运行中位置校正 | 默认 `gps_guard_allow_nonfixed_runtime=true`，接受合格 GGA 2/4/5，仅校正平移 | 保留 `map -> odom` 航向；车辆航向继续由本地里程计演进 |
+| 完全失锁/不合格位置 | 本地续推，默认最近合格更新后的 100 米/600 秒预算 | 单点 GGA=1 不参与运行中位置校正；任一预算超限停自动 |
+
+运行中位置校正默认要求：已初始化、已知水平协方差 ≤4 m²、HDOP≤2.5、卫星≥8、稳定窗口≥5 秒、候选平移散布≤0.75 米、与当前变换创新≤3 米；校正速度≤0.10 m/s。残差≤0.5 米后最多每稳定窗口更新一次续推预算。这里的残差是候选变换一致性，**不是实测绝对定位误差**。
+
+源码调用链：`timer_cb -> update_guard -> data_quality(..., runtime_position=True) -> update_runtime_position -> RuntimePositionWindow.observe / move_transform_toward`。重复源时间戳不能作为新观测。查看 `/gps_guard/status` 的 `runtime_position`、`global_reference_precision` 和 `last_processed_gps_source_ns`；持续合格粗位置可能支持远超 100 米的运行，需单独评价绝对误差和道路对齐。
+
+### 2.10 返程掉头：局部连接，不是整条路的 Hybrid A*
+
+主线默认启用 `enable_outdoor_start_connector=true`，在室外 OSM 直连分支且原始路径话题为 `/osm_global_path` 时生效。新路线接入方向与车头夹角至少 135° 才触发前进掉头连接；普通起步、90° 转弯和同向偏移继续交给原 NeuPAN 跟踪。
+
+`StartRouteConnector -> CppHybridSearch -> outdoor_hybrid_worker -> hybrid_astar/HYAS` 使用共享 C++ 搜索核心。局部地图 16×16 米、分辨率 0.1 米，默认搜索预算 1 秒/12000 次迭代；等待搜索时输出零速度，返回后还检查最新扫描、采集时刻 TF、车体扫掠和道路范围。未知观测不能作为掉头空地；失败不会自动倒车或放行反向路线。
+
+状态在 `/neupan/route_connection`：`searching`、`connecting`、`following_route`、`blocked`。旧 `outdoor_use_hybrid_astar=false` 保持不变；开启它会选择另一条整段栅格分支。普通跟踪没有经过掉头分支同等的完整扫掠准入，不能把局部检查扩展解释为全程通行认证。
 
 ## 3. 根目录文件夹
 
@@ -186,7 +240,7 @@ NeuPAN 的 ROS1 封装和示例工程。
 核心类是 `neupan_core`。
 
 - `__init__`：初始化 ROS 节点，读取规划器、LaserScan、TF、自车过滤和安全参数；加载 NeuPAN 配置；建立发布器和订阅器。
-- `run`：50 Hz 主循环。读取 `map -> base_link` TF，检查路径和扫描健康状态，调用 NeuPAN，发布速度、路径、参考状态和 RViz Marker。
+- `run`：名义 50 Hz 主循环（实际频率受求解与发布耗时影响）。读取 `map -> base_link` TF，检查路径和扫描健康状态，调用 NeuPAN，发布速度、路径、参考状态和 RViz Marker。
 - `parse_adjust_profile`：把字符串形式的五元调参配置解析成 NumPy 数组。
 - `mark_scan_valid`：记录扫描恢复时间和当前有效模式。
 - `mark_scan_fault`：记录扫描故障并进入 `FAULT` 状态。
@@ -195,7 +249,7 @@ NeuPAN 的 ROS1 封装和示例工程。
 - `compute_min_obstacle_distance`：计算机器人前方指定角度范围内的最近障碍距离。
 - `update_adaptive_adjust_parameters`：按最近障碍距离，在 clear 和 avoid 两组 NeuPAN 参数之间插值。
 - `scan_callback`：过滤无效距离、按角度和距离筛选、降采样，并把雷达点从 `lidar_frame` 转换到地图坐标。
-- `path_callback`：接收完整 `nav_msgs/Path`，转换到 `map` 后交给规划器。
+- `path_callback`：接收完整 `nav_msgs/Path` 并准备路径更新；实际规划器装载在主循环执行，涉及相机路径监督和室外掉头连接，不能在回调中与求解并发重置。
 - `waypoints_callback`：从机器人当前位置和多个航点生成规划初始路径。
 - `goal_callback`：从当前位姿和目标 Pose 生成规划初始路径。
 - `quat_to_yaw_list`：将四元数数组转换为偏航角。
@@ -213,7 +267,7 @@ NeuPAN 的 ROS1 封装和示例工程。
 
 ### `src/neupan_ros/scripts/neupan_node.py`
 
-程序入口。实例化 `neupan_core`，然后调用 `run()`。
+程序入口。实例化 `neupan_core`，然后调用 `run()`；异常时调用 `neupan_diagnostics.report_failure` 保存诊断后重抛。诊断包括异常栈、配置/模型路径、规划阶段、数值输入与路径进度，不等于求解器已自动恢复。
 
 ### `example/lxw_car`
 
@@ -262,7 +316,8 @@ Limo 差速车仿真。
 - `cmd_vel_callback`：把 `Twist.linear.x`（m/s）和 `Twist.angular.z`（转向角，rad）转换为 MCU 协议 `CMD,<轮速 rad/s>,<转角 deg>`；处理速度死区和 ±25° 转角限幅。
 - `localization_safety_callback`：仅当本节点的 `~enable_localization_safety_stop=true` 时，定位不安全立即发送停车命令。完整系统将该参数设为 `false`，改由控制模式选择器仅保护自动模式；其他 launch 可有不同设置。
 - `send_serial_command`：格式化并写入串口。
-- `read_from_mcu`：读取 MCU 的 `ODO` 行，解析位置和航向，设置里程计零点，计算相对位姿和速度。
+- `read_from_mcu` / `handle_mcu_line`：分流 `ODO` 和 `MOTOR` 报文；`handle_odom` 计算相对位姿及内部速度估计，但当前发布的 `/odom.twist` 两个速度分量仍为零。本地 EKF 使用位姿，并不融合这些零速度。
+- `parse_motor_telemetry` / `handle_motor_line`：解析左右电机扭矩、MOS/线圈温度及状态，发布 `/motor/status`、`/motor/alarm`、`/diagnostics`；报警带回差。当前报警只上报，未在该驱动速度回调中形成停车联锁。
 - 主循环：持续读取 MCU 数据并发布 `/odom`，必要时发布 `odom -> base_link` TF。
 
 ### `scripts/control_mode_mux.py`
@@ -270,7 +325,7 @@ Limo 差速车仿真。
 - 订阅 `/vehicle/control_mode`、`/cmd_vel/auto` 和内部名称 `/cmd_vel/remote`。完整系统用 ROS remap 将后者接到云端 `/cmd_vel_remote`，不会额外创建 `/cmd_vel/remote` 发布话题。
 - `AUTO=0`：选择 NeuPAN 自动速度；完整系统在 `use_global_ekf:=false` 的室外配置下同时检查 `/localization_safe`。定位不安全时立即输出零速度并报告 `localization_unsafe`。
 - `MANUAL=1`：选择云端手动速度，不受定位安全状态拦截；超过默认 `1.0 s` 没有新遥控消息则输出零速度。
-- 以约 20 Hz 发布选定速度到 `/cmd_vel/selected`，并在状态变化时发布 JSON 状态到 `/vehicle/control_mode/status`。无模式消息时采用 launch 默认的 `0=AUTO`；非法模式值会被忽略。
+- 以约 20 Hz 发布选定速度到 `/cmd_vel/selected`，并在状态变化或每约 0.5 秒发布 JSON 状态到 `/vehicle/control_mode/status`。无模式消息时采用 launch 默认的 `0=AUTO`；非法模式值会被忽略。
 
 ### `scripts/global_path_tracker.py`
 
@@ -316,7 +371,7 @@ GPS 与 FAST-LIO 的全局定位安全守门器。
 
 `localization_is_safe` 的条件是：全局与本地变换已初始化、本地里程计未超时、已过本地异常观察期，并且本地续推距离和时间预算未超限。GPS 暂时失锁后，如果已初始化且本地续推正常，定位安全状态仍可能为 `true`；它不等价于“此刻 GPS 必须为 RTK Fixed”。启动时缺少 GPS 或本地里程计则无法完成初始化。
 
-续推试运行限制默认是累计路程 100 米或持续 600 秒（10 分钟），任一达到便将 `/localization_safe` 置为 `false`；这只是限制未校正里程计累积时间/距离，不能保证实际漂移小于某个米数。停车等待也计时，路程按每次本地位姿增量累计，因此往返运动不能抵消；新目标、到达、短暂 GPS Fixed 和里程计原点重置都不会清零预算。只有可信 GPS 完成初始化或平滑恢复到 `GPS_TRACKING` 才重置。距离和时间需用现场数据调整。
+续推试运行限制默认是累计路程 100 米或持续 600 秒（10 分钟），任一达到便将 `/localization_safe` 置为 `false`；这只是限制未校正里程计累积时间/距离，不能保证实际漂移小于某个米数。停车等待也计时，路程按每次本地位姿增量累计，因此往返运动不能抵消；新目标、到达、短暂 GPS Fixed 和里程计原点重置都不会清零预算。可信 GPS 初始化或平滑恢复到 `GPS_TRACKING` 会重置预算；当前默认开启的运行中位置校正也可在稳定窗口和残差条件满足后更新预算，见 2.9 节。不能再将 100 米理解成“无 Fixed 的总里程上限”。距离和时间需用现场数据调整。
 
 ### `scripts/lio_odom_guard.py`
 
@@ -395,6 +450,14 @@ FAST-LIO 输出保护器。
 - `load_osm_segments`：加载道路线段。
 - `load_points`：读取 GPS 或测试点。
 - `nearest_segment`：寻找每个点的最近道路段。
+
+### 当前跨包共享路径模块
+
+- `src/osm_camera_path_refinement.py`：`CameraRightPath`，相机边界投影、道路段缓存和修正路径；`scripts/camera_right_path.py` 只是节点入口。
+- `src/osm_camera_path_guard.py`：`CameraPathGuard`，由 NeuPAN 消费进程调用的路径身份与心跳监督。
+- `src/osm_outdoor_start_connection.py`：`RoadCorridor`、`ScanEnvelope`、`StartRouteConnector`，道路、扫描证据与掉头连接准入。
+- `src/osm_hybrid_search.py` / `src/outdoor_hybrid_worker.cpp`：进程隔离的请求/取消/超时和共享 C++ 搜索适配。
+- `setup.py` 通过 `py_modules` 导出上述 Python 模块；修改公共模块时核对 catkin 导出和运行环境，不在消费端复制另一份实现。
 
 ## 7. `src/lidar_curb_refinement`
 
@@ -699,7 +762,7 @@ roslaunch vehicle_bag_recorder record.launch
 
 - `enable_lidar_curb` 启动 MID360 右侧路沿检测；`enable_lidar_curb_control` 决定是否让 NeuPAN 跟踪 `/osm_global_path_curb_refined`。控制开关应在检测有效、方向和净距标定完成后启用。
 - 路沿参数主要是右侧 ROI、上台阶高度、连续确认帧数、期望净距、最大修正量和误差平滑。
-- `enable_hybridnets_receiver=true` 默认启动 GPU 板视频/JSON 接收；`show_hybridnets_overlay` 只控制调试显示。当前 HybridNets 结果不直接影响运动控制。
+- `enable_hybridnets_receiver=true` 默认启动 GPU 板视频/JSON 接收；`show_hybridnets_overlay` 只控制调试显示。默认关闭相机路径控制时结果不影响运动；开启相机路径控制后，结果通过参考路径间接影响运动。
 
 ## 19. 当前项目的主要风险
 
@@ -711,7 +774,7 @@ roslaunch vehicle_bag_recorder record.launch
 6. **目标消息与道路可达性**：`/gps_goal_ll` 无效状态、经纬度错误、缺少全局里程计或目标远离可行驶道路时，不会生成新路径。
 7. **遥控端全零或失联**：`/cmd_vel_remote` 连接存在并不代表有非零运动指令；手动源超过 1 秒不更新会输出零速度。
 8. **定位安全适用范围**：完整系统自动模式因 `/localization_safe=false` 停车，手动模式不会被此条件拦截；切换模式前应检查操作区域和遥控指令。
-9. **路沿/视觉误检**：MID360 右侧路沿是可选路径修正，GPU 板 HybridNets 目前仅用于接收与显示；不能把视觉 JSON 当成已经接入控制的参考线。
+9. **路沿/视觉误检**：MID360 右侧路沿是可选路径修正，GPU 板 HybridNets 已有可选的相机参考路径控制链。须区分接收器启动、验证路径输出和实际控制开关，并检查消费端心跳保护。
 
 ## 20. 推荐阅读顺序
 
@@ -848,7 +911,7 @@ NMEA 驱动额外解析设备已有的 `#PVTSLNA`，并校验 Unicore CRC32。
 定位保护独立检查定向状态，位置仍通过 GGA=4、协方差、HDOP、卫星数等
 条件判断。默认高精度启动仍要求可靠位置和航向；已初始化后 GPS 退化继续沿用
 已有本地续推及 100 米/600 秒限制。此改动不使用不可靠位置进行全局校正，
-也不新增仅靠 GNSS 航向校正桥底续推的功能。
+也不新增仅靠 GNSS 航向校正桥底续推的功能。后续新增的运行中位置校正见 2.9 节，不能沿用本历史段落推断当前完全禁止非 Fixed 位置校正。
 
 验证包含真实无解报文、位置/定向独立组合、CRC 错误、截断、非有限数值、
 无效基线、航向零度及状态超时；固定解正例使用合成报文，仍需室外实测。
@@ -859,13 +922,136 @@ NMEA 驱动额外解析设备已有的 `#PVTSLNA`，并校验 Unicore CRC32。
 开启。仅在初次初始化允许较粗的位置（GGA 1/2/4/5、至少 6 颗卫星、HDOP≤5、
 水平协方差≤100 m²），定向固定/有效、新鲜度、本地里程计及航向跳变保护仍必需。
 保留 2 秒稳定确认，低精度位置候选相对均值散布≤2 米，优先采用满足条件的高精度初始化。
-低精度初始化一次建立地图参考后进入本地续推，不持续追随低质量 GPS，预算从初始化
-开始按原有 100 米/600 秒累计。可靠 RTK 恢复仍经过原有稳定确认和平滑校正。
+低精度初始化一次建立地图参考后进入本地续推，预算从初始化开始累计；当前运行中若另行满足 2.9 节的位置校正条件，可以受限校正并更新预算。单点或其他不合格位置不持续参与校正。可靠 RTK 恢复仍经过原有稳定确认和平滑校正。
 `/gps_guard/status` 新增开关、初始化精度、当前全局参考精度及低精度阈值，随状态入日志。
 开关经 `full_system_run.launch` / `outdoor_global_only_test.launch` 传入
 `navigation_core.launch` 的稳定定位分支；不适用于 `use_global_ekf=true`。
 固定航向不会消除粗 GPS 的地图平移误差，实车验证仍需关注路网对齐和到达偏差。
 
-## 22. 一句话总结
+## 22. 架构定位
 
-这是一个把 GPS、FAST-LIO、Livox、OSM、NeuPAN、控制模式选择器和串口底盘整合在 ROS1 中的室内外导航系统：云端可下发经纬度目标并订阅经纬度路径；自动模式由 NeuPAN 控制并受定位安全保护，手动模式使用云端速度；MID360 路沿修正和 HybridNets 接收分别作为可选路径参考与独立感知输入。
+这是一个把 GPS、FAST-LIO、Livox、OSM、NeuPAN、控制模式选择器和串口底盘整合在 ROS1 中的室内外导航系统：云端可下发经纬度目标并订阅经纬度路径；自动模式由 NeuPAN 控制并受定位安全保护，手动模式使用云端速度；MID360 路沿和 HybridNets 相机边界均有可选参考路径分支，返程掉头使用独立的局部连接搜索。
+
+## 23. 定位、坐标和时间的工程约束
+
+### 23.1 默认室外定位链
+
+```text
+MCU /odom（位置差分） ------------------------------------┐
+Livox /Odometry -> lio_odom_guard -> /odometry/lio_guarded --┴-> ekf_local -> /odometry/local
+GNSS fix + heading -> gps_fix_to_map_odom -> /odometry/gps
+/odometry/gps + /odometry/local + GNSS质量 -> global_odom_bridge -> /odometry/global
+/odometry/global + /odometry/local -> map_odom_align_bridge -> map -> odom
+```
+
+上图 GPS 投影输出单独交给全局桥；本地 EKF 实际只融合 `/odom` 与 `/odometry/lio_guarded` 的 x/y/yaw，轮式位姿以 differential 方式使用。原始 IMU 由 FAST-LIO 使用，本地 EKF 不重复融合。依据：[ekf_local.yaml](src/robot_base_driver/config/ekf_local.yaml)、[navigation_core.launch](src/robot_base_driver/launch/navigation_core.launch)。
+
+| TF 边 | 默认主线发布者/来源 | 设计约束 |
+| --- | --- | --- |
+| `map -> odom` | `map_odom_align_bridge`，稳定定位分支 | 切到全局 EKF 或室内 AMCL 时重新核对唯一发布者 |
+| `odom -> base_link` | `ekf_local` | 完整系统关闭底盘的同名 TF；独立 `driver.launch` 默认可发布 |
+| `base_link -> body/livox_frame` | 完整 launch 静态 TF：`0.1, 0, 0.35 m` | 对应真实安装标定；FAST-LIO 自带 `camera_init -> body` 广播当前已注释 |
+| `odom -> camera_init` | 完整 launch 静态单位变换 | 必须与 LIO 输出坐标解释一致 |
+| `base_link -> gps_link` | 参数化静态 TF，默认 `0, 0, 0.25 m` | 不能仅因有该 TF 就认为 GPS 投影已完成天线杆臂补偿 |
+
+`gps_fix_to_map_odom.py` 将经纬度直接投影为平面位置，未在投影函数中利用天线偏移做车体中心补偿；若实际天线存在水平偏移，后续应明确定位参考点并验证转弯时误差。地图目标、OSM、GPS 共用 datum；云端地图坐标制与设备经纬度是否一致也需接口确认。
+
+`map_odom_align_bridge` 输入超时后会告警并继续广播最后可用变换，所以 **TF 可查询不等于定位数据新鲜**。自动行驶授权应同时检查全局桥安全状态、mux 心跳和扫描健康，不能只看 RViz 位置是否存在。
+
+### 23.2 时间与消息身份
+
+GNSS 源时间、ROS 消息时间、接收时间和单调时钟是四种不同概念。GNSS 守门器核对源样本时间与配对；相机投影和掉头扫描需要采集时刻 TF；mux 的定位心跳采用单调时钟，但速度消息年龄仍用 ROS 时间。后续回放、GPU/NUC 同步、`use_sim_time` 和系统校时方案均需覆盖这些差异。
+
+路径和目标通过不同 ROS 连接到达，存在先后顺序差异；当前已有路径身份、回调缓存和主循环装载机制。云端路径 JSON 无任务 ID 或时间戳，`/goal_arrived` 也只是字符串 `0/1`。若需要多任务调度，应另行设计任务标识、接受/失败/取消/完成状态及幂等行为，不能仅凭 latched 消息判断最新任务完成。
+
+## 24. 阿克曼参数与默认配置基线
+
+以下为当前文件值，现场以加载后的 ROS 参数和模型为准。
+
+| 项目 | 当前主线值/位置 | 对方案的影响 |
+| --- | --- | --- |
+| 运动学与轴距 | `acker`、0.67 m | `angular.z` 为前轮转角 rad；禁止当作 yaw rate 直传 |
+| 轮半径 | 驱动 0.1275 m | `CMD` 轮速由 `v/r` 得到，需实测有效滚动半径 |
+| 控制外形 | 长 0.95、宽 0.85 m | 与 DUNE 模型、扫掠碰撞、车体参考点一起标定 |
+| 规划转角/执行限幅 | YAML `max_speed[1]=0.35`；驱动 ±25° | 两层约束不同；硬件真实可达转角仍需标定 |
+| 最小路径半径 | `ipath.min_radius=1.85 m` | 理想自行车模型 `0.67/tan(0.35)≈1.84 m`，与配置基本一致；不代表实车最小掉头宽度 |
+| 参考速度 | 室外 `ref_speed=0.8 m/s` | 文件注释仍有 0.5 m/s，使用数值而非旧注释 |
+| 预测配置 | 50 步 × 0.1 s，约 5 s | 不等于控制循环每次计算耗时；主循环名义 50 Hz 需实测 |
+| 模型文件 | `acker_robot_default_6/model_5000.pth` | 完整 launch 覆盖 YAML 的 `dune_checkpoint: None` |
+| 到达阈值 | `arrive_threshold=0.5 m` | 地图/GNSS误差与几何终点阈值应分开测量 |
+| 速度死区 | 驱动 `abs(v)<0.05 m/s` 时速度与转角清零 | 低速跟踪和停车回正行为受此影响 |
+| OSM 右偏 | enable=true，但 `osm_max_right_lane_offset=0.0` | 当前主线实际不右移，回退通常是原中心线，不能只看 enable |
+| 起终点道路吸附 | 各 50 m | 是允许吸附的搜索阈值，不是车到道路之间已验证可行驶 |
+| 感知保护 | scan/TF 0.5 s，恢复稳定 0.5 s，过滤空点 2 s | 全 inf 在普通扫描健康策略和掉头空间认证中的意义不同 |
+
+TEB、仿真和独立直跟分支必须单独核对角速度/转角转换、TF 和速度出口，不能默认与主线同一语义。NeuPAN 算法本体由外部 Python `neupan` 包提供，仓库主要是 ROS 包装；后续修改优化器需要固定实际包版本、源码位置、依赖和模型哈希，不能只记录本仓库 commit。
+
+## 25. 风险分级与后续方案优先级
+
+以下是本次静态审查的设计输入，不表示本轮已经修改控制程序。
+
+| 优先级 | 事实/缺口与证据 | 后续工作及验收重点 |
+| --- | --- | --- |
+| P0 | mux 能处理源超时，但 `base_driver_node.py` 未见独立命令超时计时器或退出停车钩子 | 核实 MCU 看门狗；设计底盘最终失联保护，验证 mux 崩溃、串口断开、进程被杀时的停止时间 |
+| P0 | `/motor/alarm` 只报警；`cmd_vel_callback` 未使用 `motor_alarm_active` 拦截 | 由硬件故障等级决定联锁和复位规则，确认 MCU 已有保护范围；不能宣称当前报警一定停车 |
+| P0 | mux/串口速度链未见统一 NaN/Inf 检查、纵向速度限幅和加速度限制 | 对来自云端等输入建立统一契约，测试非有限数、越界、反向及模式切换；避免只依赖规划器约束 |
+| P1 | GNSS Float 可续预算，绝对位置精度未由残差保证 | 分段统计 Fixed/Float/失锁的横向、航向和终点误差，建立可接受运行区域与退化策略 |
+| P1 | OSM 宽度可使用估算值，吸附范围较大，默认右偏量为零 | 核实道路宽度、禁行/单行、实际边界和车辆可达性；路网可达不等于车体可通行 |
+| P1 | 相机路径依赖采集时间、外参、平面地面假设和道路段缓存 | 验证坡道、路口、遮挡、旧帧、缓存失效及从相机回退 OSM 时的横向跃迁 |
+| P1 | 外部 NeuPAN 求解器；当前入口会保存异常证据后重抛 | 用故障快照复现求解异常，测量 p95/p99 求解耗时和超时停车；不能将诊断记录视为自动恢复 |
+| P1 | 自动/手动切换可以立即使用仍新鲜的旧缓存指令；模式本身无心跳 | 明确接管/恢复是否需显式确认与新指令，定义任务暂停/恢复语义 |
+| P2 | 环境、地图绝对路径、算法依赖和多套配置分散 | 固化部署清单、参数快照、模型版本和离线回归；减少脚本默认值与 launch 覆盖差异 |
+| P2 | `.codegraph/cache` 部分文件被 Git 跟踪，分析会产生索引差异 | 后续单独考虑索引管理策略；本轮恢复分析产生的缓存变更，仅保留文档修改 |
+
+建议实施顺序：先确认最终执行失联保护和输入契约，再完成几何/时间/定位标定，随后稳定 OSM 跟踪与掉头，最后扩大视觉靠右使用范围。每一步保留原始输入、配置、版本和成功/失败指标，不同时更改定位、全局路径和控制权重来解释同一次现象。
+
+## 26. 可复现实验与验收清单
+
+| 场景 | 必须观察的结果 | 建议记录 |
+| --- | --- | --- |
+| 初始化和重复目标 | 未初始化保持停车；新目标装载；重复旧路径不重启任务 | GNSS状态、目标、路径时间戳、到达状态 |
+| 桥底失锁和恢复 | 预算累积、超限停车、恢复窗口与校正连续性 | 原始fix/GGA/heading、local/global odom、gps_guard |
+| Float 连续运行 | 预算更新有新鲜稳定窗口支持，航向不被无效GNSS改写 | `runtime_position`、源时间、绝对误差基准 |
+| 扫描/定位心跳中断 | 对应原因明确，最终指令在规定时限归零 | scan_health、mux status、selected及实际轮速 |
+| 自动/手动接管 | 唯一速度源、遥控断流停车、恢复行为符合约定 | mode、remote、auto、selected |
+| 反向路线/窄路/障碍/未知 | 搜索时停车；仅可行前进连接获准；失败保持阻塞 | route_connection、采集时刻scan/TF、车体轨迹 |
+| 相机迟到/断流/错路线 | 影子模式不控车；控制模式正确回退或停车 | camera_right/status、候选/原始路径、camera_path_guard |
+| 求解器/进程/串口故障 | 异常证据完整；独立最终停车链起效 | failure快照、runtime、motor、串口/MCU记录 |
+
+现有 [vehicle_data.yaml](src/vehicle_bag_recorder/config/vehicle_data.yaml) 已包含多项状态、路径、控制、电机和资源话题；相机专题使用 [camera_right_test.yaml](src/vehicle_bag_recorder/config/camera_right_test.yaml)，不要把第 21 节简表当作完整录制配置。
+
+建议统一实验报告：commit、完整 launch 参数、地图/模型/外参哈希、软件环境、场景与天气、人工接管次数、路径横向误差 p95/最大值、终点误差、最小净距、指令到执行延迟、停止时间/距离、求解 p95/p99。数值验收门槛需要结合车辆制动性能与使用场景确认，本次不虚构实车指标。
+
+### 本次验证范围（2026-10-19）
+
+- 已完成核心 launch、源码、参数与 codegraph 的交叉分析；未启动任何实车节点、未发送运动指令、未修改控制代码。
+- `/usr/bin/python3 -m unittest discover -s src/Test/tests -p 'test_*.py'`：101 项，95 通过、6 跳过；跳过项涉及可选已编译 C++/ROS 冒烟测试。输出中的宽度比较是测试脚本运行结果，不作为本次真实仿真或实车报告。
+- `lxw` 环境 Python 执行 `test_local_motion_guard.py`：11 项通过。
+- `PYTHONPATH=src/wheeltec_gps_driver/src /usr/bin/python3 -m unittest discover -s src/wheeltec_gps_driver/test -p 'test_unicore_solution.py'`：5 项，4 通过、1 跳过。上述三组共 110 项通过、7 项跳过。
+- 默认 shell 的 Python 是 Conda base 3.13，缺少 rospy/numpy/cv2；`lxw` 为 Python 3.9，但也缺少 cv2；系统 Python 有 numpy/cv2。本次 shell 的 `/opt/ros` 仅发现 humble，未发现 Noetic，且无运行中的 Docker 容器。因此 mux、低精度初始化、运行中位置校正的 ROS 依赖测试未能完成；不能据此判定业务测试失败，也不能宣称全部回归通过。
+- 未执行完整 catkin 编译、C++ worker 联调、Gazebo 或实车测试；现有 build/devel 和历史视频报告不作为当前源码通过验证的替代证据。
+
+## 27. codegraph 使用记录与后续修改导航
+
+本次使用 [codegraph 技能](/home/nuc/.codex/skills/codegraph/SKILL.md) 和 CLI 2.3.24，执行 `orient`、`symbols`、`refs`、`deps`、`callers`、`doctor`。仓库总览仅是静态索引，不识别所有 ROS launch 条件、topic remap 或外部 Python 安装布局。
+
+初始查询出现 SQLite 缓存不可用和 detailed symbol graph 缓存告警；后续切换 `--cache memory` 查询，未删除缓存、未升级工具。内存索引报告 `mixed semantics`，含 HTML import 正则回退。`deps neupan_core.py` 返回空，但源码明确导入 `osm_camera_path_guard` 和 `osm_outdoor_start_connection`，说明跨 catkin 平铺模块导入不能只靠该结果判定；`refs CameraPathGuard` 也未覆盖所有实际使用处。
+
+有效证据之一：`symbols update_runtime_position` 定位到全局桥，`callers` 找到 `update_guard` 中的真实调用，再直接阅读质量检查、预算更新和状态发布函数。后续使用示例：
+
+```bash
+codegraph symbols StartRouteConnector --root . --cache memory
+codegraph callers src/robot_base_driver/scripts/global_odom_bridge.py::update_runtime_position --root . --cache memory
+rg -n 'Subscriber|Publisher|remap|outdoor_control_path_topic' src/neupan_ros/src/neupan_core.py src/neupan_ros/example/lxw_car/launch/full_system_run.launch
+```
+
+| 后续需求 | 首要修改/阅读位置 | 必须联动核对 |
+| --- | --- | --- |
+| 桥底/Float/初始化策略 | `robot_base_driver/scripts/global_odom_bridge.py` | `navigation_core.launch`、完整 launch、三组定位测试与日志 |
+| 最终控制与接管 | `control_mode_mux.py`、`base_driver_node.py` | 云端 Twist 契约、MCU 协议、超时测试、电机状态 |
+| 道路路线和目标 | `osm_map_handler/src/global_astar_node.cpp`、`gps_goal_bridge.py` | datum、道路宽度/oneway、路径身份、云端显示简化 |
+| 掉头准入/搜索 | `osm_outdoor_start_connection.py`、`osm_hybrid_search.py`、`outdoor_hybrid_worker.cpp` | 共享 `hybrid_astar`、扫描时间与车体外形、室内回归 |
+| 相机靠右 | `osm_camera_path_refinement.py`、`osm_camera_path_guard.py` | GPU JSON契约、相机标定、消费端回退、几何测试 |
+| NeuPAN 跟踪/异常 | `neupan_core.py`、`neupan_diagnostics.py`、外部 `neupan` 包 | 模型与参数、任务切换、速度超时、失败快照 |
+
+每次方案完成后同步更新本文件的“源码基线、默认配置、风险状态、验证结果”，并注明哪些结论来自静态分析、离线测试或实车数据。
