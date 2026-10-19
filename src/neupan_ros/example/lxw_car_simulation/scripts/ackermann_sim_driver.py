@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import threading
 
 import rospy
 import tf
@@ -12,6 +13,16 @@ from sensor_msgs.msg import JointState
 
 def clamp(value, lower, upper):
     return max(lower, min(upper, value))
+
+
+def integrate_ackermann(x, y, yaw, speed, steer, wheelbase, dt):
+    """Exact constant-input bicycle arc; x/y are the rear axle."""
+    rate = speed * math.tan(steer) / wheelbase
+    next_yaw = yaw + rate * dt
+    if abs(rate) < 1e-9:
+        return x + speed * math.cos(yaw) * dt, y + speed * math.sin(yaw) * dt, next_yaw
+    return (x + speed / rate * (math.sin(next_yaw) - math.sin(yaw)),
+            y - speed / rate * (math.cos(next_yaw) - math.cos(yaw)), next_yaw)
 
 
 class AckermannSimDriver:
@@ -27,10 +38,14 @@ class AckermannSimDriver:
         self.update_rate = float(rospy.get_param("~update_rate", 50.0))
         self.cmd_timeout = max(0.0, float(rospy.get_param("~cmd_timeout", 0.5)))
         self.model_z = float(rospy.get_param("~model_z", 0.0))
+        if self.wheelbase <= 0 or self.update_rate <= 0 or self.wheel_radius <= 0:
+            raise ValueError("wheelbase, wheel radius and update rate must be positive")
+        self.command_lock = threading.Lock()
 
         self.x = float(rospy.get_param("~x", 0.0))
         self.y = float(rospy.get_param("~y", 0.0))
         self.yaw = float(rospy.get_param("~yaw", 0.0))
+        self.initial_pose = (self.x, self.y, self.yaw)
         self.v = 0.0
         self.steer = 0.0
         self.wheel_pos = 0.0
@@ -51,9 +66,13 @@ class AckermannSimDriver:
         self.model_ready = self.model_name in msg.name
 
     def cmd_callback(self, msg):
-        self.v = clamp(msg.linear.x, -self.max_speed, self.max_speed)
-        self.steer = clamp(msg.angular.z, -self.max_steer, self.max_steer)
-        self.last_cmd_time = rospy.Time.now()
+        valid = math.isfinite(msg.linear.x) and math.isfinite(msg.angular.z)
+        with self.command_lock:
+            self.v = clamp(msg.linear.x, -self.max_speed, self.max_speed) if valid else 0.0
+            self.steer = clamp(msg.angular.z, -self.max_steer, self.max_steer) if valid else 0.0
+            self.last_cmd_time = rospy.Time.now()
+        if not valid:
+            rospy.logerr_throttle(1.0, "Rejected non-finite simulated drive command")
 
     def step(self):
         now = rospy.Time.now()
@@ -65,29 +84,34 @@ class AckermannSimDriver:
                 self.last_cmd_time = None
                 self.v = 0.0
                 self.steer = 0.0
+                self.x, self.y, self.yaw = self.initial_pose
+                self.wheel_pos = 0.0
             return
         self.last_time = now
-        if self.last_cmd_time is None or (
-            self.cmd_timeout > 0.0 and (now - self.last_cmd_time).to_sec() > self.cmd_timeout
-        ):
-            self.v = 0.0
-            self.steer = 0.0
+        # Do not integrate across startup/service stalls or before model spawn.
+        dt = min(dt, 2.0 / self.update_rate)
+        with self.command_lock:
+            if not self.model_ready or self.last_cmd_time is None or (
+                self.cmd_timeout > 0.0 and (now - self.last_cmd_time).to_sec() > self.cmd_timeout
+            ):
+                self.v = 0.0
+                self.steer = 0.0
+            speed, steer = self.v, self.steer
 
         yaw_rate = 0.0
         if abs(self.wheelbase) > 1e-6:
-            yaw_rate = self.v * math.tan(self.steer) / self.wheelbase
+            yaw_rate = speed * math.tan(steer) / self.wheelbase
 
-        self.yaw += yaw_rate * dt
-        self.x += self.v * math.cos(self.yaw) * dt
-        self.y += self.v * math.sin(self.yaw) * dt
-        self.wheel_pos += (self.v / max(self.wheel_radius, 1e-6)) * dt
+        self.x, self.y, self.yaw = integrate_ackermann(
+            self.x, self.y, self.yaw, speed, steer, self.wheelbase, dt)
+        self.wheel_pos += speed / self.wheel_radius * dt
 
         quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.yaw)
-        self.publish_odom(now, quat, yaw_rate)
-        self.publish_joints(now)
+        self.publish_odom(now, quat, yaw_rate, speed)
+        self.publish_joints(now, steer)
         self.publish_model_state(quat)
 
-    def publish_odom(self, stamp, quat, yaw_rate):
+    def publish_odom(self, stamp, quat, yaw_rate, speed):
         self.tf_br.sendTransform(
             (self.x, self.y, 0.0),
             quat,
@@ -106,11 +130,11 @@ class AckermannSimDriver:
         odom.pose.pose.orientation.y = quat[1]
         odom.pose.pose.orientation.z = quat[2]
         odom.pose.pose.orientation.w = quat[3]
-        odom.twist.twist.linear.x = self.v
+        odom.twist.twist.linear.x = speed
         odom.twist.twist.angular.z = yaw_rate
         self.odom_pub.publish(odom)
 
-    def publish_joints(self, stamp):
+    def publish_joints(self, stamp, steer):
         msg = JointState()
         msg.header.stamp = stamp
         msg.name = [
@@ -122,8 +146,8 @@ class AckermannSimDriver:
             "back_right_joint",
         ]
         msg.position = [
-            self.steer,
-            self.steer,
+            steer,
+            steer,
             self.wheel_pos,
             self.wheel_pos,
             self.wheel_pos,

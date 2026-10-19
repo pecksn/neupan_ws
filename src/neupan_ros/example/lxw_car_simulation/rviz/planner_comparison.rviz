@@ -1,0 +1,61 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Fixed Frame: odom
+    Background Color: 40; 40; 40
+    Frame Rate: 20
+  Displays:
+    - Class: rviz/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+    - Class: rviz/RobotModel
+      Name: LXW CAD car
+      Enabled: true
+      Robot Description: robot_description
+    - Class: rviz/LaserScan
+      Name: Shared scan
+      Enabled: true
+      Topic: /scan
+      Size (Pixels): 3
+      Style: Points
+    - Class: rviz/Path
+      Name: Common reference
+      Enabled: true
+      Topic: /initial_path
+      Color: 30; 220; 80
+      Line Style: Lines
+      Line Width: 0.04
+    - Class: rviz/Path
+      Name: Local planner output
+      Enabled: true
+      Topic: /planner_sim/local_plan
+      Color: 230; 80; 210
+      Line Style: Lines
+      Line Width: 0.04
+    - Class: rviz/Pose
+      Name: Goal
+      Enabled: true
+      Topic: /move_base_simple/goal
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+  Views:
+    Current:
+      Class: rviz/TopDownOrtho
+      Name: Current View
+      Target Frame: odom
+      Scale: 65
+      X: 4
+      Y: 0
+Window Geometry:
+  Width: 1200
+  Height: 800

@@ -1,0 +1,34 @@
+{
+  "source": "/home/nuc/lxw/neupan_ws/src/teb_test/config/teb_local_planner.yaml",
+  "source_sha256": "b7f3a3c84414c6d4417f0a0c29c1a8908b8acc266bee9d796d44b13c0de85baa",
+  "overrides": {
+    "odom_topic": "/odom",
+    "map_frame": "odom",
+    "max_vel_x": 0.5,
+    "max_vel_x_backwards": 0.5,
+    "xy_goal_tolerance": 0.15,
+    "footprint_model": {
+      "type": "polygon",
+      "vertices": [
+        [
+          -0.14,
+          -0.375
+        ],
+        [
+          0.81,
+          -0.375
+        ],
+        [
+          0.81,
+          0.375
+        ],
+        [
+          -0.14,
+          0.375
+        ]
+      ]
+    }
+  },
+  "costmap": "shared simulation costmap, same scan, rear-axle frame; real move_base recoveries are not reproduced",
+  "native_teb_parameters_other_than_overrides": "copied verbatim in value from confirmed source, unspecified parameters use installed plugin defaults"
+}

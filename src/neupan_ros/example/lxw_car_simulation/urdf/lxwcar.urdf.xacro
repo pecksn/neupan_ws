@@ -18,6 +18,7 @@
   <xacro:property name="left_wheel_y" value="${track_width / 2.0}"/>
   <xacro:property name="right_wheel_y" value="${-track_width / 2.0}"/>
   <xacro:arg name="cad_visual" default="true"/>
+  <xacro:arg name="scan_topic" default="/scan"/>
 
   <xacro:include filename="lxwcar.gazebo.xacro"/>
 
@@ -26,7 +27,8 @@
   <joint name="base_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <!-- Bicycle state is the rear axle; base_link remains the body centre. -->
+    <origin xyz="${wheelbase / 2.0} 0 0" rpy="0 0 0"/>
   </joint>
 
   <link name="base_link">

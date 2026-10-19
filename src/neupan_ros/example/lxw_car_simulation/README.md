@@ -1,30 +1,39 @@
 # LXW 车辆仿真（ROS1 / Gazebo）
 
-统一按资源类型组织，室内/局部与室外文件共用目录，通过 `outdoor_` 文件名区分。不在源码目录存放测试结果。
+这是车辆 Gazebo 仿真的统一目录，包含 NeuPAN、TEB 和室外 OSM 场景。`neupan_ros` 是所属 ROS 包名，不表示此目录只能运行 NeuPAN。原先新增的 `src/lxw_planner_sim` 已合并到这里。
+
+文件按资源类型归类：`comparison_` / `planner_comparison` 表示两种规划器共用的对比功能，`outdoor_` 表示室外仿真。测试结果分类放在工作空间的 `videos/` 下。
 
 ## 目录
 
 ```text
 lxw_car_simulation/
 ├── launch/   启动入口与组件装配
-├── scripts/  虚拟底盘、目标显示、室外测试工具
-├── config/   局部仿真与 RVO 参数
+├── scripts/  虚拟底盘、规划器适配、对比/室外测试工具
+├── src/      TEB 仿真适配器（加载官方 TEB 插件）
+├── config/   原局部、NeuPAN/TEB 对比与 RVO 参数
 ├── maps/     室外 OSM 测试路网
 ├── worlds/   Gazebo 场景（含 outdoor_roads.world）
 ├── urdf/     车辆模型（含 outdoor_lxwcar.urdf.xacro）
 ├── rviz/     显示配置（含 outdoor_simulation.rviz）
 ├── meshes/   共用车辆 CAD 外观
 ├── models/   共用箱体、圆柱障碍物
+├── tests/    仿真几何、停车保护与原入口回归检查
+├── docs/     规划器对比说明
+├── CMakeLists.txt  可选 TEB 仿真编译配置
 └── README.md
 ```
 
 | 文件 | 用途 |
 |---|---|
 | [launch/lxw_car_simulation.launch](launch/lxw_car_simulation.launch) | 原室内/局部仿真入口 |
+| [launch/planner_comparison.launch](launch/planner_comparison.launch) | 统一对比场景，通过 `planner:=neupan` / `planner:=teb` 切换规划器 |
 | [launch/neupan_lxwcar_gazebo.launch](launch/neupan_lxwcar_gazebo.launch) | 上述入口调用的 Gazebo 与控制组件装配 |
 | [launch/outdoor_simulation.launch](launch/outdoor_simulation.launch) | 室外 OSM 往返仿真装配，由测试脚本在独立 master 中启动 |
 | [scripts/outdoor_simulation.py](scripts/outdoor_simulation.py) | 室外一键运行、传感器桥接、自动测试和录制 |
-| [scripts/ackermann_sim_driver.py](scripts/ackermann_sim_driver.py) | 两种仿真共用的运动学虚拟底盘 |
+| [scripts/planner_comparison.py](scripts/planner_comparison.py) | 两种规划器自动对比、指标采集与录制 |
+| [scripts/export_comparison_video.py](scripts/export_comparison_video.py) | 1080p 左右对比视频：真实 Gazebo 窗口与等比例轨迹 |
+| [scripts/ackermann_sim_driver.py](scripts/ackermann_sim_driver.py) | 各仿真共用的运动学虚拟底盘 |
 | [scripts/publish_demo_goal.py](scripts/publish_demo_goal.py) | 原局部仿真的演示目标发布 |
 | [scripts/gazebo_goal_marker.py](scripts/gazebo_goal_marker.py) | Gazebo 目标标记，无碰撞、不进入雷达回波 |
 
@@ -38,6 +47,24 @@ conda activate lxw
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
 ```
+
+## 快速启动 NeuPAN / TEB
+
+迁移后先编译一次：
+
+```bash
+catkin_make --pkg neupan_ros -j2 -l2
+source devel/setup.bash
+```
+
+选择其中一个启动，两个入口使用同一车辆和场景：
+
+```bash
+roslaunch neupan_ros planner_comparison.launch planner:=neupan scenario:=static rviz:=true
+roslaunch neupan_ros planner_comparison.launch planner:=teb scenario:=static rviz:=true
+```
+
+在 RViz 中点击 `2D Nav Goal` 下发目标；`scenario:=crossing` 为固定障碍绕行与会主动让行的移动障碍交互，`scenario:=crossing_stress` 保留原来不避让车辆的强制横穿压测。两者用途不同，自动对比和录像方法见 [规划器对比说明](docs/planner_comparison.md)。
 
 ## 室外返程测试
 
@@ -120,9 +147,23 @@ roslaunch neupan_ros lxw_car_simulation.launch
 roslaunch neupan_ros lxw_car_simulation.launch publish_demo_goal:=true
 ```
 
-该入口不走室外 OSM A*，使用 [config/neupan_config_sim.yaml](config/neupan_config_sim.yaml)、模型 `acker_robot_default_2` 和原车辆模型；规划宽度/雷达自过滤宽度为 0.75 m。默认启用自适应避障参数，不要与室外 0.85 m 规划外形混用。原组件入口 `neupan_lxwcar_gazebo.launch` 仍可直接启动。
+该入口不走室外 OSM A*，使用 [config/neupan_config_sim.yaml](config/neupan_config_sim.yaml)、模型 `acker_robot_default_2` 和局部车辆模型；规划宽度为 0.75 m。默认启用自适应避障参数，不要与室外 0.85 m 规划外形混用。原组件入口 `neupan_lxwcar_gazebo.launch` 仍可直接启动。
 
-默认场景为 `worlds/lxw_car_obstacles.world`，不依赖 RVO。可用 `cad_visual:=false` 显示基础几何外观，用 `show_goal_marker:=false` 关闭目标标记。
+2026-10-19 仿真修正：`base_footprint` 改为后轴参考，`base_link` 位于其前方0.335 m，与 NeuPAN Ackermann 外形一致；原局部规划速度上限收敛到参考速度0.5 m/s，并扩大参考线重捕获范围。二维射线高于车体，默认关闭原先以后轴为中心的对称车体自过滤，避免丢弃近场真实障碍。共用底盘增加非有限指令拒绝、时钟复位及精确圆弧积分，实车配置未修改。
+
+原局部入口的默认场景为 `worlds/lxw_car_obstacles.world`，不依赖 RVO。可用 `cad_visual:=false` 显示基础几何外观，用 `show_goal_marker:=false` 关闭目标标记。
+
+### NeuPAN / TEB 对比
+
+对比工具已归入本目录，使用相同车辆、10 Hz控制、扫描、参考线和可重复动态障碍对比两者，详见 [规划器对比说明](docs/planner_comparison.md)：
+
+```bash
+rosrun neupan_ros planner_comparison.py run --scenario dynamics --teb-profile field --repeats 2 --record-gazebo
+```
+
+NeuPAN 默认使用原局部仿真的自适应调参（`--neupan-profile adaptive`），历史固定参数实验可用 `--neupan-profile fixed` 复现。
+
+结果在 `videos/planner_comparison/日期_时间/`，包括真实 Gazebo 录屏、轨迹、间距和性能报告。TEB可单独用 `--planner teb --scenario crossing --repeats 1 --gui` 运行。默认使用用户确认的实车 TEB 参数的仿真适配副本，`--teb-profile baseline` 可比较原仿真参数组；不修改 `src/teb_test` 的实车配置。
 
 ### 动态障碍物（可选）
 
@@ -141,4 +182,4 @@ roslaunch neupan_ros lxw_car_simulation.launch \
 - CAD 网格 `meshes/lxwcar_cad.stl` 来自毫米单位的 STEP，按 0.001 缩放，约 0.938×0.745×0.359 m，仅作外观；简化碰撞体与传感器仍独立生效。STL 不保留 SolidWorks 颜色，Gazebo 使用灰色材质。
 - 实车 MID360 是 3D 点云；室外这里仅生成安装高度处的二维射线切片并转成点云，复现实车外参/过滤/投影链，不模拟真实扫描花纹、遮挡、噪声、低矮障碍或完整 FAST-LIO。室内旧虚拟传感器参数单独保留，不作为实车标定。
 - 共用虚拟底盘积分 Ackermann 模型，发布里程计、TF 和轮胎/转向关节状态，再通过 `/gazebo/set_model_state` 更新车体。它不是电机或轮胎动力学插件；默认指令超时 0.5 s 自动停止（`cmd_timeout`）。
-- 仿真通过不代表实车验收。室内默认车辆/搜索配置保持原样；共享 Hybrid A* 仅额外修复失败返回及边界保护。
+- 仿真通过不代表实车验收。局部仿真的后轴参考与限速修正见上；室外配置、实车参数与共享 Hybrid A* 本轮未修改。

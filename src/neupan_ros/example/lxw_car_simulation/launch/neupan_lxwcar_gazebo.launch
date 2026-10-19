@@ -15,6 +15,13 @@
     <arg name="refresh_initial_path" default="true"/>
     <arg name="rviz_config" default="$(find neupan_ros)/example/lxw_car_simulation/rviz/lxw_car_simulation.rviz"/>
     <arg name="cad_visual" default="true"/>
+    <arg name="start_neupan" default="true"/>
+    <arg name="command_topic" default="/neupan_cmd_vel"/>
+    <arg name="scan_topic" default="/scan"/>
+    <!-- The ray slice is above the car. A rear-axle-centred box would discard
+         real close returns; comparison uses its shared body-centred filter. -->
+    <arg name="scan_self_filter" default="false"/>
+    <arg name="neupan_goal_topic" default="/move_base_simple/goal"/>
     <arg name="publish_demo_goal" default="false"/>
     <arg name="dynamic_obstacles" default="false"/>
     <arg name="obstacle_max_speed" default="0.5"/>
@@ -57,7 +64,7 @@
     </include>
 
     <param name="robot_description"
-           command="$(find xacro)/xacro $(find neupan_ros)/example/lxw_car_simulation/urdf/lxwcar.urdf.xacro cad_visual:=$(arg cad_visual)"/>
+           command="$(find xacro)/xacro $(find neupan_ros)/example/lxw_car_simulation/urdf/lxwcar.urdf.xacro cad_visual:=$(arg cad_visual) scan_topic:=$(arg scan_topic)"/>
 
     <node pkg="gazebo_ros" type="spawn_model" name="spawn_lxwcar" output="screen"
           args="-urdf -param robot_description -model lxwcar -x $(arg x) -y $(arg y) -z $(arg z) -Y $(arg yaw)"/>
@@ -72,7 +79,7 @@
     <node pkg="neupan_ros" type="ackermann_sim_driver.py"
           name="ackermann_sim_driver" output="screen">
         <param name="model_name" value="lxwcar"/>
-        <param name="cmd_topic" value="/neupan_cmd_vel"/>
+        <param name="cmd_topic" value="$(arg command_topic)"/>
         <param name="odom_frame" value="odom"/>
         <param name="base_frame" value="base_footprint"/>
         <param name="wheelbase" value="0.67"/>
@@ -86,15 +93,15 @@
         <param name="model_z" value="$(arg z)"/>
     </node>
 
-    <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
+    <node if="$(arg start_neupan)" pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
         <param name="config_file" value="$(arg config_file)"/>
         <param name="map_frame" value="odom"/>
-        <param name="base_frame" value="base_link"/>
+        <param name="base_frame" value="base_footprint"/>
         <param name="lidar_frame" value="laser_link"/>
         <param name="scan_downsample" value="1"/>
         <param name="scan_range" value="0.1 20.0"/>
         <param name="scan_angle_range" value="-3.14 3.14"/>
-        <param name="scan_self_filter" value="true"/>
+        <param name="scan_self_filter" value="$(arg scan_self_filter)"/>
         <param name="scan_self_filter_length" value="0.95"/>
         <param name="scan_self_filter_width" value="0.75"/>
         <param name="scan_self_filter_margin" value="0.05"/>
@@ -111,7 +118,7 @@
         <param name="stop_on_scan_fault" value="true"/>
         <param name="scan_timeout" value="0.5"/>
         <param name="scan_transform_timeout" value="0.5"/>
-        <remap from="/neupan_goal" to="/move_base_simple/goal"/>
+        <remap from="/neupan_goal" to="$(arg neupan_goal_topic)"/>
     </node>
 
     <node if="$(arg publish_demo_goal)" pkg="neupan_ros" type="publish_demo_goal.py"

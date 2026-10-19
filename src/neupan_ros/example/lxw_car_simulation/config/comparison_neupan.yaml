@@ -1,0 +1,30 @@
+receding: 30
+step_time: 0.1
+ref_speed: 0.5
+device: cpu
+time_print: false
+collision_threshold: 0.001
+robot:
+  kinematics: acker
+  wheelbase: 0.67
+  max_speed: [0.5, 0.35]
+  max_acce: [0.8, 0.20]
+  length: 0.95
+  width: 0.75
+ipath:
+  interval: 0.09
+  waypoints: []
+  curve_style: line
+  min_radius: 1.85
+  loop: false
+  arrive_threshold: 0.15
+  close_threshold: 0.3
+  ind_range: 80
+  arrive_index_threshold: 3
+pan:
+  iter_num: 2
+  dune_max_num: 100
+  nrmp_max_num: 10
+  dune_checkpoint: null
+  iter_threshold: 0.1
+adjust: {q_s: 1.2, p_u: 21.0, eta: 0.5, d_max: 0.5, d_min: 0.2}

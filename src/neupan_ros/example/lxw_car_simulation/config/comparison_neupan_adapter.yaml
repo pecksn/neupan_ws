@@ -1,0 +1,6 @@
+# Same adaptive schedule as neupan_lxwcar_gazebo.launch. Simulation only.
+adaptive_far_distance: 2.0
+adaptive_near_distance: 1.0
+adaptive_front_half_angle_deg: 60.0
+clear_adjust_profile: [1.2, 21.0, 0.05, 0.3, 0.2]
+avoid_adjust_profile: [2.8, 18.0, 1.5, 1.0, 0.2]

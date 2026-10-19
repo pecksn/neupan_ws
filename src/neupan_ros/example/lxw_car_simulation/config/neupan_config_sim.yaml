@@ -10,7 +10,7 @@ collision_threshold: 0.001
 robot:
   kinematics: 'acker'
   wheelbase: 0.67
-  max_speed: [1.5, 0.35]
+  max_speed: [0.5, 0.35]
   max_acce: [0.8, 0.20]
   length: 0.95
   width: 0.75
@@ -25,6 +25,7 @@ ipath:
   arrive_threshold: 0.5
   close_threshold: 0.30
   arrive_index_threshold: 2
+  ind_range: 80
 
 # proximal alternating minimization network
 pan:

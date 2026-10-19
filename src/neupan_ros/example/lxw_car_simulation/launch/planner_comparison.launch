@@ -1,0 +1,56 @@
+<launch>
+  <arg name="planner" default="neupan" doc="neupan or teb"/>
+  <arg name="teb_config_file" default="$(find neupan_ros)/example/lxw_car_simulation/config/comparison_teb_field.yaml"/>
+  <arg name="neupan_profile" default="adaptive" doc="adaptive: original simulation schedule; fixed: historical comparison"/>
+  <arg name="start_controller" default="true" doc="false only for simulated watchdog checks"/>
+  <arg name="scenario" default="open" doc="open / static / lead_slow / lead_stop / crossing_once / crossing (yielding) / crossing_stress"/>
+  <arg name="gui" default="true"/>
+  <arg name="rviz" default="false"/>
+  <arg name="automated" default="false"/>
+  <arg name="output_dir" default="/tmp/lxw_car_simulation/planner_comparison"/>
+  <arg name="timeout" default="75"/>
+  <arg name="recording_required" default="false"/>
+  <env name="GAZEBO_MODEL_DATABASE_URI" value=""/>
+  <group>
+    <remap from="/neupan_cmd_vel" to="/planner_sim/raw_cmd"/>
+    <include file="$(find neupan_ros)/example/lxw_car_simulation/launch/neupan_lxwcar_gazebo.launch">
+      <arg name="world_name" value="$(find neupan_ros)/example/lxw_car_simulation/worlds/planner_comparison.world"/>
+      <arg name="gui" value="$(arg gui)"/><arg name="rviz" value="$(arg rviz)"/>
+      <arg name="rviz_config" value="$(find neupan_ros)/example/lxw_car_simulation/rviz/planner_comparison.rviz"/>
+      <arg name="start_neupan" value="false"/>
+      <arg name="config_file" value="$(find neupan_ros)/example/lxw_car_simulation/config/comparison_neupan.yaml"/>
+      <arg name="enable_adaptive_adjust" value="$(eval arg('neupan_profile') == 'adaptive')"/>
+      <arg name="command_topic" value="/planner_sim/cmd"/>
+      <arg name="scan_topic" value="/planner_sim/scan_raw"/>
+      <arg name="scan_self_filter" value="false"/>
+      <arg name="neupan_goal_topic" value="/planner_sim/unused_direct_goal"/>
+    </include>
+  </group>
+  <node if="$(eval arg('planner') == 'neupan' and arg('start_controller'))" pkg="neupan_ros" type="neupan_sim_controller.py"
+        name="neupan_control" output="screen" required="true">
+    <rosparam command="load" file="$(find neupan_ros)/example/lxw_car_simulation/config/comparison_neupan_adapter.yaml"/>
+    <param name="adjust_mode" value="$(arg neupan_profile)"/>
+    <param name="config_file" value="$(find neupan_ros)/example/lxw_car_simulation/config/comparison_neupan.yaml"/>
+    <param name="dune_checkpoint" value="$(find neupan_ros)/example/lxw_car/model/acker_robot_default_2/model_5000.pth"/>
+    <param name="map_frame" value="odom"/><param name="base_frame" value="base_footprint"/>
+    <param name="lidar_frame" value="laser_link"/>
+    <param name="scan_range" value="0.1 20.0"/><param name="scan_angle_range" value="-3.14 3.14"/>
+    <param name="scan_self_filter" value="false"/>
+    <param name="refresh_initial_path" value="true"/><param name="stop_on_scan_fault" value="true"/>
+    <param name="diagnostic_log_dir" value="$(arg output_dir)"/>
+    <remap from="/neupan_cmd_vel" to="/planner_sim/raw_cmd"/>
+    <remap from="/neupan_goal" to="/planner_sim/unused_direct_goal"/>
+  </node>
+  <node if="$(eval arg('planner') == 'teb' and arg('start_controller'))" pkg="neupan_ros" type="teb_sim_controller"
+        name="teb_controller" output="screen" required="true">
+    <rosparam command="load" file="$(arg teb_config_file)"/>
+  </node>
+  <node pkg="neupan_ros" type="planner_comparison.py" name="comparison_scene" args="scene" output="screen" required="true">
+    <param name="scenario" value="$(arg scenario)"/>
+  </node>
+  <node if="$(arg automated)" pkg="neupan_ros" type="planner_comparison.py" name="comparison_episode" args="episode" output="screen">
+    <param name="planner" value="$(arg planner)"/><param name="scenario" value="$(arg scenario)"/>
+    <param name="output_dir" value="$(arg output_dir)"/><param name="timeout" value="$(arg timeout)"/>
+    <param name="recording_required" value="$(arg recording_required)"/>
+  </node>
+</launch>

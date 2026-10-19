@@ -87,7 +87,7 @@
         </noise>
       </ray>
       <plugin name="gazebo_ros_laser" filename="libgazebo_ros_laser.so">
-        <topicName>/scan</topicName>
+        <topicName>$(arg scan_topic)</topicName>
         <frameName>laser_link</frameName>
       </plugin>
     </sensor>
