@@ -17,6 +17,8 @@
     <arg name="cad_visual" default="true"/>
     <arg name="start_neupan" default="true"/>
     <arg name="command_topic" default="/neupan_cmd_vel"/>
+    <arg name="model_states_topic" default="/gazebo/model_states"/>
+    <arg name="model_state_command_topic" default=""/>
     <arg name="scan_topic" default="/scan"/>
     <!-- The ray slice is above the car. A rear-axle-centred box would discard
          real close returns; comparison uses its shared body-centred filter. -->
@@ -79,6 +81,8 @@
     <node pkg="neupan_ros" type="ackermann_sim_driver.py"
           name="ackermann_sim_driver" output="screen">
         <param name="model_name" value="lxwcar"/>
+        <param name="model_states_topic" value="$(arg model_states_topic)"/>
+        <param name="model_state_command_topic" value="$(arg model_state_command_topic)"/>
         <param name="cmd_topic" value="$(arg command_topic)"/>
         <param name="odom_frame" value="odom"/>
         <param name="base_frame" value="base_footprint"/>

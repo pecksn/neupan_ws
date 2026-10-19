@@ -16,6 +16,12 @@ source devel/setup.bash
 
 TEB 仿真额外使用 `teb_local_planner`、`costmap_converter` 和 ROS navigation 的代价地图/插件接口。本机 ROS1 容器已安装；其他环境可安装 `ros-noetic-teb-local-planner` 和 `ros-noetic-costmap-converter`。TEB 的编译配置仅在本仿真目录的 `CMakeLists.txt` 中；缺少编译依赖时跳过适配器，也可用 `-DBUILD_LXW_GAZEBO_TEB=OFF` 关闭。重新启用时传 `-DBUILD_LXW_GAZEBO_TEB=ON`。
 
+自动评估额外使用 `topic_tools/throttle`（`ros-noetic-topic-tools`），将 Gazebo 每个物理步发布的模型真值限频到30 Hz后送给 Python 评估节点；规划器仍使用原扫描和控制频率。对比世界的共同目标墙钟速率为0.5倍，控制、障碍时序与视频播放按仿真秒。此设置用于减少软件录屏负载，不作为实车实时性能证明。每轮记录扫描/里程计数据年龄及最大遥测采样间隔，扫描和指令超时阈值仍为0.5仿真秒。
+
+对比master显式设置 `/gazebo/pub_clock_frequency=100`，避免 `empty_world.launch` 中未启用的时钟频率参数导致按每个物理步广播。每轮 `telemetry.bag` 由独立C++ rosbag记录时钟、扫描、里程计、模型真值及指令，用于核对消息连续性和完成状态，避免仅依赖Python评估采样判断。
+
+对比世界使用仿真专用 `liblxw_sim_pose.so`，在Gazebo世界更新线程应用车辆及障碍位姿，避免50Hz调用外部位姿接口时反复暂停/恢复世界。需安装Gazebo开发依赖后重新 `catkin_make --pkg neupan_ros`。虚拟底盘仍按相同Ackermann运动学积分，不是轮胎动力学。普通局部/室外入口的默认位姿接口保持各自原设置。
+
 常用文件：`launch/planner_comparison.launch` 装配场景，`config/comparison_neupan.yaml` 配置 NeuPAN，`config/comparison_teb_field.yaml` 配置 TEB；`config/comparison_teb.yaml` 保留原仿真参数组，`scripts/planner_comparison.py` 执行对比，`src/teb_sim_controller.cpp` 加载已安装的官方 TEB 插件。以上相对路径均以 `lxw_car_simulation/` 为起点。
 
 两种规划器 × 三个固定时序动态场景，各重复两次，并录制真实 Gazebo 窗口：
@@ -121,7 +127,7 @@ python3 src/neupan_ros/example/lxw_car_simulation/tests/test_command_gate.py \
 
 ```bash
 rosrun neupan_ros export_comparison_video.py \
-  /home/nuc/lxw/neupan_ws/videos/planner_comparison/20261019_dynamic_hesitation_final --all-repeats
+  /home/nuc/lxw/neupan_ws/videos/planner_comparison/20261019_adaptive_full_comparison --all-repeats
 ```
 
 输出到该轮 `presentation/`，包括 `teb_neupan_gazebo_1080p.mp4`（真实窗口和下方轨迹）、`teb_neupan_trajectory_1080p.mp4`（等比例轨迹回放）、预览图及视频来源/分段信息。均为 1920×1080、15 fps、H.264/yuv420p、方形像素，画面等比例缩放。
@@ -132,22 +138,20 @@ rosrun neupan_ros export_comparison_video.py \
 
 TEB 参数含义依据[官方 Noetic 参数定义](https://github.com/rst-tu-dortmund/teb_local_planner/blob/noetic-devel/cfg/TebLocalPlannerReconfigure.cfg)，执行时以本机安装版本为准。
 
-## 2026-10-19 实测
+## 2026-10-19 最新完整对比
 
-**配置校正**：[NeuPAN横穿诊断与补测](../../../../../videos/planner_comparison/20261019_neupan_collision_diagnosis/README.md)。历史12轮使用关闭自适应的 `fixed` 模式，不能当作原局部入口默认配置的复现。恢复原仿真自适应后，横穿补测2/2到达（约18.4秒，最小净距约0.27米）。这支持接入配置影响结果，尚未从历史记录中唯一定位碰撞根因。
+[最新视频及检查说明](../../../../../videos/planner_comparison/20261019_adaptive_full_comparison/presentation/README.md)：原仿真自适应 NeuPAN 对比用户确认实车参数的 TEB 仿真适配副本。三个固定时序场景各两轮，共12轮，全部保留在两份1080p视频中。
 
-历史 [固定时序动态场景视频与报告](../../../../../videos/planner_comparison/20261019_dynamic_hesitation_final/presentation/README.md)：三种场景各两轮，TEB使用用户确认的实车参数适配副本。TEB为6/6到达；NeuPAN在慢行/停车再起步场景4/4到达，单次横穿一次车体重叠、一次超时。完整视频包含所有重复和失败过程。
+| 场景 | NeuPAN 到达 | TEB 到达 | NeuPAN 中途停顿 | TEB 中途停顿 |
+|---|---|---|---|---|
+| 前方慢行 | 2/2 | 2/2 | 0 | 2次，0.8秒 |
+| 停车再起步 | 2/2 | 1/2 | 0 | 2次，4.15秒 |
+| 单次横穿 | 2/2 | 2/2 | 0 | 0 |
 
-[TEB参数组对照](../../../../../videos/planner_comparison/20261019_dynamic_hesitation_final/parameter_comparison.md)：原仿真参数组额外6轮均到达，仅一轮横穿停顿0.4秒；实测参数适配组未记录到中途停顿。当前未稳定复现实车明显卡顿，不能据此归因于参数。两组GUI负载不同、多个参数同时切换，微小差异不作因果结论。实车配置文件未修改。
+NeuPAN停车再起步第2轮起步前出现最大0.28秒消息间隔，未通过全程连续性审计；终点停车及位置检查通过。TEB未完成的一轮在接触附近触发约0.272米的Gazebo/里程计偏离保护。两项均保留，不能把到达记录当作全部严格审计通过。
 
-修正后的 [交互横穿视频与报告](../../../../../videos/planner_comparison/20261019_interactive_reference/presentation/README.md)：共用可行绕行参考线，障碍遇冲突会主动让行，NeuPAN与TEB均到达且没有碰撞。最小车体间距分别为0.195 / 0.220 m；障碍让行次数分别为1 / 4。该结果包含障碍让行的作用，不等于机器人独立动态预测/避障能力通过。诊断过程按类别保存在该轮 `diagnostics/` 下。
+共同底盘改用世界更新线程传送运动学位姿，减少原外部位姿接口暂停/恢复世界造成的消息间断；不是轮胎动力学验证。实际Gazebo指令过期、扫描过期停车及恢复独立复测通过；与视频编码并行的首次车体位移检查失败，原因尚未唯一定位，详见最新说明。结果只适用于本次配置和有限场景，不作为实车卡顿原因或算法普遍优劣结论。
 
-旧版 [1080p Gazebo / 轨迹对比视频](../../../../../videos/planner_comparison/20261019_video_comparison/presentation/README.md)：空场、静态绕障均通过；原不让行的强制横穿出现碰撞/里程计偏离，这只说明旧压力场景未通过，不能用于否定正常交互能力。软件渲染的窗口实际刷新约4 FPS，视频编码帧率15 FPS，两者含义不同。
+原局部入口的自适应规则现为对比默认配置，历史fixed模式需显式选择。旧的失败视频、结果与中断诊断已按用户要求删除，见本轮清理记录；不再把历史fixed视频当作最新结果。
 
-目录合并后重新编译，并通过新入口各跑一次 Gazebo 空场到达检查，NeuPAN 和 TEB 均通过：[迁移检查报告](../../../../../videos/planner_comparison/20261019_1430_layout_check/comparison.md)。原 `lxw_planner_sim` 源码目录及其编译残留已删除，下面的历史对比数据保持原样。
-
-[12次对比报告、轨迹图和真实录屏](../../../../../videos/planner_comparison/20261019_124636/comparison.md)：两者空场、静态绕障均2/2到达；动态横穿均0/2，NeuPAN出现车体重叠，TEB在接触附近出现Gazebo/里程计偏离。不能将这一配置视为已通过动态避障。输入审计确认参考线和参数版本一致，障碍物实际运动与指定轨迹最大偏差约6 cm。
-
-本机CPU优化调用中位数约为 NeuPAN 89～94 ms、TEB 4～15 ms；TEB终点误差约0.35～0.37 m，NeuPAN约0.11～0.15 m，因此不能只按耗时或到达时间判断整体优劣。动态横穿的后续方向是基于扫描的运动估计、时序预测与接触前停车/让行，本轮没有使用真值速度给任何规划器增加优势。
-
-回归检查通过：原局部6米目标误差约0.094 m、原室外宽路往返完成、指令/扫描过期停车及扫描恢复均正常。上述结果只覆盖报告列出的场景。
+保留的成功参考：[合作横穿](../../../../../videos/planner_comparison/20261019_interactive_reference/presentation/README.md)（包含障碍主动让行），[目录迁移空场检查](../../../../../videos/planner_comparison/20261019_1430_layout_check/comparison.md)。

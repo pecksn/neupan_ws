@@ -51,6 +51,10 @@ def report(root):
     profiles = {m.get('teb_profile','baseline') for m in manifests}
     neupan_profiles = {m.get('neupan_profile','fixed') for m in manifests}
     controller_settings = [m.get('controller_settings',{'neupan_profile': m.get('neupan_profile','fixed')}) for m in manifests]
+    physics = [m.get('physics_sha256','historical-unspecified') for m in manifests]
+    transports = [{k:m.get(k,'historical-unspecified') for k in
+        ('physics_sha256','pose_plugin_source_sha256','driver_source_sha256','comparison_launch_sha256','neupan_adapter_sha256')}
+        for m in manifests]
     recordings = [normalize_recording(root/r['folder']/'gazebo.mp4') for r in results
                   if (root/r['folder']/'gazebo.mp4').exists()]
     (root/'recording_audit.json').write_text(json.dumps(recordings, indent=2)+'\n')
@@ -61,7 +65,10 @@ def report(root):
     audit = {'identical_reference_paths': all(reference_checks.values()),
              'reference_match_within_each_scenario': reference_checks,
              'identical_configs_across_trials': all(c == configs[0] for c in configs) and
-                all(c == controller_settings[0] for c in controller_settings),
+                all(c == controller_settings[0] for c in controller_settings) and len(set(physics))==1 and
+                all(c == transports[0] for c in transports),
+             'identical_transport_sources_across_trials': all(c == transports[0] for c in transports),
+             'identical_physics_across_trials': len(set(physics))==1,
              'identical_controller_settings_across_trials': all(c == controller_settings[0] for c in controller_settings),
              'neupan_profiles': sorted(neupan_profiles), 'dynamic_trials': []}
     scenarios = tuple(s for s in sim.AVAILABLE_SCENARIOS if any(r['scenario'] == s for r in results))
@@ -179,6 +186,9 @@ def report(root):
         '| 场景 | 规划器 | 次数 | 结果 | 时间 s | 路长 m | 目标误差 m | 最小车体间距 m | 调用中位数 / P95 ms |',
         '|---|---|---|---|---|---|---|---|---|']
     lines[2:2]=['NeuPAN profile={}；fixed为历史固定参数对比，adaptive沿用原仿真的自适应调参。二者不能混称为常用配置复现。'.format(','.join(sorted(neupan_profiles))), '']
+    if any('requested_real_time_factor' in m for m in manifests):
+        lines[2:2]=['Gazebo目标墙钟速率={}，两种规划器共用；控制、障碍时序及视频播放均按仿真秒，不能据此判断实车实时性能。'.format(
+            '/'.join(str(v) for v in sorted({m.get('requested_real_time_factor',1.) for m in manifests}))), '']
     if (root/'feasibility.json').exists():
         proof=json.loads((root/'feasibility.json').read_text())
         lines[4:4]=['[场景离线几何/运动学可行性证据](feasibility.json)：独立构造安全绕行路径，未向规划器提供该路径或障碍速度；逐个检查车体净距、速度和转角。',

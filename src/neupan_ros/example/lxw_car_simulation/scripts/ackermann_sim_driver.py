@@ -55,15 +55,19 @@ class AckermannSimDriver:
         self.odom_pub = rospy.Publisher("/odom", Odometry, queue_size=10)
         self.joint_pub = rospy.Publisher("/joint_states", JointState, queue_size=10)
         self.tf_br = tf.TransformBroadcaster()
+        pose_topic = rospy.get_param("~model_state_command_topic", "")
+        self.pose_pub = rospy.Publisher(pose_topic, ModelState, queue_size=1) if pose_topic else None
         self.set_model_state = rospy.ServiceProxy("/gazebo/set_model_state", SetModelState)
         self.gazebo_ready = False
         self.model_ready = False
 
         rospy.Subscriber(self.cmd_topic, Twist, self.cmd_callback, queue_size=1)
-        rospy.Subscriber("/gazebo/model_states", ModelStates, self.model_states_callback, queue_size=1)
+        rospy.Subscriber(rospy.get_param("~model_states_topic", "/gazebo/model_states"),
+                         ModelStates, self.model_states_callback, queue_size=1)
 
     def model_states_callback(self, msg):
-        self.model_ready = self.model_name in msg.name
+        self.model_ready = self.model_name in msg.name and (
+            self.pose_pub is None or self.pose_pub.get_num_connections() > 0)
 
     def cmd_callback(self, msg):
         valid = math.isfinite(msg.linear.x) and math.isfinite(msg.angular.z)
@@ -158,13 +162,6 @@ class AckermannSimDriver:
     def publish_model_state(self, quat):
         if not self.model_ready:
             return
-        try:
-            if not self.gazebo_ready:
-                rospy.wait_for_service("/gazebo/set_model_state", timeout=0.1)
-                self.gazebo_ready = True
-        except rospy.ROSException:
-            return
-
         state = ModelState()
         state.model_name = self.model_name
         state.reference_frame = "world"
@@ -176,6 +173,15 @@ class AckermannSimDriver:
         state.pose.orientation.z = quat[2]
         state.pose.orientation.w = quat[3]
         # The pose is integrated here; a Gazebo velocity would move it a second time.
+        if self.pose_pub is not None:
+            self.pose_pub.publish(state)
+            return
+        try:
+            if not self.gazebo_ready:
+                rospy.wait_for_service("/gazebo/set_model_state", timeout=0.1)
+                self.gazebo_ready = True
+        except rospy.ROSException:
+            return
         try:
             self.set_model_state(state)
         except rospy.ServiceException:

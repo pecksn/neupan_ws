@@ -47,12 +47,23 @@ class Trial:
         self.result = result
         self.folder = root/result['folder']
         self.manifest=json.loads((self.folder/'manifest.json').read_text())
-        self.result = dict(result, neupan_profile=self.manifest.get('neupan_profile','fixed'))
+        self.result = dict(result, neupan_profile=self.manifest.get('neupan_profile','fixed'),
+                           requested_real_time_factor=self.manifest.get('requested_real_time_factor',1.))
         self.records = [json.loads(line) for line in (self.folder/'trajectory.jsonl').read_text().splitlines()]
         if not self.records:
             raise ValueError('Empty telemetry: '+str(self.folder))
         self.times = [r['t'] for r in self.records]
         self.speed_values = [r['speed'] for r in self.records]
+        self.reverse_time = [0.]
+        for before,after in zip(self.records,self.records[1:]):
+            self.reverse_time.append(self.reverse_time[-1]+(
+                after['t']-before['t'] if before['speed'] < -.03 else 0.))
+        self.result['reverse_time_s'] = self.reverse_time[-1]
+        badge = Image.new('RGB',(480,58),BG[::-1])
+        label = '已到达目标' if result['passed'] else '未完成：'+REASONS.get(result['reason'],result['reason'])
+        ImageDraw.Draw(badge).text((14,8),label,font=ImageFont.truetype(str(FONT),28),
+                                  fill=((100,225,120) if result['passed'] else (90,100,255))[::-1])
+        self.completion_badge = cv2.cvtColor(np.array(badge),cv2.COLOR_RGB2BGR)
         reference = self.folder/'reference.json'
         self.reference = json.loads(reference.read_text()) if reference.exists() else [(0.,0.), (8.,0.)]
         if self.times != sorted(self.times):
@@ -217,6 +228,7 @@ def draw_scene(base, trials, t, gui):
                    color=(90,100,255) if record['clearance']<0 else FG)
         ascii_text(frame,'Goal error: {:.2f} m'.format(error),(pos[0],pos[1]+74))
         if ended:
+            frame[194:252,x+12:x+492] = trial.completion_badge
             outcome='ARRIVED' if trial.result['passed'] else 'FAILED: '+trial.result['reason']
             if trial.result['passed'] and any(trial.result.get('actor_yield_events', {}).values()):
                 outcome += ' (actors also yielded)'
@@ -241,8 +253,10 @@ def draw_scene(base, trials, t, gui):
                        (pos[0],pos[1]+153),.65,FG)
             passed=trial.result.get('overtake_time_s')
             label='Fully passed' if passed is not None and record['t']>=passed else 'Not yet passed'
+            reverse='Reverse: {:.2f}s'.format(trial.reverse_time[index])
             if trial.result['scenario'].startswith('lead_'):
-                ascii_text(frame,label,(pos[0],pos[1]+180),.6,MUTED)
+                reverse=label+' | '+reverse
+            ascii_text(frame,reverse,(pos[0],pos[1]+180),.6,MUTED)
         elif record.get('actor_states'):
             yielding=sum(bool(s['yielding']) for s in record['actor_states'].values())
             events=sum(s['yield_events'] for s in record['actor_states'].values())
@@ -258,6 +272,8 @@ def cards(results, gui):
     profile=next(r.get('neupan_profile','fixed') for r in results if r['planner']=='neupan')
     profile_note=('NeuPAN：原仿真自适应调参；结果只对应本次接入和配置。' if profile=='adaptive' else
                   'NeuPAN：固定参数模式，未启用原仿真自适应；不能当作常用配置复现。')
+    clock_note='Gazebo 共同目标速率 {}×墙钟；视频按仿真时间播放，不能代表实车实时性能。'.format(
+        results[0].get('requested_real_time_factor',1.))
     scene_line='  →  '.join(SCENES[s] for s in selected)
     intro=text_layer([(80,160,'TEB 与 NeuPAN · Gazebo 仿真对比',56,FG),
         (84,290,'左：TEB     右：NeuPAN',40,FG),
@@ -270,7 +286,7 @@ def cards(results, gui):
         (84,825,'障碍按相同时间表行驶/停车，不给机器人让路；重点看停顿与恢复。' if lead else
          '本场景允许障碍主动让行；到达不等于机器人独立避障能力通过。' if interactive else
          '保留全部匹配场景的结果，包括失败过程。',28,(100,150,255)),
-        (84,900,profile_note,26,(100,150,255))])
+        (84,900,profile_note,26,(100,150,255)),(84,965,clock_note,22,MUTED)])
     lines=[(70,65,'本轮结果与仍需解决的问题',44,FG)]
     for row, scenario in enumerate(selected):
         entries=[r for r in results if r['scenario']==scenario]
@@ -288,6 +304,8 @@ def cards(results, gui):
                 reason+=' / 停顿{}次 {:.1f}s'.format(r['stop_count'],r['stop_total_s'])
             lines.append((590+col*630,175+row*110,NAMES[planner]+'：'+reason,27,
                           (100,225,120) if all(t['passed'] for t in group) else (100,150,255)))
+            lines.append((590+col*630,213+row*110,'倒车累计 {:.2f} s'.format(
+                sum(t.get('reverse_time_s',0.) for t in group)),22,MUTED))
     crossing=[r for r in results if r['scenario']=='crossing']
     dynamic_note=('同一障碍时序、同一参考线；红色速度区间表示中途停顿，启动和终点停车排除。' if lead else
                   '交互横穿仍有失败，需结合障碍让行记录检查接近过程。'
@@ -306,6 +324,7 @@ def cards(results, gui):
               (75,740,'运动学虚拟底盘不模拟轮胎和完整接触动力学。',27,MUTED),
               (75,795,profile_note,25,(100,150,255)),
               (75,850,'1920 × 1080  |  15 fps  |  H.264 / yuv420p  |  方形像素',27,FG)]
+    lines.append((75,925,clock_note,22,MUTED))
     return intro,text_layer(lines)
 
 
@@ -357,8 +376,9 @@ def export(root, output, view, all_repeats=False):
     references={s:{r.get('reference_sha256') for r in pair} for s,pair in pairs.items()}
     configs=[json.loads((root/r['folder']/'manifest.json').read_text())['config_sha256'] for r in selected]
     profiles=[json.loads((root/r['folder']/'manifest.json').read_text()).get('neupan_profile','fixed') for r in selected]
+    physics=[json.loads((root/r['folder']/'manifest.json').read_text()).get('physics_sha256','historical-unspecified') for r in selected]
     if (any(len(values)!=1 or None in values for values in references.values()) or
-            any(c!=configs[0] for c in configs) or len(set(profiles))!=1):
+            any(c!=configs[0] for c in configs) or len(set(profiles))!=1 or len(set(physics))!=1):
         raise ValueError('Comparison inputs differ; refusing to label these as matched trials')
     manifest={'source':str(root),'selection':'all matched scenarios; {} repeats; TEB left / NeuPAN right'.format('all' if all_repeats else 'first'),
               'comparison_json_sha256':hashlib.sha256((root/'comparison.json').read_bytes()).hexdigest(),
@@ -366,6 +386,7 @@ def export(root, output, view, all_repeats=False):
               'reference_sha256_by_scenario':{s:next(iter(values)) for s,values in references.items()},
               'config_sha256':configs[0],
               'neupan_profile': profiles[0],
+              'physics_sha256': physics[0],
               'gui_alignment':'X11 input PTS mapped through measured telemetry simulation/wall clocks; render latency remains',
               'trajectory_view':'fixed common bounds per matched pair include full actual vehicle tracks; equal metre scale on both axes',
               'outputs':[]}

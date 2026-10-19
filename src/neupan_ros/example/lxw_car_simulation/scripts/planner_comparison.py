@@ -244,7 +244,7 @@ def scene():
     scan_stamp = [None]
     scan_pub = rospy.Publisher('/scan', LaserScan, queue_size=1)
     drive_pub = rospy.Publisher('/planner_sim/cmd', Twist, queue_size=1)
-    state_pub = rospy.Publisher('/gazebo/set_model_state', ModelState, queue_size=10)
+    state_pub = rospy.Publisher(rospy.get_param('~model_state_command_topic','/gazebo/set_model_state'), ModelState, queue_size=10)
     path_pub = rospy.Publisher('/initial_path', RosPath, queue_size=1, latch=True)
     ready_pub = rospy.Publisher('/planner_sim/scene_ready', Bool, queue_size=1, latch=True)
     health_pub = rospy.Publisher('/planner_sim/gate_health', String, queue_size=1)
@@ -469,7 +469,7 @@ def episode():
                      lambda m: values.__setitem__('gate_health',json.loads(m.data)), queue_size=1)
     rospy.Subscriber('/scan', LaserScan, lambda m: values.__setitem__('scan', m), queue_size=1)
     rospy.Subscriber('/odom', Odometry, lambda m: values.__setitem__('odom', m), queue_size=1)
-    rospy.Subscriber('/gazebo/model_states', ModelStates, lambda m: values.__setitem__('models', m), queue_size=1)
+    rospy.Subscriber('/planner_sim/model_states', ModelStates, lambda m: values.__setitem__('models', m), queue_size=1)
     rospy.Subscriber('/goal_arrived', String, lambda m: values.__setitem__('arrived', m.data == '1'), queue_size=1)
     rospy.Subscriber('/neupan/scan_health', String, health, queue_size=1)
     rospy.Subscriber('/neupan/runtime' if planner == 'neupan' else '/planner_sim/runtime', String, runtime, queue_size=100)
@@ -503,6 +503,7 @@ def episode():
     wall_deadline = time.monotonic()+timeout*3+30
     while not rospy.is_shutdown() and time.monotonic() < wall_deadline:
         t = rospy.get_time()-start
+        telemetry_gap = max(0.,t-last_t)
         odom = values['odom']; models = values['models']
         p = odom.pose.pose
         yaw = tf.transformations.euler_from_quaternion([p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w])[2]
@@ -536,6 +537,9 @@ def episode():
                   'command_speed_mps': values['drive_command'].linear.x,
                   'controller_runtime': values['runtime'],
                   'controller_runtime_age_s': rospy.get_time()-values['runtime'].get('received_sim_s',-1e9),
+                  'scan_age_s': rospy.get_time()-values['scan'].header.stamp.to_sec(),
+                  'odom_age_s': rospy.get_time()-odom.header.stamp.to_sec(),
+                  'telemetry_gap_s': telemetry_gap,
                   'gate_health': values['gate_health'],
                   'actor_states': values['actor_states'],
                   'obstacles': obstacles, 'arrived': values['arrived'], 'plan': values['plan']}
@@ -589,6 +593,9 @@ def episode():
         'solver_samples': len(solver), 'solver_median_ms': round(float(np.median(solver)), 3) if solver else None,
         'solver_p95_ms': round(float(np.percentile(solver, 95)), 3) if solver else None,
         'max_gazebo_odom_error_m': round(max_pose_error, 4), 'obstacle_path_lengths_m': obstacle_travel,
+        'maximum_telemetry_gap_s': round(max(r['telemetry_gap_s'] for r in records),4),
+        'maximum_scan_age_s': round(max(r['scan_age_s'] for r in records),4),
+        'maximum_odometry_age_s': round(max(r['odom_age_s'] for r in records),4),
         'actor_yield_events': {n: s['yield_events'] for n, s in values['actor_states'].items()},
         'actor_yield_duration_s': {n: round(s['yield_duration_s'], 3) for n, s in values['actor_states'].items()},
         'actor_policy': 'one-way traversal with robot-aware yielding' if scenario == 'crossing' else 'prescribed trajectory',
@@ -667,6 +674,8 @@ def recorder_start(folder, env):
 
 
 def compare_cases(args):
+    if not (WORKSPACE/'devel/lib/liblxw_sim_pose.so').is_file():
+        raise RuntimeError('Build the simulation pose plugin first: catkin_make --pkg neupan_ros')
     stamp = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d_%H%M%S')
     root = Path(args.output_dir).resolve() if args.output_dir else WORKSPACE/'videos/planner_comparison'/stamp
     root.mkdir(parents=True, exist_ok=True)
@@ -710,7 +719,8 @@ def compare_cases(args):
                     'scenario_version': 5,
                     'teb_profile': args.teb_profile,
                     'neupan_profile': args.neupan_profile,
-                    'controller_settings': {'neupan_profile': args.neupan_profile},
+                    'controller_settings': {'neupan_profile': args.neupan_profile,
+                        'physics_clock': 'shared half wall-time rate; all planner and actor periods use simulation time'},
                     'neupan_adapter_sha256': hashlib.sha256((ROOT/'scripts/neupan_sim_controller.py').read_bytes()).hexdigest(),
                     'teb_parameter_source': 'src/teb_test/config/teb_local_planner.yaml' if args.teb_profile == 'field' else 'simulation baseline',
                     'teb_field_adaptations': ['odom/map frames','actual simulated rear-axle footprint',
@@ -726,6 +736,14 @@ def compare_cases(args):
                     'actor_yield_gap_m': ACTOR_YIELD_GAP if scenario == 'crossing' else None,
                     'actor_model': 'gravity-free kinematic link' if any(moving_actor(scenario,s[0]) for s in obstacle_specs(scenario)) else 'static',
                     'actor_types': {s[0]: ('kinematic' if moving_actor(scenario,s[0]) else 'static') for s in obstacle_specs(scenario)},
+                    'physics_sha256': hashlib.sha256((ROOT/'worlds/planner_comparison.world').read_bytes()).hexdigest(),
+                    'requested_real_time_factor': .5,
+                    'ros_clock_publish_hz': 100,
+                    'pose_transport': 'Gazebo world-update plugin; no per-command pause/unpause',
+                    'pose_plugin_source_sha256': hashlib.sha256((ROOT/'src/sim_pose_world_plugin.cpp').read_bytes()).hexdigest(),
+                    'driver_source_sha256': hashlib.sha256((ROOT/'scripts/ackermann_sim_driver.py').read_bytes()).hexdigest(),
+                    'measurement_transport': 'Gazebo model states relayed at 30 Hz; scans and control rates unchanged',
+                    'comparison_launch_sha256': hashlib.sha256((ROOT/'launch/planner_comparison.launch').read_bytes()).hexdigest(),
                     'config_sha256': {
                         name: hashlib.sha256((ROOT/'config'/name).read_bytes()).hexdigest()
                         for name in ('comparison_neupan.yaml', 'comparison_neupan_adapter.yaml', teb_name)},

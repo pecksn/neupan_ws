@@ -11,6 +11,9 @@
   <arg name="timeout" default="75"/>
   <arg name="recording_required" default="false"/>
   <env name="GAZEBO_MODEL_DATABASE_URI" value=""/>
+  <!-- empty_world's 100 Hz argument is ignored unless use_clock_frequency is
+       enabled. Set the API plugin's parameter explicitly for this master. -->
+  <param name="/gazebo/pub_clock_frequency" value="100"/>
   <group>
     <remap from="/neupan_cmd_vel" to="/planner_sim/raw_cmd"/>
     <include file="$(find neupan_ros)/example/lxw_car_simulation/launch/neupan_lxwcar_gazebo.launch">
@@ -21,6 +24,8 @@
       <arg name="config_file" value="$(find neupan_ros)/example/lxw_car_simulation/config/comparison_neupan.yaml"/>
       <arg name="enable_adaptive_adjust" value="$(eval arg('neupan_profile') == 'adaptive')"/>
       <arg name="command_topic" value="/planner_sim/cmd"/>
+      <arg name="model_states_topic" value="/planner_sim/model_states"/>
+      <arg name="model_state_command_topic" value="/planner_sim/model_state"/>
       <arg name="scan_topic" value="/planner_sim/scan_raw"/>
       <arg name="scan_self_filter" value="false"/>
       <arg name="neupan_goal_topic" value="/planner_sim/unused_direct_goal"/>
@@ -47,10 +52,18 @@
   </node>
   <node pkg="neupan_ros" type="planner_comparison.py" name="comparison_scene" args="scene" output="screen" required="true">
     <param name="scenario" value="$(arg scenario)"/>
+    <param name="model_state_command_topic" value="/planner_sim/model_state"/>
   </node>
   <node if="$(arg automated)" pkg="neupan_ros" type="planner_comparison.py" name="comparison_episode" args="episode" output="screen">
     <param name="planner" value="$(arg planner)"/><param name="scenario" value="$(arg scenario)"/>
     <param name="output_dir" value="$(arg output_dir)"/><param name="timeout" value="$(arg timeout)"/>
     <param name="recording_required" value="$(arg recording_required)"/>
   </node>
+  <!-- Gazebo publishes model states on every physics iteration. A C++ relay
+       bounds Python evaluation traffic without changing scan or control rates. -->
+  <node pkg="topic_tools" type="throttle" name="comparison_model_states"
+        args="messages /gazebo/model_states 30 /planner_sim/model_states" required="true"/>
+  <node if="$(arg automated)" pkg="rosbag" type="record" name="comparison_transport_record"
+        args="-O $(arg output_dir)/telemetry.bag /clock /scan /odom /planner_sim/model_states /planner_sim/cmd /planner_sim/episode_start /planner_sim/episode_finished"
+        output="log" required="true"/>
 </launch>
