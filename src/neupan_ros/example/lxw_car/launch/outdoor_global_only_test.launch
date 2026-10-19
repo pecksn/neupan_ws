@@ -87,6 +87,8 @@
     <arg name="outdoor_path_turn_dense_after" default="2.0" />
     <arg name="outdoor_path_turn_recover_after" default="6.0" />
     <arg name="outdoor_path_min_points" default="3" />
+    <arg name="cloud_path_simplify" default="true" />
+    <arg name="cloud_path_simplify_tolerance" default="0.10" />
     <arg name="osm_vector_map_line_width" default="0.25" />
     <arg name="osm_vector_map_z" default="0.35" />
     <arg name="osm_vector_map_alpha" default="1.0" />
@@ -225,6 +227,8 @@
         <param name="path_turn_dense_after" value="$(arg outdoor_path_turn_dense_after)" />
         <param name="path_turn_recover_after" value="$(arg outdoor_path_turn_recover_after)" />
         <param name="path_min_points" value="$(arg outdoor_path_min_points)" />
+        <param name="cloud_path_simplify" value="$(arg cloud_path_simplify)" />
+        <param name="cloud_path_simplify_tolerance" value="$(arg cloud_path_simplify_tolerance)" />
         <param name="enable_right_lane_offset" value="$(arg osm_enable_right_lane_offset)" />
         <param name="respect_oneway" value="$(arg osm_respect_oneway)" />
         <param name="default_lane_width" value="$(arg osm_default_lane_width)" />

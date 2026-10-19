@@ -37,6 +37,11 @@ include_directories(
 add_executable(global_astar_node src/global_astar_node.cpp)
 target_link_libraries(global_astar_node ${catkin_LIBRARIES})
 
+if(CATKIN_ENABLE_TESTING)
+  add_executable(test_cloud_path_simplification tests/test_cloud_path_simplification.cpp)
+  add_test(NAME cloud_path_simplification COMMAND test_cloud_path_simplification)
+endif()
+
 add_executable(outdoor_hybrid_worker src/outdoor_hybrid_worker.cpp)
 target_link_libraries(outdoor_hybrid_worker ${catkin_LIBRARIES} ${OMPL_LIBRARIES} ${ompl_LIBRARIES})
 

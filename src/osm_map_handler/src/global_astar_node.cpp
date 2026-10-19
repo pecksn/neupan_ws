@@ -26,6 +26,8 @@
 #include <std_msgs/String.h>
 #include <visualization_msgs/Marker.h>
 
+#include "cloud_path_simplification.h"
+
 namespace pt = boost::property_tree;
 
 struct XYPoint {
@@ -73,6 +75,8 @@ public:
         private_nh_.param("path_turn_dense_after", path_turn_dense_after_, 2.0);
         private_nh_.param("path_turn_recover_after", path_turn_recover_after_, 6.0);
         private_nh_.param("path_min_points", path_min_points_, 3);
+        private_nh_.param("cloud_path_simplify", cloud_path_simplify_, true);
+        private_nh_.param("cloud_path_simplify_tolerance", cloud_path_simplify_tolerance_, 0.10);
         private_nh_.param("auto_set_initialpose", auto_set_initialpose_, true);
         private_nh_.param("initialpose_cov_xy", initialpose_cov_xy_, 2.0);
         private_nh_.param("initialpose_cov_yaw", initialpose_cov_yaw_, 0.25);
@@ -102,6 +106,10 @@ public:
         path_turn_angle_low_rad_ = degToRad(path_turn_angle_deg_low_);
         path_turn_angle_high_rad_ = degToRad(std::max(path_turn_angle_deg_low_, path_turn_angle_deg_high_));
         path_min_points_ = std::max(2, path_min_points_);
+        if (!std::isfinite(cloud_path_simplify_tolerance_) || cloud_path_simplify_tolerance_ < 0.0) {
+            ROS_WARN("Invalid cloud_path_simplify_tolerance; using 0.10m");
+            cloud_path_simplify_tolerance_ = 0.10;
+        }
         default_lane_width_ = std::max(1.5, default_lane_width_);
         default_road_width_ = std::max(default_lane_width_, default_road_width_);
         right_lane_offset_ratio_ = std::max(0.0, std::min(0.5, right_lane_offset_ratio_));
@@ -144,6 +152,8 @@ public:
             respect_oneway_ ? "true" : "false");
 
         timer_ = nh_.createTimer(ros::Duration(0.1), &OSMGraphAStarPlanner::timerCallback, this);
+        ROS_INFO("Cloud path simplification: %s, tolerance=%.3fm; local tracking path unchanged",
+                 cloud_path_simplify_ ? "enabled" : "disabled", cloud_path_simplify_tolerance_);
     }
 
 private:
@@ -182,6 +192,8 @@ private:
     double path_turn_dense_after_{2.0};
     double path_turn_recover_after_{6.0};
     int path_min_points_{3};
+    bool cloud_path_simplify_{true};
+    double cloud_path_simplify_tolerance_{0.10};
 
     bool auto_set_initialpose_{true};
     double initialpose_cov_xy_{2.0};
@@ -1283,7 +1295,13 @@ private:
         }
 
         path_pub_.publish(buildPathMessage(current_path_));
-        path_ll_pub_.publish(buildLatLonPathMessage(current_path_));
+        const std::vector<XYPoint> cloud_path = cloud_path_simplify_
+            ? osm_map_handler::simplifyCloudPath(current_path_, cloud_path_simplify_tolerance_)
+            : current_path_;
+        path_ll_pub_.publish(buildLatLonPathMessage(cloud_path));
+        ROS_INFO("Cloud path published: %zu -> %zu points, tolerance=%.3fm, simplification=%s",
+                 current_path_.size(), cloud_path.size(), cloud_path_simplify_tolerance_,
+                 cloud_path_simplify_ ? "enabled" : "disabled");
         publishPoseMarkers(true, current_path_.front());
         ROS_INFO(
             "Road path planned: graph=%zu points, tracking=%zu points, start snap %.2fm, goal snap %.2fm, right lane offset=%s",

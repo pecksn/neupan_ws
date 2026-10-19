@@ -115,7 +115,7 @@ OSM A* -> /osm_global_path
 | Topic | 类型 | 云端方向 | 用途 |
 | --- | --- | --- | --- |
 | `/gps/fix` | `sensor_msgs/NavSatFix` | 订阅 | 原始 GPS 经纬度；不等同于融合后的 `/odometry/global` |
-| `/osm_global_path_ll` | `std_msgs/String` | 订阅 | `data` 为 `{"points":[{"latitude":23.0398,"longitude":113.39002},...]}` 的 JSON；与 `/osm_global_path` 最终路径点一一对应 |
+| `/osm_global_path_ll` | `std_msgs/String` | 订阅 | `data` 为 `{"points":[{"latitude":23.0398,"longitude":113.39002},...]}` 的 JSON；默认仅云端简化，直线保留首尾、弯道保留必要形状点，不再与本地路径逐点对应 |
 | `/gps_goal_ll` | `sensor_msgs/NavSatFix` | 发布 | 目标经纬度；默认拒绝 `status.status < 0` |
 | `/vehicle/control_mode` | `std_msgs/UInt8` | 发布 | `0=AUTO`，`1=MANUAL`；默认 `0` |
 | `/cmd_vel_remote` | `geometry_msgs/Twist` | 发布 | 云端手动速度；launch 把选择器内部 `/cmd_vel/remote` 订阅重映射到此 topic |
@@ -380,7 +380,9 @@ FAST-LIO 输出保护器。
 
 主要输出：`/osm_global_path`（`nav_msgs/Path`，`map` 坐标米制路径）、`/osm_global_path_ll`（`std_msgs/String`，JSON 经纬度路径）、`/osm_vector_map`、`/hybrid_astar_subgoal`、`/initialpose`。两条路径只在成功规划后发布，均为 latched topic；经纬度路径不是 `nav_msgs/Path`，不要把经纬度写进 `Pose.position.x/y`。
 
-经纬度输出保留小数点后 8 位，转换对象是道路吸附、右侧偏移和重采样后的最终路径，不是 A* 搜索中访问过的全部候选节点。JSON 当前只有 `points`，没有路径 ID、时间戳、海拔或朝向；需要判断是否为新规划时，应结合原 `/osm_global_path.header.stamp` 和规划器日志。
+经纬度输出保留小数点后 8 位，来源是道路吸附、右侧偏移和重采样后的最终路径，不是 A* 搜索中访问过的全部候选节点。2026-10-19 起，默认仅对云端输出应用米制 RDP 简化：直线只保留首尾点、弯道保留必要形状点，首尾坐标、点序和折返保留；默认允许原始点到对应简化线段的距离不超过 0.10 米（经纬度小数舍入前）。本地 `/osm_global_path`、NeuPAN 输入和 RViz 原路径仍保留原密度。JSON 当前只有 `points`，没有路径 ID、时间戳、海拔或朝向；需要判断是否为新规划时，应结合原 `/osm_global_path.header.stamp` 和规划器日志。
+
+参数 `cloud_path_simplify=true`、`cloud_path_simplify_tolerance=0.10` 由完整系统和室外直跟 launch 传给规划器。可用 `cloud_path_simplify:=false` 恢复原始全部经纬度点；容差为 0 也禁用过滤。该简化路径仅供云端展示，不能替代本地避障/跟踪路径；没有新增 `/osm_global_path_l` 话题。每次成功规划仍各发布一次且锁存，日志 `Cloud path published: N -> M points` 记录点数变化。
 
 ### `scripts/gps_goal_bridge.py`
 

@@ -2,6 +2,14 @@
 
 负责地图路网、全局 A*、室外返程衔接和相机靠右路径修正；不发布车辆速度。
 
+云端 `/osm_global_path_ll` 默认单独进行几何简化，直线仅保留首尾点、转弯保留必要形状点。
+`cloud_path_simplify=true`、`cloud_path_simplify_tolerance=0.10`（米）可由完整系统和室外直跟 launch 配置；
+关闭开关或容差设为 0 恢复原始点数。简化保留首尾、顺序与折返，原点到对应线段偏差不超过容差
+（经纬度舍入前），不修改本地 `/osm_global_path`、NeuPAN 跟踪密度及路径显示标记。
+JSON 仍为 `{"points":[{"latitude":...,"longitude":...}]}`，不新增 topic、不改变成功规划后发布一次及锁存行为。
+节点日志 `Cloud path published: N -> M points` 记录过滤结果。实现位于 `src/cloud_path_simplification.h`。
+编译后可在 `build/osm_map_handler` 运行 `ctest -R cloud_path_simplification --output-on-failure` 验证几何简化。
+
 ```text
 osm_map_handler/
 ├── src/

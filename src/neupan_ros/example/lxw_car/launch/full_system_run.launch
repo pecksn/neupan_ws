@@ -107,6 +107,8 @@
     <arg name="outdoor_path_turn_dense_after" default="2.0" doc="出弯后保持加密的长度(米)" />
     <arg name="outdoor_path_turn_recover_after" default="6.0" doc="出弯后逐渐恢复为直线间距的长度(米)" />
     <arg name="outdoor_path_min_points" default="3" doc="室外路径最少下发给 NeuPAN 的点数" />
+    <arg name="cloud_path_simplify" default="true" doc="仅简化云端经纬度路径，直线保留首尾点" />
+    <arg name="cloud_path_simplify_tolerance" default="0.10" doc="云端路径简化允许的横向偏差(米)，0禁用简化" />
     <arg name="osm_vector_map_line_width" default="0.25" doc="RViz中OSM蓝色中心线宽度(米)" />
     <arg name="osm_vector_map_z" default="0.35" doc="RViz中OSM蓝色中心线显示高度" />
     <arg name="osm_vector_map_alpha" default="1.0" />
@@ -347,6 +349,8 @@
             <param name="path_turn_dense_after" value="$(arg outdoor_path_turn_dense_after)" />
             <param name="path_turn_recover_after" value="$(arg outdoor_path_turn_recover_after)" />
             <param name="path_min_points" value="$(arg outdoor_path_min_points)" />
+            <param name="cloud_path_simplify" value="$(arg cloud_path_simplify)" />
+            <param name="cloud_path_simplify_tolerance" value="$(arg cloud_path_simplify_tolerance)" />
             <param name="enable_right_lane_offset" value="$(arg osm_enable_right_lane_offset)" />
             <param name="respect_oneway" value="$(arg osm_respect_oneway)" />
             <param name="default_lane_width" value="$(arg osm_default_lane_width)" />

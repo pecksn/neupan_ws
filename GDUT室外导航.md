@@ -71,6 +71,8 @@ roslaunch neupan_ros outdoor_global_only_test.launch \
 roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
 ```
 
+云端经纬度路径 `/osm_global_path_ll` 默认启用几何简化：直线仅保留首尾点，转弯保留必要形状点，允许约 0.10 米的几何偏差；本地 `/osm_global_path` 的规划/跟踪密度不变。话题名和 `{"points":[{"latitude":...,"longitude":...}]}` 格式不变，云端点数不再与本地路径一一对应。需要恢复发送全部路径点时追加 `cloud_path_simplify:=false`；用 `cloud_path_simplify_tolerance:=0.10` 调整容差，容差为 0 也禁用过滤。规划日志 `Cloud path published: N -> M points` 可查看压缩前后点数；需要重新编译 `osm_map_handler` 并重启规划器后生效。
+
 当前全系统的两个室外 NeuPAN 分支均使用 `example/lxw_car/model/acker_robot_default_6/model_5000.pth`。`neupan_config_outdoor.yaml` 的车体长 `0.95 m`、宽 `0.85 m`、轴距 `0.67 m`，与新模型训练几何一致；参考速度 `0.8 m/s`。更换模型时必须同步核对车体几何，不能仅替换 checkpoint。旧模型 `_5`（训练宽度 `0.60 m`）保留用于对比。
 
 该启动文件默认接收 GPU 板原视频和 HybridNets JSON，同时发布 `/hybridnets/debug_image`，但不弹出摄像头画面窗口。需要临时查看叠加画面时：
