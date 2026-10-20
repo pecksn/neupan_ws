@@ -3,6 +3,7 @@
 
 import argparse
 import datetime
+import glob
 import json
 import os
 import shutil
@@ -23,6 +24,10 @@ class BagRecorder:
         self.config = self._load_config(self.config_path)
         self.process = None
         self.stopping = False
+        self.stop_finished = False
+        self.inventory_saved = False
+        self.stop_reason = 'stop_requested'
+        self.stop_details = None
 
         output_override = rospy.get_param("~output_directory_override", "").strip()
         prefix_override = rospy.get_param("~bag_prefix_override", "").strip()
@@ -121,7 +126,7 @@ class BagRecorder:
         return command
 
     def _write_manifest(self):
-        manifest = {
+        self.manifest = {
             "created_at": datetime.datetime.now(self.local_timezone).isoformat(),
             "timezone_offset_hours": self.timezone_offset_hours,
             "hostname": socket.gethostname(),
@@ -130,8 +135,66 @@ class BagRecorder:
             "command": self.command,
             "config": self.config,
         }
-        with open(self.output_prefix + ".json", "w", encoding="utf-8") as stream:
-            json.dump(manifest, stream, ensure_ascii=False, indent=2, sort_keys=True)
+        self._save_manifest()
+
+    def _save_manifest(self):
+        # Keep the original manifest intact if a shutdown update fails.
+        path = self.output_prefix + ".json"
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as stream:
+            json.dump(self.manifest, stream, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(temporary, path)
+
+    def _record_bag_inventory(self):
+        """Read finalized bag indexes only; no image/point-cloud deserialization."""
+        counts, files, errors = {}, [], []
+        paths = sorted(glob.glob(self.output_prefix + "*.bag"))
+        active = sorted(glob.glob(self.output_prefix + "*.bag.active"))
+        try:
+            if paths:
+                import rosbag
+                for path in paths:
+                    try:
+                        with rosbag.Bag(path, 'r') as bag:
+                            topics = bag.get_type_and_topic_info().topics
+                            entries = {name: {'message_count': info.message_count,
+                                              'type': info.msg_type}
+                                       for name, info in topics.items()}
+                        files.append({'path': path, 'topics': entries})
+                        for name, entry in entries.items():
+                            counts[name] = counts.get(name, 0) + entry['message_count']
+                    except Exception as exc:
+                        errors.append({'path': path, 'error': str(exc)})
+        except Exception as exc:
+            errors.append({'error': str(exc)})
+        return_code, process_running = None, False
+        try:
+            if self.process is not None:
+                return_code = self.process.poll()
+                process_running = return_code is None
+        except Exception as exc:
+            process_running = None
+            errors.append({'stage': 'process_poll', 'error': str(exc)})
+        verified = bool(paths) and not errors and not active and process_running is False
+        missing = [name for name in self.required_topics if counts.get(name, 0) == 0]
+        self.manifest['recording_result'] = {
+            'closed_at': datetime.datetime.now(self.local_timezone).isoformat(),
+            'return_code': return_code, 'process_running': process_running,
+            'shutdown': self.stop_details,
+            'index_verification_complete': verified,
+            'files': files, 'unfinalized_files': active, 'inspection_errors': errors,
+            'topic_message_counts': counts,
+            'required_topics_without_messages': missing,
+            'all_required_topics_recorded': verified and not missing,
+            'required_topics_seen_publishers': sorted(self.seen_required_topics),
+        }
+        self._save_manifest()
+        if not verified:
+            rospy.logwarn('录包消息核验未完成：请检查 recording_result（进程仍运行、无文件、未完成索引或读取失败）')
+        elif missing:
+            rospy.logerr('bag索引确认以下必录话题没有消息: %s', ', '.join(missing))
+        else:
+            rospy.loginfo('bag索引核验完成：所有必录话题均有消息，计数已写入录包清单')
 
     def start(self):
         rospy.loginfo("rosbag 输出前缀: %s", self.output_prefix)
@@ -150,11 +213,13 @@ class BagRecorder:
             return
         return_code = self.process.poll()
         if return_code is not None:
+            self.stop_reason = 'recorder_exited'
             rospy.logerr("rosbag record 意外退出，返回码 %d", return_code)
             rospy.signal_shutdown("rosbag record exited")
             return
         free_gb = self._free_gb()
         if self.min_free_gb > 0.0 and free_gb <= self.min_free_gb:
+            self.stop_reason = 'low_disk_space'
             rospy.logerr("磁盘仅剩 %.2f GB，正在安全停止录制", free_gb)
             rospy.signal_shutdown("low disk space")
             return
@@ -177,27 +242,59 @@ class BagRecorder:
                 ", ".join(missing_now),
             )
         else:
-            rospy.loginfo_throttle(30.0, "所有必录传感器/定位话题均有发布者")
+            rospy.loginfo_throttle(30.0, "必录话题均有发布者（不代表已录到消息；结束时核对bag索引）")
 
     def stop(self):
         if self.stopping:
+            # A failed manifest write may be retried, but never resend signals.
+            if self.stop_finished and not self.inventory_saved:
+                self._save_final_inventory()
             return
         self.stopping = True
-        if self.process is not None and self.process.poll() is None:
-            rospy.loginfo("正在关闭 rosbag，请等待索引写入完成……")
-            try:
-                os.killpg(os.getpgid(self.process.pid), signal.SIGINT)
-                self.process.wait(timeout=20.0)
-            except subprocess.TimeoutExpired:
-                rospy.logwarn("rosbag 关闭超时，发送 SIGTERM")
-                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-                self.process.wait(timeout=5.0)
-        never_seen = [
-            topic for topic in self.required_topics if topic not in self.seen_required_topics
-        ]
-        if never_seen:
-            rospy.logerr("本次录制从未发现以下必录话题: %s", ", ".join(never_seen))
-        rospy.loginfo("录制结束: %s", self.output_prefix)
+        self.stop_details = {'requested_reason': self.stop_reason,
+                             'outcome': 'not_started', 'errors': []}
+        try:
+            if self.process is not None:
+                self.stop_details['outcome'] = 'already_exited'
+                if self.process.poll() is None:
+                    rospy.loginfo("正在关闭 rosbag，请等待索引写入完成……")
+                    for name, sig, timeout in (('sigint', signal.SIGINT, 20.0),
+                                               ('sigterm', signal.SIGTERM, 5.0)):
+                        stage = name + '_signal'
+                        try:
+                            os.killpg(os.getpgid(self.process.pid), sig)
+                            stage = name + '_wait'
+                            self.process.wait(timeout=timeout)
+                            self.stop_details['outcome'] = name + '_exit'
+                            break
+                        except subprocess.TimeoutExpired as exc:
+                            self.stop_details['outcome'] = 'stop_timeout'
+                            self._record_stop_error(stage, exc)
+                            rospy.logwarn('rosbag %s等待超时；仍将保存结束核验', name)
+                        except Exception as exc:
+                            self.stop_details['outcome'] = 'stop_error'
+                            self._record_stop_error(stage, exc)
+                            break
+        except Exception as exc:
+            self.stop_details['outcome'] = 'stop_error'
+            self._record_stop_error('process_poll', exc)
+        finally:
+            self._save_final_inventory()
+            self.stop_finished = True
+        rospy.loginfo("录包关闭处理结束: %s", self.output_prefix)
+
+    def _record_stop_error(self, stage, exc):
+        self.stop_details['errors'].append({
+            'stage': stage, 'error_type': type(exc).__name__, 'error': str(exc)})
+
+    def _save_final_inventory(self):
+        try:
+            self._record_bag_inventory()
+            self.inventory_saved = True
+        except Exception as exc:
+            if self.stop_details is not None:
+                self._record_stop_error('inventory_save', exc)
+            rospy.logerr('录包清单更新失败，未删除bag或原清单: %s', exc)
 
 
 def default_config_path():
@@ -217,6 +314,7 @@ def main():
         recorder.start()
 
         def shutdown_handler(_signum, _frame):
+            recorder.stop_reason = 'signal_' + signal.Signals(_signum).name
             rospy.signal_shutdown("received signal")
 
         signal.signal(signal.SIGINT, shutdown_handler)

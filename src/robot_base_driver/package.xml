@@ -32,5 +32,7 @@
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>wheeltec_gps_driver</exec_depend>
+  <test_depend>rosbag</test_depend>
+  <test_depend>vehicle_bag_recorder</test_depend>
 
 </package>

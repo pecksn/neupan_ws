@@ -49,6 +49,10 @@ topics:
   - /gps/fix
   - /heading
   - /osm_global_path
+  - /osm_global_path_ll
+  - /gps_goal_ll
+  - /move_base_simple/goal
+  - /goal_arrived
   - /osm_global_path_curb_refined
   - /road_curb/status
   - /camera_right/reference_path
@@ -57,6 +61,9 @@ topics:
   - /cmd_vel/selected
   - /cmd_vel/auto
   - /vehicle/control_mode/status
+  - /vehicle/control_mode
+  - /vehicle/command_audit
+  - /cmd_vel_remote
   - /neupan/runtime
   - /neupan/failure
   - /neupan/camera_path_guard
@@ -72,6 +79,7 @@ topics:
   - /odometry/global
   - /odometry/gps
   - /gnss/gpgga
+  - /gnss/solution_status
   - /odometry/lio_guarded
   - /gps_guard/local_fault_event
   - /motor/status

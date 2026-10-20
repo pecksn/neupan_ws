@@ -3,12 +3,14 @@ import rospy
 import tf
 from geometry_msgs.msg import Twist, Quaternion
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from robot_base_driver.msg import MotorStatus
 import serial # 需要安装 pyserial
 import math
 import re
+import json
+import time
 
 
 MOTOR_STATE_TEXT = {
@@ -94,6 +96,9 @@ class RobotBaseDriver:
         self.localization_safe = not self.enable_localization_safety_stop
         self.print_sent_command = rospy.get_param('~print_sent_command', False)
         self.cmd_topic = rospy.get_param('~cmd_topic', '/neupan_cmd_vel')
+        # Best-effort telemetry only: never use this publisher as a control gate.
+        self.command_audit_pub = rospy.Publisher(
+            '/vehicle/command_audit', String, queue_size=100)
 
         # 电机保护阈值（应按电机/控制器手册调整）
         self.motor_torque_limit = rospy.get_param('~motor_torque_limit', 7.0)
@@ -116,7 +121,7 @@ class RobotBaseDriver:
             rospy.logerr(f"Failed to connect to serial port: {e}")
 
         if self.enable_localization_safety_stop:
-            self.send_serial_command(0.0, 0.0)
+            self.send_serial_command(0.0, 0.0, reasons=['startup_localization_hold'])
             rospy.logwarn("Localization safety gate enabled; holding stop until localization is ready")
 
         # 订阅上层选定的最终速度指令
@@ -189,14 +194,17 @@ class RobotBaseDriver:
         
         # 【修改】Neupan 直接输出的是转向角 (rad)
         steering_angle = msg.angular.z 
+        request = {'speed_mps': v, 'steering_rad': steering_angle}
+        reasons = []
 
         if not self.finite_controls(v, steering_angle):
             rospy.logwarn_throttle(2.0, 'Rejected non-finite Twist control: speed=%r m/s, steering=%r rad; sending stop',
                                    v, steering_angle)
-            self.send_serial_command(0.0, 0.0)
+            self.send_serial_command(0.0, 0.0, request, ['non_finite_twist'])
             return
 
         if self.enable_localization_safety_stop and not self.localization_safe:
+            reasons.append('localization_unsafe')
             v = 0.0
             steering_angle = 0.0
             rospy.logerr_throttle(
@@ -207,12 +215,18 @@ class RobotBaseDriver:
         max_steering_rad = math.radians(self.MAX_STEERING_DEG)
         bounded_steering = max(-max_steering_rad, min(max_steering_rad, steering_angle))
         if bounded_v != v or bounded_steering != steering_angle:
+            if bounded_v != v:
+                reasons.append('speed_limit')
+            if bounded_steering != steering_angle:
+                reasons.append('steering_limit')
             rospy.logwarn_throttle(2.0, 'Clamped Twist control: speed=%r -> %r m/s, steering=%r -> %r rad',
                                    v, bounded_v, steering_angle, bounded_steering)
         v, steering_angle = bounded_v, bounded_steering
 
         # Preserve the existing speed dead zone and stationary steering reset.
         if abs(v) < self.SPEED_DEAD_ZONE_MPS:
+             if v != 0.0 or steering_angle != 0.0:
+                 reasons.append('speed_dead_zone')
              v = 0.0
              # 处于静止状态时，强制回正方向，避免原地左右摆头
              steering_angle = 0.0
@@ -224,20 +238,25 @@ class RobotBaseDriver:
         steering_deg = math.degrees(steering_angle)
 
         # 构造指令: CMD,<油门>,<转向>
-        self.send_serial_command(throttle, steering_deg)
+        self.send_serial_command(throttle, steering_deg, request, reasons)
 
     def localization_safety_callback(self, msg):
         was_safe = self.localization_safe
         self.localization_safe = bool(msg.data)
         if was_safe and not self.localization_safe:
             rospy.logerr("Localization became unsafe; sending immediate stop to MCU")
-            self.send_serial_command(0.0, 0.0)
+            self.send_serial_command(0.0, 0.0, reasons=['localization_became_unsafe'])
         elif not was_safe and self.localization_safe:
             rospy.loginfo("Localization recovered; planner commands are enabled")
 
-    def send_serial_command(self, throttle, steering_deg):
+    def send_serial_command(self, throttle, steering_deg, request=None, reasons=None):
+        reasons = list(reasons or [])
+        serial_input = {'wheel_rad_s': throttle, 'steering_deg': steering_deg}
+        stamp = rospy.Time.now().to_sec()
+        started = time.monotonic()
         # Final defense also covers callers that bypass cmd_vel_callback.
         if not self.finite_controls(throttle, steering_deg):
+            reasons.append('non_finite_serial_control')
             rospy.logwarn_throttle(2.0, 'Rejected non-finite serial control: wheel=%r rad/s, steering=%r deg; sending stop',
                                    throttle, steering_deg)
             throttle, steering_deg = 0.0, 0.0
@@ -246,14 +265,18 @@ class RobotBaseDriver:
                                    min(self.max_forward_wheel_speed, throttle))
             bounded_steering = max(-self.MAX_STEERING_DEG, min(self.MAX_STEERING_DEG, steering_deg))
             if bounded_throttle != throttle or bounded_steering != steering_deg:
+                reasons.append('serial_limit')
                 rospy.logwarn_throttle(2.0, 'Clamped serial control: wheel=%r -> %r rad/s, steering=%r -> %r deg',
                                        throttle, bounded_throttle, steering_deg, bounded_steering)
             throttle, steering_deg = bounded_throttle, bounded_steering
             if abs(throttle) < self.SPEED_DEAD_ZONE_MPS / self.wheel_radius:
+                if throttle != 0.0 or steering_deg != 0.0:
+                    reasons.append('serial_dead_zone')
                 throttle, steering_deg = 0.0, 0.0
 
         # The protocol has 0.01 rad/s resolution. At a configured boundary,
         # round inward rather than allowing decimal rounding to exceed it.
+        unquantized_throttle = throttle
         throttle = float(f'{throttle:.2f}')
         if throttle > self.max_forward_wheel_speed:
             throttle = max(0.0, throttle - 0.01)
@@ -261,14 +284,49 @@ class RobotBaseDriver:
             throttle = min(0.0, throttle + 0.01)
         if throttle == 0.0:
             throttle, steering_deg = 0.0, 0.0
+        if throttle != unquantized_throttle:
+            reasons.append('protocol_quantization')
         command = f"CMD,{throttle:.2f},{steering_deg:.2f}\n"
+        encoded = command.encode()
+        written, error, status = None, None, 'port_unavailable'
         if self.serial and self.serial.is_open:
             try:
-                self.serial.write(command.encode())
+                written = self.serial.write(encoded)
+                status = 'written' if written == len(encoded) else 'short_write'
+                if status == 'short_write':
+                    rospy.logerr('Serial short write: %s/%d bytes', written, len(encoded))
                 if self.print_sent_command:
                     rospy.loginfo_throttle(1, f"Send to MCU: {command.strip()}")
             except Exception as e:
+                status, error = 'write_error', str(e)
                 rospy.logerr(f"Serial write failed: {e}")
+        # Publish after the write. A ROS/logging failure must never suppress it.
+        try:
+            def safe_values(values):
+                return {key: value if self.finite_controls(value) else repr(value)
+                        for key, value in values.items()}
+            self.command_audit_pub.publish(String(data=json.dumps({
+                'schema_version': 1, 'stamp': stamp,
+                'wall_stamp': time.time(), 'send_duration_ms': (time.monotonic()-started)*1000.0,
+                'source': 'twist' if request is not None else 'direct',
+                'command_topic': rospy.resolve_name(self.cmd_topic),
+                'request': safe_values(request) if request is not None else None,
+                'serial_input': safe_values(serial_input),
+                'reasons': reasons, 'protocol': command,
+                'wheel_rad_s': float(command.split(',')[1]),
+                'steering_deg': float(command.split(',')[2]),
+                'command_speed_mps': float(command.split(',')[1]) * self.wheel_radius,
+                'wheel_radius_m': self.wheel_radius,
+                'limits': {'forward_mps': self.max_forward_speed_mps,
+                           'reverse_mps': self.max_reverse_speed_mps,
+                           'steering_deg': self.MAX_STEERING_DEG,
+                           'dead_zone_mps': self.SPEED_DEAD_ZONE_MPS},
+                'write_status': status, 'expected_bytes': len(encoded),
+                'written_bytes': written, 'error': error,
+                'mcu_execution_confirmed': False,
+            }, allow_nan=False, separators=(',', ':'))))
+        except Exception as exc:
+            rospy.logwarn_throttle(5.0, 'Command audit publish failed (control unchanged): %s', exc)
 
     def handle_motor_line(self, line):
         """解析带标签的左右电机扭矩、温度和状态。"""

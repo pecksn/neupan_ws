@@ -37,7 +37,7 @@ MUX_SAFETY_ROS_SMOKE=1 python3 -m unittest discover \
 
 `max_forward_speed_mps`、`max_reverse_speed_mps` 默认均为1.5 m/s，`wheel_radius` 默认0.1275 m；三者须有限且大于0，换算后的轮速限值也须有限且大于0，否则在打开串口前报错。默认速度来自当前室外规划的±1.5软件边界，不代表硬件安全极速。串口保持轮速rad/s、转角deg，限值附近向内量化避免0.01 rad/s四舍五入越界。告警2秒节流。
 
-三个参数可从 `driver.launch`、`navigation_core.launch` 或 `full_system_run.launch` 覆盖；旧实车入口继承默认保护，不依赖mux是否启用。详见[统一任务记录](../../PROJECT_ANALYSIS_CN.md)。任务03尚未实施，不影响既有MCU失联停车或电机报警策略。
+三个参数可从 `driver.launch`、`navigation_core.launch` 或 `full_system_run.launch` 覆盖；旧实车入口继承默认保护，不依赖mux是否启用。详见[统一问题记录](../../PROJECT_ISSUES_CN.md)。任务03尚未实施，不影响既有MCU失联停车或电机报警策略。
 
 模拟串口回归，不打开真实串口或启动底盘：
 
@@ -45,6 +45,16 @@ MUX_SAFETY_ROS_SMOKE=1 python3 -m unittest discover \
 /usr/bin/python3 -m unittest discover \
   -s src/robot_base_driver/tests -p 'test_base_driver_command_limits.py' -q
 ```
+
+## 控制审计与综合日志
+
+底盘在每次串口发送尝试后发布 `/vehicle/command_audit`（`std_msgs/String` JSON）：原始输入、限幅/死区/非法值/定位拦截原因、准确的协议字符串、量化后轮速rad/s和转角deg、换算车速、限值、写入字节数及错误。`write_status` 为 `written`、`short_write`、`write_error` 或 `port_unavailable`；仅 `written` 表示串口API返回完整字节数，**不代表MCU已执行**。没有新增执行反馈或控制联锁。审计发布为有界队列、尽力而为，异常不阻断原控制发送。
+
+`system_run_logger.py` 将该话题写为 `command_audit_event`，并逐消息记录 `/cmd_vel_remote` 的 `remote_command_event` 和 `/vehicle/control_mode` 的 `mode_request_event`（含非法模式请求）。三者也进入原10 Hz状态采样；仍写入同一份 `tracker_logs/system_run_full_*.jsonl`，不新增另一套日志文件。事件外层 `stamp` 是NUC ROS接收时间、`wall_stamp` 是系统时间；无Header的原始遥控/模式请求没有采集时间，不能将接收时间当作源时间。驱动审计的 `data.stamp` 为驱动发送处理开始时刻。
+
+全系统开启原综合日志即可，rosbag仍需另开；三份录包配置均包含上述话题。现有运行中的进程不会热更新，安全停车后重新启动相应系统才应用新代码。
+
+综合JSONL在统一写入边界将非有限数递归保留为字符串 `"nan"`、`"inf"`、`"-inf"`，不改为零、不修改控制数据，再用严格JSON序列化；自动事件、selected采样及嵌套诊断同样生效。其他不可序列化对象会告警，本条写入返回失败，后续记录仍可继续。
 
 ## 电机遥测与报警
 

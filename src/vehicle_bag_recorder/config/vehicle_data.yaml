@@ -50,6 +50,7 @@ topics:
   - /gps/nmea_sentence
   - /gnss/gpgga
   - /lio_guard/status
+  - /gnss/solution_status
   - /gps_guard/status
   - /localization_safe
 
@@ -72,6 +73,8 @@ topics:
   - /cmd_vel/remote
   - /cmd_vel/selected
   - /vehicle/control_mode/status
+  - /vehicle/control_mode
+  - /vehicle/command_audit
   - /neupan/runtime
   - /neupan/failure
   - /neupan/camera_path_guard

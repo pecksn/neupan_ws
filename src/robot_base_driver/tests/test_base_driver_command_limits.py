@@ -1,5 +1,6 @@
 """Task 02: actual driver callbacks with a mocked serial port, no hardware."""
 import math
+import json
 from pathlib import Path
 import random
 import sys
@@ -18,11 +19,13 @@ class DriverCommandLimitsTests(unittest.TestCase):
         self.params = {}
         self.serial = MagicMock()
         self.serial.is_open = True
+        self.serial.write.side_effect = lambda data: len(data)
         for target in ('init_node', 'Publisher', 'Subscriber', 'Timer', 'logwarn_throttle',
-                       'logfatal', 'loginfo', 'logwarn'):
+                       'logfatal', 'loginfo', 'logwarn', 'logerr'):
             stub = patch.object(rospy, target)
             stub.start()
             self.addCleanup(stub.stop)
+        rospy.Publisher.side_effect = lambda *args, **kwargs: MagicMock()
         for stub in (
                 patch.object(rospy, 'get_param', lambda k, d=None: self.params.get(k, d)),
                 patch.object(rospy.Time, 'now', lambda: rospy.Time(100)),
@@ -50,6 +53,73 @@ class DriverCommandLimitsTests(unittest.TestCase):
         speed, steering = float(speed), float(steering)
         self.assertTrue(math.isfinite(speed) and math.isfinite(steering), wire)
         return speed, steering
+
+    def audit(self, driver):
+        return json.loads(driver.command_audit_pub.publish.call_args.args[0].data)
+
+    def test_audit_reports_exact_protocol_and_not_mcu_execution(self):
+        driver = self.driver()
+        wheel, angle = self.command(driver, .8, .2)
+        data = self.audit(driver)
+        self.assertEqual(data['protocol'].encode(), self.serial.write.call_args.args[0])
+        self.assertEqual(data['wheel_rad_s'], wheel)
+        self.assertEqual(data['steering_deg'], angle)
+        self.assertAlmostEqual(data['command_speed_mps'], wheel*.1275)
+        self.assertEqual(data['request'], {'speed_mps': .8, 'steering_rad': .2})
+        self.assertEqual(data['write_status'], 'written')
+        self.assertEqual(data['written_bytes'], data['expected_bytes'])
+        self.assertFalse(data['mcu_execution_confirmed'])
+
+    def test_audit_explains_limits_deadzone_invalid_and_direct_calls(self):
+        driver = self.driver()
+        self.command(driver, 5., 2.)
+        self.assertTrue({'speed_limit', 'steering_limit'} <= set(self.audit(driver)['reasons']))
+        self.command(driver, .01, .2)
+        self.assertIn('speed_dead_zone', self.audit(driver)['reasons'])
+        self.command(driver, math.nan, .2)
+        data = self.audit(driver)
+        self.assertIn('non_finite_twist', data['reasons'])
+        self.assertEqual(data['request']['speed_mps'], 'nan')
+        # Invalid numbers are preserved as text, never non-standard JSON NaN.
+        json.dumps(data, allow_nan=False)
+        driver.send_serial_command(math.inf, 2.)
+        self.assertIn('non_finite_serial_control', self.audit(driver)['reasons'])
+        self.assertEqual(self.audit(driver)['source'], 'direct')
+
+    def test_audit_records_closed_port_short_write_and_exception_without_retries(self):
+        driver = self.driver()
+        self.serial.is_open = False
+        msg = Twist()
+        msg.linear.x = .8
+        driver.cmd_vel_callback(msg)
+        self.serial.write.assert_not_called()
+        self.assertEqual(self.audit(driver)['write_status'], 'port_unavailable')
+        self.assertIsNone(self.audit(driver)['written_bytes'])
+        self.serial.is_open = True
+        self.serial.write.side_effect = lambda data: len(data)-1
+        self.command(driver, .8)
+        self.assertEqual(self.audit(driver)['write_status'], 'short_write')
+        self.serial.write.side_effect = OSError('mock serial failure')
+        self.command(driver, .8)
+        self.assertEqual(self.audit(driver)['write_status'], 'write_error')
+        self.assertIn('mock serial failure', self.audit(driver)['error'])
+        self.assertEqual(self.serial.write.call_count, 2)
+
+    def test_audit_failure_does_not_change_serial_command(self):
+        driver = self.driver()
+        driver.command_audit_pub.publish.side_effect = RuntimeError('mock audit failure')
+        self.assertEqual(self.command(driver, .8, .1), (6.27, 5.73))
+        self.serial.write.assert_called_once()
+
+    def test_audit_explains_existing_localization_holds(self):
+        from std_msgs.msg import Bool
+        driver = self.driver(enable_localization_safety_stop=True)
+        self.assertIn('startup_localization_hold', self.audit(driver)['reasons'])
+        self.command(driver, .8, .1)
+        self.assertIn('localization_unsafe', self.audit(driver)['reasons'])
+        driver.localization_safe = True
+        driver.localization_safety_callback(Bool(data=False))
+        self.assertIn('localization_became_unsafe', self.audit(driver)['reasons'])
 
     def test_each_nonfinite_twist_field_immediately_replaces_motion_with_stop(self):
         driver = self.driver()

@@ -13,7 +13,7 @@ from geometry_msgs.msg import PoseStamped, QuaternionStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from nmea_msgs.msg import Gpgga
 from sensor_msgs.msg import NavSatFix
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, String, UInt8
 from robot_base_driver.msg import MotorStatus
 
 
@@ -39,6 +39,9 @@ class SystemRunLogger:
         self.command_topic = rospy.get_param("~command_topic", "/neupan_cmd_vel")
         self.auto_command_topic = rospy.get_param("~auto_command_topic", "/cmd_vel/auto")
         self.control_mode_topic = rospy.get_param("~control_mode_topic", "/vehicle/control_mode/status")
+        self.remote_command_topic = rospy.get_param("~remote_command_topic", "/cmd_vel_remote")
+        self.mode_request_topic = rospy.get_param("~mode_request_topic", "/vehicle/control_mode")
+        self.command_audit_topic = rospy.get_param("~command_audit_topic", "/vehicle/command_audit")
         self.neupan_runtime_topic = rospy.get_param("~neupan_runtime_topic", "/neupan/runtime")
         self.global_path_topic = rospy.get_param("~global_path_topic", "/osm_global_path")
         self.gps_guard_topic = rospy.get_param("~gps_guard_topic", "/gps_guard/status")
@@ -81,6 +84,9 @@ class SystemRunLogger:
             "command": None,
             "auto_command": None,
             "control_mode": None,
+            "remote_command": None,
+            "mode_request": None,
+            "command_audit": None,
             "neupan_runtime": None,
             "lio_guarded": None,
             "motor_alarm": None,
@@ -129,6 +135,9 @@ class SystemRunLogger:
         rospy.Subscriber(self.command_topic, Twist, self.command_cb, queue_size=100)
         rospy.Subscriber(self.auto_command_topic, Twist, self.auto_command_cb, queue_size=100)
         rospy.Subscriber(self.control_mode_topic, String, self.control_mode_cb, queue_size=50)
+        rospy.Subscriber(self.remote_command_topic, Twist, self.remote_command_cb, queue_size=100)
+        rospy.Subscriber(self.mode_request_topic, UInt8, self.mode_request_cb, queue_size=50)
+        rospy.Subscriber(self.command_audit_topic, String, self.command_audit_cb, queue_size=100)
         rospy.Subscriber(self.neupan_runtime_topic, String, self.neupan_runtime_cb, queue_size=50)
         rospy.Subscriber("/odometry/lio_guarded", Odometry,
                          lambda msg: self.update("lio_guarded", self.odom_dict(msg)), queue_size=50)
@@ -184,6 +193,9 @@ class SystemRunLogger:
             "command": self.command_topic,
             "auto_command": self.auto_command_topic,
             "control_mode": self.control_mode_topic,
+            "remote_command": self.remote_command_topic,
+            "mode_request": self.mode_request_topic,
+            "command_audit": self.command_audit_topic,
             "neupan_runtime": self.neupan_runtime_topic,
             "lio_guarded": "/odometry/lio_guarded",
             "motor_alarm": "/motor/alarm",
@@ -241,10 +253,27 @@ class SystemRunLogger:
         with self.log_lock:
             return self.write_record_locked(record, force_flush, ignore_size_limit)
 
+    @staticmethod
+    def json_safe(value):
+        """Preserve invalid-number evidence without emitting non-standard JSON."""
+        if isinstance(value, float) and not math.isfinite(value):
+            return repr(value)
+        if isinstance(value, dict):
+            return {SystemRunLogger.json_safe(key): SystemRunLogger.json_safe(item)
+                    for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [SystemRunLogger.json_safe(item) for item in value]
+        return value
+
     def write_record_locked(self, record, force_flush=False, ignore_size_limit=False):
         if self.log_file is None:
             return False
-        line = json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n"
+        try:
+            line = json.dumps(self.json_safe(record), separators=(",", ":"),
+                              ensure_ascii=True, allow_nan=False) + "\n"
+        except (TypeError, ValueError, RecursionError) as exc:
+            rospy.logerr_throttle(1.0, "system_run_logger: serialization failed: %s", exc)
+            return False
         line_size = len(line.encode("utf-8"))
         if (
             not ignore_size_limit
@@ -462,6 +491,35 @@ class SystemRunLogger:
         payload = self.parse_status(msg)
         self.update("control_mode", payload)
         self.write_record({"record_type": "control_mode_event", "data": payload})
+
+    def record_control_event(self, key, payload):
+        # Reception time is not source time: Twist/UInt8 have no Header.
+        with self.log_lock:
+            self.update(key, payload)
+            self.write_record({
+                "record_type": key + "_event", "topic": self.topic_map()[key],
+                "stamp": self.received_at[key], "wall_stamp": time.time(),
+                "data": payload,
+            })
+
+    def remote_command_cb(self, msg):
+        # Retain all raw fields, including invalid inputs, in standard JSON.
+        payload = {}
+        for group in ("linear", "angular"):
+            for axis in ("x", "y", "z"):
+                value = float(getattr(getattr(msg, group), axis))
+                payload[group + "_" + axis] = value if math.isfinite(value) else repr(value)
+        self.record_control_event("remote_command", payload)
+
+    def mode_request_cb(self, msg):
+        value = int(msg.data)
+        self.record_control_event("mode_request", {
+            "requested_mode": value,
+            "requested_name": {0: "AUTO", 1: "MANUAL"}.get(value, "INVALID"),
+        })
+
+    def command_audit_cb(self, msg):
+        self.record_control_event("command_audit", self.parse_status(msg))
 
     def neupan_runtime_cb(self, msg):
         payload = self.parse_status(msg)

@@ -29,7 +29,21 @@ bag（达到配置大小后自动分包）以及同名前缀的 JSON 清单。�
 
 默认必录检查包含 `/cloud_registered_body`、`/tf`、GPS Fix、GGA、航向、
 `/camera/image_raw` 和 `/camera/camera_info`。关键话题没有发布者时
-终端每 5 秒告警，但其他话题仍继续录制；结束时会再次列出整次录制从未出现的话题。
+终端每 5 秒告警，但其他话题仍继续录制；有发布者不代表已有消息写入bag。
+
+正常结束时读取本次各分包索引，不解码图像/点云，将实际话题类型与消息数写入原 JSON 清单的 `recording_result`：
+
+- `topic_message_counts`：所有分包按话题累计的消息数。
+- `required_topics_without_messages`：未查到消息的必录话题。
+- `shutdown`、`return_code`、`process_running`：关闭请求原因、阶段异常、子进程退出码及是否仍存活；状态无法查询时为null，不能视为已退出。
+- `index_verification_complete`：记录子进程已退出、所有bag索引核验成功且没有 `.bag.active` 遗留。
+- `all_required_topics_recorded`：索引核验完整且所有必录话题有消息；不代表数据质量或整段无断流。
+
+无文件、损坏索引或未完成分包会明确标记未核验完成，不自动修复或删除原bag。强制杀进程/断电时可能无法写入结束结果，此时清单缺少 `recording_result`，不能视为核验通过。
+
+SIGINT等待20秒、SIGTERM再等待5秒后仍未退出，也会尽力保存不完整清单，不新增SIGKILL。发送信号时子进程恰好退出等异常会记录在 `shutdown.errors`。清单更新失败保留原文件，重复调用stop只重试未成功的清单，不重复发信号。
+
+三份配置还保留原始模式请求、遥控输入、GNSS解状态、目标/到达事件、经纬度路径和 `/vehicle/command_audit`（驱动串口发送审计，不是实测轮速）。模式请求及目标等事件可能整趟不产生，未被加入连续传感器必录告警；检查 `topic_message_counts` 时结合本次实际操作。
 
 默认话题列表还会保存 `/road_curb/roi_cloud` 和 `/road_curb/candidate_cloud`，用于在 RViz
 中把路缘检测区域、候选高度突变点与原始点云叠加分析。
