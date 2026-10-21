@@ -13,7 +13,7 @@ import time
 
 def run(folder):
     folder.mkdir(parents=True, exist_ok=True)
-    source = Path(__file__).resolve().parents[1]/'scripts/planner_comparison.py'
+    source = Path(__file__).resolve().parents[3]/'src/neupan_ros/example/lxw_car_simulation/scripts/planner_comparison.py'
     spec = importlib.util.spec_from_file_location('comparison', source)
     sim = importlib.util.module_from_spec(spec); spec.loader.exec_module(sim)
     with socket.socket() as a, socket.socket() as b:

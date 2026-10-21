@@ -80,6 +80,8 @@ topics:
   - /odometry/gps
   - /gnss/gpgga
   - /gnss/solution_status
+  - /gnss/serial_diagnostics
+  - /gnss/time_diagnostics
   - /odometry/lio_guarded
   - /gps_guard/local_fault_event
   - /motor/status

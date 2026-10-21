@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'src/robot_base_driver/scripts'))
 import rospy
 from global_odom_bridge import GlobalOdomBridge
 from nav_msgs.msg import Odometry
@@ -53,11 +53,15 @@ class StartupTests(unittest.TestCase):
         gga.header.stamp = self.now
         gga.gps_qual, gga.num_sats, gga.hdop = quality, 12, 1.0
         b.gga_cb(gga)
-        b.last_solution = {'stamp': self.now.to_sec(), 'heading_fixed': heading, 'heading_valid': heading}
+        b.last_solution = {'stamp': self.now.to_sec(), 'stamp_ns': self.now.to_nsec(), 'heading_fixed': heading, 'heading_valid': heading}
         b.last_solution_recv = self.now
         b.last_heading_yaw = math.pi / 2
         b.last_heading_recv = self.now
         b.last_heading_stamp = self.now
+        # Synchronous fixture: rejection tests mutate latest values directly.
+        # Independent callback buffering is covered in test_global_alignment.
+        for history in b.observation_history.values():
+            history.clear()
 
     def initialize_low(self, b):
         for t in (100, 101, 102):
@@ -94,7 +98,7 @@ class StartupTests(unittest.TestCase):
     def test_requires_fixed_fresh_heading_and_local_odometry(self):
         b = self.bridge(True)
         self.sample(b, 100, heading=False)
-        self.assertEqual(b.data_quality(self.now, True)[1], 'heading_solution_unfixed')
+        self.assertEqual(b.data_quality(self.now, True)[1], 'latest_heading_solution_unfixed')
         self.sample(b, 100)
         b.last_solution_recv = rospy.Time(96)
         self.assertEqual(b.data_quality(self.now, True)[1], 'heading_solution_stale')

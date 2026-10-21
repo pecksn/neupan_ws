@@ -4,6 +4,8 @@ import copy
 import json
 import math
 import statistics
+import threading
+import time
 from collections import deque
 
 import rospy
@@ -13,6 +15,7 @@ from sensor_msgs.msg import NavSatFix
 from nmea_msgs.msg import Gpgga
 from std_msgs.msg import Bool, String
 from tf.transformations import quaternion_from_euler
+from gnss_timebase import GnssTimebase
 
 
 class LocalMotionGuard:
@@ -199,6 +202,7 @@ class GlobalOdomBridge:
 
     def __init__(self):
         rospy.init_node("global_odom_bridge")
+        self.state_lock = threading.RLock()
 
         self.input_topic = rospy.get_param("~input_topic", "/odometry/gps")
         self.local_topic = rospy.get_param("~local_topic", "/odometry/local")
@@ -206,6 +210,8 @@ class GlobalOdomBridge:
         self.gga_topic = rospy.get_param("~gga_topic", "/gnss/gpgga")
         self.heading_topic = rospy.get_param("~heading_topic", "/heading")
         self.solution_topic = rospy.get_param("~solution_topic", "/gnss/solution_status")
+        self.gnss_timebase = GnssTimebase(rospy.get_param('~gps_time_mode', 'shadow'),
+                                        rospy.get_param('~gps_time_clock_verified', False))
         self.require_heading_fixed = bool(rospy.get_param("~require_heading_fixed", True))
         self.solution_timeout_sec = max(0.1, float(rospy.get_param("~solution_timeout_sec", 2.5)))
         self.output_topic = rospy.get_param("~output_topic", "/odometry/global")
@@ -344,6 +350,10 @@ class GlobalOdomBridge:
         self.last_heading_stamp = None
         self.last_solution = None
         self.last_solution_recv = None
+        # Authoritative latest source health is NOT replaced by a historical
+        # observation selected for time alignment.
+        self.latest_solution_health = None
+        self.latest_solution_health_watermark = 0
         self.heading_bad_until = rospy.Time(0)
         self.local_bad_until = rospy.Time(0)
         self.local_fault_reason = "local_odom_missing"
@@ -374,6 +384,36 @@ class GlobalOdomBridge:
         self.last_yaw_error_deg = None
         self.last_tracking_candidate = None
         self.last_candidate_step_m = None
+        self.local_pose_history = deque(maxlen=400)
+        self.observation_history = {name: deque(maxlen=128)
+                                    for name in ('gps', 'fix', 'gga', 'heading', 'solution')}
+        self.pair_wait_timeout_sec = float(rospy.get_param(
+            '~pair_wait_timeout_sec', min(.5, self.data_timeout_sec, self.heading_timeout_sec)))
+        if not math.isfinite(self.pair_wait_timeout_sec) or not 0 < self.pair_wait_timeout_sec <= self.data_timeout_sec:
+            raise ValueError('pair_wait_timeout_sec must be positive and <= data_timeout_sec')
+        self.pair_wait_since = None
+        self.pair_wait_xy = None
+        self.observation_buffer_diagnostics = {'state': 'empty'}
+        self.position_pair = None
+        self.heading_pair = None
+        self.source_pairing = {'valid': False, 'reason': 'waiting_for_sources'}
+        self.recovery_diagnostics = {'valid': False, 'reason': 'empty_window'}
+        self.correction_diagnostics = {'valid': False, 'reason': 'not_corrected'}
+        self.alignment_error_stamp = None
+        self.alignment_error_valid = False
+        self.alignment_error_reason = 'not_observed'
+        # Reuse the existing innovation bound and recovery duration. Only a
+        # stable, full-quality Fixed observation can latch this stop, not Float.
+        self.alignment_conflict_position_m = float(rospy.get_param(
+            '~alignment_conflict_position_m', self.runtime_position_max_error_m))
+        self.alignment_conflict_stable_sec = float(rospy.get_param(
+            '~alignment_conflict_stable_sec', max(1.0, self.recovery_stable_sec)))
+        if not all(math.isfinite(v) and v > 0 for v in (
+                self.alignment_conflict_position_m, self.alignment_conflict_stable_sec)):
+            raise ValueError('invalid alignment conflict configuration')
+        self.alignment_conflict = False
+        self.alignment_conflict_since = None
+        self.alignment_conflict_diagnostics = {'state': 'not_observed'}
 
         self.pub = rospy.Publisher(self.output_topic, Odometry, queue_size=10)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=2, latch=True)
@@ -383,6 +423,7 @@ class GlobalOdomBridge:
         rospy.Subscriber(self.local_topic, Odometry, self.local_odom_cb, queue_size=30)
         rospy.Subscriber(self.fix_topic, NavSatFix, self.fix_cb, queue_size=10)
         rospy.Subscriber(self.gga_topic, Gpgga, self.gga_cb, queue_size=10)
+        rospy.Subscriber('/gnss/time_diagnostics', String, self.time_metadata_cb, queue_size=200)
         if self.use_heading_orientation:
             rospy.Subscriber(self.heading_topic, QuaternionStamped, self.heading_cb, queue_size=20)
             rospy.Subscriber(self.solution_topic, String, self.solution_cb, queue_size=10)
@@ -420,10 +461,27 @@ class GlobalOdomBridge:
         return math.atan2(siny_cosp, cosy_cosp)
 
     def gps_odom_cb(self, msg):
-        self.last_gps_odom = msg
-        self.last_gps_recv = rospy.Time.now()
+        with self.state_lock:
+            self.last_gps_odom = msg
+            self.last_gps_recv = rospy.Time.now()
+            self.remember_observation('gps', msg, self.last_gps_recv)
+
+    def time_metadata_cb(self, msg):
+        with self.state_lock:
+            try:
+                event = json.loads(msg.data)
+                if not isinstance(event, dict):
+                    raise ValueError('time metadata must be an object')
+                self.gnss_timebase.receive(event, rospy.Time.now().to_nsec(), time.monotonic_ns())
+            except (ValueError, TypeError):
+                if self.gnss_timebase.mode == 'measurement':
+                    self.gnss_timebase.fault = 'malformed_time_metadata'
 
     def local_odom_cb(self, msg):
+        with self.state_lock:
+            self._local_odom_cb(msg)
+
+    def _local_odom_cb(self, msg):
         now = rospy.Time.now()
         pose = msg.pose.pose
         current = (pose.position.x, pose.position.y,
@@ -470,14 +528,21 @@ class GlobalOdomBridge:
         self.previous_local_stamp = msg.header.stamp
         self.last_local_odom = msg
         self.last_local_recv = now
+        if result['fault']:
+            self.local_pose_history.clear()
+        self.local_pose_history.append((msg.header.stamp.to_nsec(), current))
 
     def fix_cb(self, msg):
-        self.last_fix = msg
-        self.last_fix_recv = rospy.Time.now()
+        with self.state_lock:
+            self.last_fix = msg
+            self.last_fix_recv = rospy.Time.now()
+            self.remember_observation('fix', msg, self.last_fix_recv)
 
     def gga_cb(self, msg):
-        self.last_gga = msg
-        self.last_gga_recv = rospy.Time.now()
+        with self.state_lock:
+            self.last_gga = msg
+            self.last_gga_recv = rospy.Time.now()
+            self.remember_observation('gga', msg, self.last_gga_recv)
 
     def handle_local_fault(self, now, new_local_odom, reason):
         self.local_bad_until = now + rospy.Duration(self.local_fault_hold_sec)
@@ -517,10 +582,70 @@ class GlobalOdomBridge:
                 raise ValueError("GNSS solution status must be an object")
         except (ValueError, TypeError):
             payload = {"heading_valid": False, "heading_fixed": False}
-        self.last_solution = payload
-        self.last_solution_recv = rospy.Time.now()
+        with self.state_lock:
+            if (payload.get('time_mode') == 'measurement') != (self.gnss_timebase.mode == 'measurement'):
+                self.gnss_timebase.fault = 'time_mode_mismatch_restart_required'
+            self.last_solution = payload
+            self.last_solution_recv = rospy.Time.now()
+            self.remember_observation('solution', payload, self.last_solution_recv)
+            try:
+                stamp_ns = self.solution_stamp_ns(payload)
+            except (ValueError, TypeError, OverflowError):
+                stamp_ns = None
+            if stamp_ns is None or stamp_ns > self.last_solution_recv.to_nsec()+50000000:
+                self.latest_solution_health = {'payload': copy.deepcopy(payload),
+                    'received': self.last_solution_recv, 'source_ns': None}
+            elif stamp_ns >= self.latest_solution_health_watermark:
+                prior = self.latest_solution_health
+                new_fixed = (payload.get('heading_fixed') is True and payload.get('heading_valid') is True
+                             and payload.get('error') is None)
+                prior_fixed = (prior is not None and prior['source_ns'] is not None
+                               and prior['payload'].get('heading_fixed') is True
+                               and prior['payload'].get('heading_valid') is True
+                               and prior['payload'].get('error') is None)
+                # A cached/duplicate Fixed packet cannot clear a later failure
+                # (including one with an invalid clock). Recovery needs a NEW
+                # trustworthy source identity, not another receive timestamp.
+                if stamp_ns > self.latest_solution_health_watermark or prior is None or not new_fixed or prior_fixed:
+                    self.latest_solution_health_watermark = stamp_ns
+                    self.latest_solution_health = {'payload': copy.deepcopy(payload),
+                        'received': self.last_solution_recv, 'source_ns': stamp_ns}
+
+    def latest_heading_health(self, now):
+        """Current source failure overrides old, individually qualified data."""
+        if not self.use_heading_orientation or not self.require_heading_fixed:
+            return {'valid': True, 'reason': 'not_required', 'source_ns': None}
+        state = self.latest_solution_health
+        # Synchronous callers/tests may assign latest data without callbacks.
+        if state is None:
+            try:
+                stamp_ns = self.solution_stamp_ns(self.last_solution or {})
+            except (ValueError, TypeError, OverflowError):
+                stamp_ns = None
+            state = {'payload': self.last_solution, 'received': self.last_solution_recv,
+                     'source_ns': stamp_ns}
+        payload, received, stamp = state['payload'], state['received'], state['source_ns']
+        reason = 'ok'
+        if payload is None or received is None:
+            reason = 'latest_heading_solution_missing'
+        elif stamp is None:
+            reason = 'latest_heading_solution_invalid'
+        elif not -.05 <= (now.to_nsec()-stamp)*1e-9 <= self.solution_timeout_sec or not 0 <= (now-received).to_sec() <= self.solution_timeout_sec:
+            reason = 'latest_heading_solution_stale'
+        elif payload.get('error') is not None:
+            reason = 'latest_heading_solution_invalid'
+        elif payload.get('heading_fixed') is not True or payload.get('heading_valid') is not True:
+            reason = 'latest_heading_solution_unfixed'
+        return {'valid': reason == 'ok', 'reason': reason, 'source_ns': stamp,
+                'heading_fixed': None if payload is None else payload.get('heading_fixed'),
+                'heading_valid': None if payload is None else payload.get('heading_valid'),
+                'received_stamp': None if received is None else received.to_sec()}
 
     def heading_cb(self, msg):
+        with self.state_lock:
+            self._heading_cb(msg)
+
+    def _heading_cb(self, msg):
         q = msg.quaternion
         if not all(self.finite(v) for v in (q.x, q.y, q.z, q.w)):
             return
@@ -539,8 +664,181 @@ class GlobalOdomBridge:
         self.last_heading_yaw = yaw
         self.last_heading_recv = now
         self.last_heading_stamp = msg.header.stamp
+        self.remember_observation('heading', msg, now)
 
-    def check_source_times(self, now, sources):
+    def remember_observation(self, name, message, received):
+        # Store quality and source time with the measurement, not with a later
+        # packet. Bound memory even if a source floods while local odom stalls.
+        try:
+            stamp = (self.solution_stamp_ns(message) if name == 'solution'
+                     else message.header.stamp.to_nsec())
+        except (TypeError, ValueError, OverflowError):
+            stamp = 0
+        self.observation_history[name].append((stamp, received, copy.deepcopy(message)))
+
+    def observation_entries(self, name):
+        entries = {entry[0]: entry for entry in self.observation_history[name]}
+        # Include latest values for startup and callers that supply messages
+        # directly. Actual callbacks always populate the bounded history too.
+        message = {'gps': self.last_gps_odom, 'fix': self.last_fix,
+                   'gga': self.last_gga, 'solution': self.last_solution}.get(name)
+        received = {'gps': self.last_gps_recv, 'fix': self.last_fix_recv,
+                    'gga': self.last_gga_recv, 'solution': self.last_solution_recv}.get(name)
+        if name == 'heading' and self.last_heading_stamp is not None and self.last_heading is not None:
+            msg = QuaternionStamped()
+            msg.header.stamp = self.last_heading_stamp
+            msg.quaternion = self.last_heading
+            message, received = msg, self.last_heading_recv
+        if message is not None and received is not None:
+            try:
+                stamp = (self.solution_stamp_ns(message) if name == 'solution'
+                         else message.header.stamp.to_nsec())
+            except (TypeError, ValueError, OverflowError):
+                stamp = 0
+            entries[stamp] = (stamp, received, message)
+        return list(entries.values())
+
+    @staticmethod
+    def solution_stamp_ns(message):
+        value = message.get('stamp_ns')
+        if type(value) is not int or value <= 0:
+            raise ValueError('missing/invalid exact solution identity')
+        if message.get('time_mode') == 'measurement':
+            if (message.get('time_valid') is not True or message.get('clock_verified') is not True
+                    or message.get('measurement_stamp_ns') != value
+                    or message.get('observation_id') != '{}:{}:PVTSLNA:{}'.format(
+                        message.get('session_id'), message.get('clock_epoch'), value)):
+                raise ValueError('invalid measurement solution identity')
+            return value  # Exact integer identity; legacy float is display only.
+        rounded = float(message.get('stamp'))*1e9
+        if not math.isfinite(rounded) or abs(rounded-value) > 1000:
+            raise ValueError('inconsistent solution source time')
+        return value
+
+    @staticmethod
+    def same_solution_observation(solution, heading_ns):
+        try:
+            return GlobalOdomBridge.solution_stamp_ns(solution) == heading_ns
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    def select_observation(self, now):
+        """Choose the newest unprocessed observation that local odom brackets.
+
+        A 120ms local delay with 10Hz GPS must consume an older *new* GPS
+        observation, not wait forever for the continually replaced latest one.
+        All associated quality messages retain their own receive/source times.
+        """
+        if not self.observation_history['gps']:
+            return None
+        entries = {name: self.observation_entries(name) for name in self.observation_history}
+        def nearest(name, stamp, tolerance):
+            candidates = [e for e in entries[name] if e[0] > 0 and abs(e[0]-stamp) <= tolerance*1e9]
+            return min(candidates, key=lambda e: (abs(e[0]-stamp), e[0])) if candidates else None
+        def exact(name, stamp):
+            candidates = [e for e in entries[name] if
+                (self.same_solution_observation(e[2], stamp) if name == 'solution' else e[0] == stamp)]
+            return max(candidates, key=lambda e: e[1].to_nsec()) if candidates else None
+        self.observation_buffer_diagnostics = {'state': 'waiting', 'stamp': now.to_sec(),
+            'gps_samples': len(entries['gps']), 'selected_source_ns': None,
+            'latest_gps_ns': None if self.last_gps_odom is None else self.last_gps_odom.header.stamp.to_nsec()}
+        # Invalid/future/out-of-order latest inputs still pass through the
+        # ordinary rejection path; a cache must not hide a broken source clock.
+        if self.last_gps_odom is not None:
+            stamp = self.last_gps_odom.header.stamp.to_nsec()
+            watermark = self.source_stamp_watermarks.get('gps_odom', 0)
+            if stamp <= 0 or stamp > now.to_nsec()+50000000 or stamp < watermark:
+                return None
+        for gps in sorted(entries['gps'], key=lambda e: e[0], reverse=True):
+            stamp = gps[0]
+            if not 0 <= now.to_nsec()-stamp <= self.data_timeout_sec*1e9:
+                continue
+            fix = exact('fix', stamp) if self.guard_enabled else None
+            observation_stamp = fix[0] if fix is not None else stamp
+            if self.last_processed_gps_stamp_ns is not None and observation_stamp <= self.last_processed_gps_stamp_ns:
+                continue
+            gga = exact('gga', observation_stamp) if self.guard_enabled else None
+            if self.guard_enabled and (fix is None or gga is None):
+                continue
+            if self.local_pose_at(stamp)[0] is None:
+                continue
+            heading = nearest('heading', stamp, self.heading_timeout_sec) if self.use_heading_orientation else None
+            solution = exact('solution', heading[0]) if heading is not None else None
+            heading_paired = (heading is not None and solution is not None
+                              and self.local_pose_at(heading[0])[0] is not None)
+            runtime_allowed = self.transform_initialized and self.allow_nonfixed_runtime
+            if self.use_heading_orientation and self.require_heading_fixed and not heading_paired:
+                health = self.latest_heading_health(now)
+                # A genuinely new heading awaiting its own quality is still a
+                # bounded wait. An absent/old heading in Float is NOT a reason
+                # to starve a fully paired position-only observation.
+                new_unqualified_heading = (heading is not None and solution is None and
+                    -.05 <= (now.to_nsec()-heading[0])*1e-9 <= self.heading_timeout_sec and
+                    (health['source_ns'] is None or heading[0] > health['source_ns']))
+                if not runtime_allowed or new_unqualified_heading:
+                    continue
+                heading = solution = None
+            selected = {'last_gps_odom': gps[2], 'last_gps_recv': gps[1]}
+            if self.guard_enabled:
+                selected.update(last_fix=fix[2], last_fix_recv=fix[1], last_gga=gga[2], last_gga_recv=gga[1])
+            if self.use_heading_orientation:
+                selected.update(last_heading=None if heading is None else heading[2].quaternion,
+                    last_heading_yaw=None if heading is None else self.yaw_from_quaternion(heading[2].quaternion),
+                    last_heading_stamp=None if heading is None else heading[2].header.stamp,
+                    last_heading_recv=None if heading is None else heading[1],
+                    last_solution=None if solution is None else solution[2],
+                    last_solution_recv=None if solution is None else solution[1])
+            self.observation_buffer_diagnostics.update(state='selected', selected_source_ns=observation_stamp,
+                source_age_sec=(now.to_nsec()-stamp)*1e-9,
+                selected_fix_status=None if fix is None else int(fix[2].status.status),
+                selected_gga_quality=None if gga is None else int(gga[2].gps_qual),
+                selected_heading_ns=None if heading is None else heading[0],
+                quality_binding='same_observation',
+                selected_heading_fixed=None if solution is None else solution[2].get('heading_fixed'))
+            self.observation_buffer_diagnostics['heading_paired'] = heading_paired
+            return selected
+        return None
+
+    def current_anchor(self):
+        if self.last_local_odom is None:
+            raise ValueError('local anchor unavailable')
+        p = self.last_local_odom.pose.pose.position
+        return float(p.x), float(p.y)
+
+    @staticmethod
+    def project_alignment(transform, anchor):
+        tx, ty, angle = transform
+        x, y = anchor
+        c, s = math.cos(angle), math.sin(angle)
+        return tx+c*x-s*y, ty+s*x+c*y
+
+    def local_pose_at(self, stamp_ns):
+        """Interpolate accepted source poses; never extrapolate a moving pose."""
+        history = list(self.local_pose_history)
+        # Also support an exact latest observation before a history is formed.
+        if self.last_local_odom is not None:
+            msg = self.last_local_odom
+            point = (msg.pose.pose.position.x, msg.pose.pose.position.y,
+                     self.yaw_from_quaternion(msg.pose.pose.orientation))
+            latest = (msg.header.stamp.to_nsec(), point)
+            if not history or latest[0] > history[-1][0]:
+                history.append(latest)
+        if not history or stamp_ns < history[0][0] or stamp_ns > history[-1][0]:
+            return None, {'reason': 'local_bracket_unavailable'}
+        for i, (stamp, pose) in enumerate(history):
+            if stamp == stamp_ns:
+                return tuple(pose), {'left_ns': stamp, 'right_ns': stamp, 'fraction': 0.}
+            if stamp > stamp_ns and i:
+                old_stamp, old = history[i-1]
+                if stamp-old_stamp > int(self.data_timeout_sec*1e9):
+                    return None, {'reason': 'local_interpolation_gap'}
+                f = (stamp_ns-old_stamp)/float(stamp-old_stamp)
+                result = (old[0]+f*(pose[0]-old[0]), old[1]+f*(pose[1]-old[1]),
+                          self.normalize_angle(old[2]+f*self.normalize_angle(pose[2]-old[2])))
+                return result, {'left_ns': old_stamp, 'right_ns': stamp, 'fraction': f}
+        return None, {'reason': 'local_bracket_unavailable'}
+
+    def check_source_times(self, now, sources, commit=True):
         """Validate source clocks independently of fresh ROS reception times.
 
         Equal stamps remain fresh cached observations, but never become new
@@ -560,27 +858,45 @@ class GlobalOdomBridge:
             if previous is not None and stamp_ns < previous:
                 return False, 'source_out_of_order_'+name
             observed[name] = stamp_ns
-        self.source_stamp_watermarks.update(observed)
+        if commit:
+            self.source_stamp_watermarks.update(observed)
         return True, 'ok'
 
     def position_source_quality(self, now):
+        self.position_pair = None
+        self.source_pairing = {'valid': False, 'stamp': now.to_sec(), 'reason': 'source_quality_rejected'}
         sources = [('gps_odom', self.last_gps_odom.header.stamp.to_nsec(), self.data_timeout_sec),
                    ('local_odom', self.last_local_odom.header.stamp.to_nsec(), self.data_timeout_sec)]
         if self.guard_enabled:
             sources.extend((('gps_fix', self.last_fix.header.stamp.to_nsec(), self.data_timeout_sec),
                             ('gga', self.last_gga.header.stamp.to_nsec(), self.data_timeout_sec)))
-        good, reason = self.check_source_times(now, sources)
+        good, reason = self.check_source_times(now, sources, commit=False)
         if not good:
             return good, reason
         if self.guard_enabled:
             fix_ns = self.last_fix.header.stamp.to_nsec()
-            if (abs(fix_ns-self.last_gps_odom.header.stamp.to_nsec()) > 50000000 or
+            if (fix_ns != self.last_gps_odom.header.stamp.to_nsec() or
                     abs(fix_ns-self.last_local_odom.header.stamp.to_nsec()) > 250000000 or
-                    abs(fix_ns-self.last_gga.header.stamp.to_nsec()) > 250000000):
+                    fix_ns != self.last_gga.header.stamp.to_nsec()):
                 return False, 'position_source_time_mismatch'
+        stamp = self.last_gps_odom.header.stamp.to_nsec()
+        pose, bracket = self.local_pose_at(stamp)
+        self.source_pairing.update(
+            gps_odom_ns=stamp, local_latest_ns=self.last_local_odom.header.stamp.to_nsec(),
+            local_minus_gps_ms=(self.last_local_odom.header.stamp.to_nsec()-stamp)/1e6,
+            gps_fix_ns=self.last_fix.header.stamp.to_nsec() if self.guard_enabled else None,
+            position_bracket=bracket)
+        if pose is None:
+            self.source_pairing['reason'] = bracket['reason']
+            return False, 'position_source_time_mismatch'
+        p = self.last_gps_odom.pose.pose.position
+        self.position_pair = {'local_pose': pose, 'gps_xy': (float(p.x), float(p.y)), 'stamp_ns': stamp,
+                              'source_stamps': {name: value for name, value, _ in sources}}
+        self.source_pairing.update(valid=True, reason='position_paired')
         return True, 'ok'
 
-    def heading_source_quality(self, now):
+    def heading_source_quality(self, now, pair_local=True):
+        self.heading_pair = None
         sources = [('heading', None if self.last_heading_stamp is None else
                     self.last_heading_stamp.to_nsec(), self.heading_timeout_sec)]
         if self.require_heading_fixed:
@@ -588,17 +904,63 @@ class GlobalOdomBridge:
                 stamp = float(self.last_solution.get('stamp'))
                 if not math.isfinite(stamp) or stamp <= 0:
                     raise ValueError('invalid solution source clock')
-                stamp_ns = int(stamp*1.e9)
+                stamp_ns = self.solution_stamp_ns(self.last_solution)
             except (ValueError, TypeError, OverflowError):
                 return False, 'source_stamp_invalid_gnss_solution'
             sources.append(('gnss_solution', stamp_ns, self.solution_timeout_sec))
-        return self.check_source_times(now, sources)
+            if not self.same_solution_observation(self.last_solution, self.last_heading_stamp.to_nsec()):
+                self.source_pairing.update(valid=False, quality_binding='heading_solution_pending')
+                return False, 'position_source_time_mismatch'
+        good, reason = self.check_source_times(now, sources, commit=False)
+        if not good:
+            return good, reason
+        if not pair_local:
+            return True, 'ok'
+        stamp = self.last_heading_stamp.to_nsec()
+        pose, bracket = self.local_pose_at(stamp)
+        self.source_pairing.update(heading_ns=stamp, heading_bracket=bracket,
+            heading_minus_gps_ms=(stamp-self.position_pair['stamp_ns'])/1e6 if self.position_pair else None)
+        if pose is None:
+            self.source_pairing.update(valid=False, reason=bracket['reason'])
+            return False, 'position_source_time_mismatch'
+        self.heading_pair = {'local_pose': pose, 'global_yaw': float(self.last_heading_yaw),
+                             'source_stamps': {name: value for name, value, _ in sources}}
+        self.source_pairing.update(valid=True, reason='position_and_heading_paired')
+        return True, 'ok'
 
     def gps_observation_stamp_ns(self):
         source = self.last_fix if self.guard_enabled else self.last_gps_odom
         return source.header.stamp.to_nsec()
 
     def data_quality(self, now, low_precision=False, runtime_position=False):
+        self.position_pair = self.heading_pair = None
+        self.source_pairing = {'valid': False, 'stamp': now.to_sec(), 'reason': 'quality_pending'}
+        good, reason = self._data_quality(now, low_precision, runtime_position)
+        if not good:
+            self.source_pairing.update(valid=False, reason=reason)
+        else:
+            # An unbracketed newest packet must not advance a watermark past
+            # the older pending packet that will become pairable next tick.
+            for pair in (self.position_pair, self.heading_pair):
+                if pair is not None:
+                    self.source_stamp_watermarks.update(pair['source_stamps'])
+        return good, reason
+
+    def _data_quality(self, now, low_precision=False, runtime_position=False):
+        if self.gnss_timebase.fault:
+            return False, self.gnss_timebase.fault
+        if self.gnss_timebase.mode == 'measurement' and not self.gnss_timebase.clock_ready:
+            return False, 'waiting_for_measurement_clock'
+        if self.last_gps_odom is not None:
+            fresh, reason = self.gnss_timebase.check('GGA',
+                self.last_gps_odom.header.stamp.to_nsec(), now.to_nsec(), time.monotonic_ns(), self.data_timeout_sec)
+            if not fresh:
+                return False, reason
+        if not runtime_position and self.last_heading_stamp is not None:
+            fresh, reason = self.gnss_timebase.check('PVTSLNA',
+                self.last_heading_stamp.to_nsec(), now.to_nsec(), time.monotonic_ns(), self.heading_timeout_sec)
+            if not fresh:
+                return False, reason
         # Coarse startup still requires fixed heading. Runtime position-only
         # corrections are separately qualified and retain the existing yaw.
         if low_precision and (not self.low_precision_startup or self.transform_initialized):
@@ -615,6 +977,51 @@ class GlobalOdomBridge:
             return False, "gps_odom_missing"
         if (now - self.last_gps_recv).to_sec() > self.data_timeout_sec:
             return False, "gps_odom_stale"
+        sources = [('gps_odom', self.last_gps_odom.header.stamp.to_nsec(), self.data_timeout_sec),
+                   ('local_odom', self.last_local_odom.header.stamp.to_nsec(), self.data_timeout_sec)]
+        for name, msg, received in (('gps_fix',self.last_fix,self.last_fix_recv),
+                                     ('gga',self.last_gga,self.last_gga_recv)):
+            if self.guard_enabled and msg is not None and received is not None:
+                if (now-received).to_sec() > self.data_timeout_sec:
+                    return False, name+'_stale'
+                sources.append((name,msg.header.stamp.to_nsec(),self.data_timeout_sec))
+        if not runtime_position and self.use_heading_orientation and self.last_heading_stamp is not None:
+            sources.append(('heading',self.last_heading_stamp.to_nsec(),self.heading_timeout_sec))
+        if not runtime_position and self.use_heading_orientation and self.require_heading_fixed:
+            if self.last_solution_recv is not None and (now-self.last_solution_recv).to_sec() > self.solution_timeout_sec:
+                return False,'heading_solution_stale'
+            if self.last_solution is not None:
+                try:
+                    solution_ns=self.solution_stamp_ns(self.last_solution)
+                except (TypeError,ValueError,OverflowError):
+                    solution_ns=None
+                if solution_ns is not None:
+                    sources.append(('gnss_solution',solution_ns,self.solution_timeout_sec))
+        fresh, stale_reason = self.check_source_times(now,sources,commit=False)
+        if not fresh:
+            return False,stale_reason
+        # Incomplete quality is a bounded wait, not a Float packet that can
+        # already be consumed through position-only fallback. Test binding
+        # before quality thresholds, which may still describe the old epoch.
+        if not runtime_position and self.use_heading_orientation and self.require_heading_fixed:
+            health = self.latest_heading_health(now)
+            awaiting_new_quality = (self.last_heading_stamp is not None and self.last_solution is not None
+                and not self.same_solution_observation(self.last_solution,self.last_heading_stamp.to_nsec())
+                and (health['source_ns'] is None or self.last_heading_stamp.to_nsec() > health['source_ns']))
+            if not health['valid'] and not awaiting_new_quality:
+                return False,health['reason']
+        if (not runtime_position and self.use_heading_orientation and self.require_heading_fixed
+                and self.last_heading_stamp is not None and self.last_solution is not None
+                and not self.same_solution_observation(self.last_solution, self.last_heading_stamp.to_nsec())):
+            self.source_pairing['quality_binding'] = 'heading_solution_pending'
+            return False, 'position_source_time_mismatch'
+        if (self.guard_enabled and self.last_fix is not None and self.last_gga is not None
+                and self.last_fix.header.stamp != self.last_gga.header.stamp):
+            self.source_pairing['quality_binding'] = 'fix_gga_pending'
+            return False, 'position_source_time_mismatch'
+        if self.guard_enabled and self.last_fix is not None and self.last_fix.header.stamp != self.last_gps_odom.header.stamp:
+            self.source_pairing['quality_binding'] = 'gps_fix_pending'
+            return False, 'position_source_time_mismatch'
         if self.guard_enabled:
             if self.last_fix is None or self.last_fix_recv is None:
                 return False, "gps_fix_missing"
@@ -640,6 +1047,9 @@ class GlobalOdomBridge:
                 return False, "gga_missing"
             if (now - self.last_gga_recv).to_sec() > self.data_timeout_sec:
                 return False, "gga_stale"
+            if self.last_gga.header.stamp != self.last_fix.header.stamp:
+                self.source_pairing['quality_binding'] = 'fix_gga_pending'
+                return False, 'position_source_time_mismatch'
             if low_precision and int(self.last_gga.gps_qual) not in (1, 2, 4, 5):
                 return False, "gga_quality_{}".format(self.last_gga.gps_qual)
             if runtime_position and int(self.last_gga.gps_qual) not in (2, 4, 5):
@@ -671,11 +1081,8 @@ class GlobalOdomBridge:
         if runtime_position:
             if int(self.last_fix.position_covariance_type) == 0:
                 return False, 'position_covariance_unknown'
-        # Fixed, non-Fixed and startup share source freshness/pairing checks.
-        source_good, source_reason = self.position_source_quality(now)
-        if not source_good:
-            return source_good, source_reason
-
+        # Quality loss/stale heading is not a mere interpolation wait. Check
+        # these before a missing position bracket can take the grace path.
         if self.use_heading_orientation and not runtime_position:
             if self.require_heading_fixed:
                 if self.last_solution is None or self.last_solution_recv is None:
@@ -683,6 +1090,10 @@ class GlobalOdomBridge:
                 age = (now - self.last_solution_recv).to_sec()
                 if age < 0 or age > self.solution_timeout_sec:
                     return False, "heading_solution_stale"
+                if self.last_heading_stamp is not None and not self.same_solution_observation(
+                        self.last_solution, self.last_heading_stamp.to_nsec()):
+                    self.source_pairing['quality_binding'] = 'heading_solution_pending'
+                    return False, 'position_source_time_mismatch'
                 if (self.last_solution.get("heading_fixed") is not True
                         or self.last_solution.get("heading_valid") is not True):
                     return False, "heading_solution_unfixed"
@@ -692,6 +1103,14 @@ class GlobalOdomBridge:
                 return False, "heading_stale"
             if self.guard_enabled and now < self.heading_bad_until:
                 return False, "heading_jump"
+            source_good, source_reason = self.heading_source_quality(now, pair_local=False)
+            if not source_good:
+                return source_good, source_reason
+        # Fixed, non-Fixed and startup share source freshness/pairing checks.
+        source_good, source_reason = self.position_source_quality(now)
+        if not source_good:
+            return source_good, source_reason
+        if self.use_heading_orientation and not runtime_position:
             source_good, source_reason = self.heading_source_quality(now)
             if not source_good:
                 return source_good, source_reason
@@ -711,11 +1130,18 @@ class GlobalOdomBridge:
             return  # the same fix cannot count as another observation/credit
         self.last_processed_gps_stamp_ns = stamp_ns
         self.runtime_position_last_stamp = stamp
+        self.pair_wait_since = self.pair_wait_xy = None
         local = self.last_local_odom.pose.pose.position
-        gps = self.last_gps_odom.pose.pose.position
+        lx, ly, _ = self.position_pair['local_pose']
+        gx, gy = self.position_pair['gps_xy']
         c, s = math.cos(self.transform_yaw), math.sin(self.transform_yaw)
-        candidate = (gps.x-(c*local.x-s*local.y), gps.y-(s*local.x+c*local.y))
+        candidate = (gx-(c*lx-s*ly), gy-(s*lx+c*ly))
         error = math.hypot(candidate[0]-self.transform_x, candidate[1]-self.transform_y)
+        self.last_position_error = error
+        self.last_yaw_error_deg = None
+        self.alignment_error_stamp = now.to_sec()
+        self.alignment_error_valid = True
+        self.alignment_error_reason = 'position_only_innovation'
         if error > self.runtime_position_max_error_m:
             self.clear_runtime_position('position_innovation_too_large')
             self.set_mode(self.DEAD_RECKONING, 'runtime_position_rejected')
@@ -734,10 +1160,14 @@ class GlobalOdomBridge:
         self.runtime_position_last_update = now
         # Retain map->odom yaw exactly; an invalid GNSS heading must neither
         # rotate the map nor stop otherwise qualified position corrections.
-        self.move_transform_toward((target[0], target[1], self.transform_yaw),
-                                   dt, self.runtime_position_correction_rate, 0.)
+        if not self.move_transform_toward((target[0], target[1], self.transform_yaw),
+                                         dt, self.runtime_position_correction_rate, 0.):
+            self.clear_runtime_position('invalid_correction')
+            self.set_mode(self.DEAD_RECKONING, 'invalid_alignment_correction')
+            return
         residual = math.hypot(target[0]-self.transform_x, target[1]-self.transform_y)
         self.runtime_position_residual_m = self.last_position_error = residual
+        self.alignment_error_reason = 'position_only_window_residual'
         self.runtime_position_active = True
         self.global_reference_precision = 'runtime_'+self.runtime_position_profile
         self.runtime_position_reason = 'position_correcting' if residual > .5 else 'position_confirmed'
@@ -782,32 +1212,35 @@ class GlobalOdomBridge:
             self.heading_transform_history.pop()
 
     def candidate_transform(self, now):
-        gps_pos = self.last_gps_odom.pose.pose.position
-        local_pose = self.last_local_odom.pose.pose
-        local_yaw = self.yaw_from_quaternion(local_pose.orientation)
+        local_x, local_y, local_yaw = self.position_pair['local_pose']
+        gps_x, gps_y = self.position_pair['gps_xy']
         if self.use_heading_orientation:
-            global_yaw = self.last_heading_yaw
-            raw_dyaw = self.normalize_angle(global_yaw - local_yaw)
+            global_yaw = self.heading_pair['global_yaw']
+            raw_dyaw = self.normalize_angle(global_yaw - self.heading_pair['local_pose'][2])
             dyaw = self.filtered_heading_transform_yaw(now, raw_dyaw)
         else:
             global_yaw = self.yaw_from_quaternion(self.last_gps_odom.pose.pose.orientation)
             dyaw = self.normalize_angle(global_yaw - local_yaw)
         c = math.cos(dyaw)
         s = math.sin(dyaw)
-        tx = gps_pos.x - (c * local_pose.position.x - s * local_pose.position.y)
-        ty = gps_pos.y - (s * local_pose.position.x + c * local_pose.position.y)
+        tx = gps_x - (c * local_x - s * local_y)
+        ty = gps_y - (s * local_x + c * local_y)
         return tx, ty, dyaw
 
     def transform_error(self, candidate):
-        tx, ty, yaw = candidate
-        position_error = math.hypot(tx - self.transform_x, ty - self.transform_y)
-        yaw_error = self.normalize_angle(yaw - self.transform_yaw)
+        anchor = self.current_anchor()
+        before = self.project_alignment((self.transform_x, self.transform_y, self.transform_yaw), anchor)
+        after = self.project_alignment(candidate, anchor)
+        position_error = math.hypot(after[0]-before[0], after[1]-before[1])
+        yaw_error = self.normalize_angle(candidate[2] - self.transform_yaw)
         return position_error, yaw_error
 
     def candidates_consistent(self, first, second):
         if first is None or second is None:
             return True
-        position_delta = math.hypot(first[0] - second[0], first[1] - second[1])
+        anchor = self.current_anchor()
+        a, b = self.project_alignment(first, anchor), self.project_alignment(second, anchor)
+        position_delta = math.hypot(a[0]-b[0], a[1]-b[1])
         yaw_delta = abs(self.normalize_angle(first[2] - second[2]))
         return (
             position_delta <= self.recovery_consistency_m
@@ -816,52 +1249,119 @@ class GlobalOdomBridge:
 
     def append_recovery_candidate(self, now, candidate):
         self.recovery_candidates.append((now.to_sec(), candidate))
-        keep_sec = max(self.initial_stable_sec, self.recovery_stable_sec) + 1.0
+        keep_sec = max(self.initial_stable_sec, self.recovery_stable_sec,
+                       self.alignment_conflict_stable_sec) + 1.0
         cutoff = now.to_sec() - keep_sec
         while self.recovery_candidates and self.recovery_candidates[0][0] < cutoff:
             self.recovery_candidates.popleft()
 
     def recovery_window_stable(self, duration_sec, position_tolerance=None):
+        self.recovery_diagnostics = {'valid': False, 'reason': 'empty_window',
+                                     'stamp': rospy.Time.now().to_sec(),
+                                     'samples': len(self.recovery_candidates)}
         if not self.recovery_candidates:
             return False
         first_stamp = self.recovery_candidates[0][0]
         last_stamp = self.recovery_candidates[-1][0]
-        if last_stamp - first_stamp < duration_sec:
-            return False
-
         candidates = [entry[1] for entry in self.recovery_candidates]
-        mean_x = sum(candidate[0] for candidate in candidates) / len(candidates)
-        mean_y = sum(candidate[1] for candidate in candidates) / len(candidates)
+        anchor = self.current_anchor()
+        positions = [self.project_alignment(candidate, anchor) for candidate in candidates]
+        mean_x = sum(p[0] for p in positions)/len(positions)
+        mean_y = sum(p[1] for p in positions)/len(positions)
         yaw_reference = candidates[0][2]
         max_position_spread = max(
-            math.hypot(candidate[0] - mean_x, candidate[1] - mean_y)
-            for candidate in candidates
+            math.hypot(p[0] - mean_x, p[1] - mean_y)
+            for p in positions
         )
         max_yaw_spread = max(
             abs(self.normalize_angle(candidate[2] - yaw_reference))
             for candidate in candidates
         )
-        return (
-            max_position_spread <= (self.recovery_consistency_m if position_tolerance is None else position_tolerance)
-            and max_yaw_spread <= self.recovery_consistency_yaw_rad
-        )
+        limit = self.recovery_consistency_m if position_tolerance is None else position_tolerance
+        passed = (last_stamp-first_stamp >= duration_sec and max_position_spread <= limit
+                  and max_yaw_spread <= self.recovery_consistency_yaw_rad)
+        self.recovery_diagnostics.update(valid=True, passed=passed,
+            reason='ok' if passed else 'duration' if last_stamp-first_stamp < duration_sec else
+            'position_spread' if max_position_spread > limit else 'yaw_spread',
+            duration_sec=last_stamp-first_stamp, required_duration_sec=duration_sec,
+            anchor_local_m=anchor, position_spread_m=max_position_spread,
+            yaw_spread_deg=math.degrees(max_yaw_spread), position_limit_m=limit,
+            yaw_limit_deg=math.degrees(self.recovery_consistency_yaw_rad))
+        return passed
 
     def move_transform_toward(self, target, dt, position_rate, yaw_rate):
-        dx = target[0] - self.transform_x
-        dy = target[1] - self.transform_y
+        """Bound displacement of the CAR, not displacement of transform t."""
+        self.correction_diagnostics = {'valid': False, 'reason': 'invalid_input'}
+        anchor = self.current_anchor()
+        old = (self.transform_x, self.transform_y, self.transform_yaw)
+        if (not all(math.isfinite(v) for v in tuple(target)+old+anchor+(dt, position_rate, yaw_rate))
+                or position_rate < 0 or yaw_rate < 0):
+            return False
+        bounded_dt = min(.5, max(0., dt))
+        before = self.project_alignment(old, anchor)
+        goal = self.project_alignment(target, anchor)
+        dx, dy = goal[0]-before[0], goal[1]-before[1]
         distance = math.hypot(dx, dy)
-        max_distance = position_rate * dt
+        max_distance = position_rate * bounded_dt
         if distance > max_distance and distance > 1e-9:
             scale = max_distance / distance
             dx *= scale
             dy *= scale
-        self.transform_x += dx
-        self.transform_y += dy
-
         yaw_error = self.normalize_angle(target[2] - self.transform_yaw)
-        max_yaw = yaw_rate * dt
+        max_yaw = yaw_rate * bounded_dt
         yaw_step = max(-max_yaw, min(max_yaw, yaw_error))
-        self.transform_yaw = self.normalize_angle(self.transform_yaw + yaw_step)
+        # Position-only updates must retain yaw bit-for-bit, not renormalize it.
+        angle = self.transform_yaw if yaw_step == 0 else self.normalize_angle(self.transform_yaw+yaw_step)
+        after = before[0]+dx, before[1]+dy
+        c, s = math.cos(angle), math.sin(angle)
+        result = (after[0]-(c*anchor[0]-s*anchor[1]),
+                  after[1]-(s*anchor[0]+c*anchor[1]), angle)
+        if not all(math.isfinite(v) for v in result+after):
+            return False
+        self.transform_x, self.transform_y, self.transform_yaw = result
+        self.correction_diagnostics = {
+            'valid': True, 'reason': 'ok', 'stamp': rospy.Time.now().to_sec(),
+            'dt_sec': bounded_dt, 'requested_dt_sec': dt,
+            'anchor_local_m': anchor, 'anchor_before_map_m': before,
+            'anchor_target_map_m': goal, 'anchor_after_map_m': after,
+            'actual_position_step_m': math.hypot(dx,dy), 'position_step_limit_m': max_distance,
+            'actual_yaw_step_deg': math.degrees(yaw_step),
+            'transform_translation_step_m': math.hypot(result[0]-old[0],result[1]-old[1]),
+        }
+        return True
+
+    def invalidate_alignment_error(self, reason):
+        self.last_position_error = self.last_yaw_error_deg = None
+        self.last_candidate_step_m = None
+        self.alignment_error_valid = False
+        self.alignment_error_reason = reason
+
+    def check_alignment_conflict(self, now, residual):
+        """Latch only a sustained, stable Fixed conflict. Never auto-realign it."""
+        fixed = (self.guard_enabled and self.last_fix is not None and self.last_gga is not None
+                 and self.last_fix.status.status >= 2 and int(self.last_gga.gps_qual) == 4)
+        exceeds = fixed and residual > self.alignment_conflict_position_m
+        if not exceeds:
+            self.alignment_conflict_since = None
+            self.alignment_conflict_diagnostics = {'state': 'clear' if fixed else 'not_qualified',
+                'stamp': now.to_sec(), 'position_residual_m': residual}
+            return False
+        if self.alignment_conflict_since is None:
+            self.alignment_conflict_since = now.to_sec()
+        duration = now.to_sec()-self.alignment_conflict_since
+        stable = self.recovery_window_stable(self.alignment_conflict_stable_sec)
+        self.alignment_conflict_diagnostics = {'state': 'pending', 'stamp': now.to_sec(),
+            'position_residual_m': residual, 'duration_sec': duration,
+            'qualified_fixed_window': stable}
+        if stable and duration >= self.alignment_conflict_stable_sec:
+            self.alignment_conflict = True
+            self.alignment_conflict_diagnostics['state'] = 'latched'
+            self.set_mode(self.DEAD_RECKONING, 'alignment_conflict_stop_reinitialize_when_stationary')
+            self.safety_pub.publish(Bool(data=False))
+            rospy.logerr('Localization Fixed conflict: %.2fm; AUTO held. Park, verify localization, '
+                         'restart localization/system and send a new route; no moving realignment.', residual)
+            return True
+        return False
 
     def set_mode(self, mode, reason):
         if mode == self.TRACKING:
@@ -884,35 +1384,79 @@ class GlobalOdomBridge:
         self.mode = mode
         self.reason = reason
 
-    def wait_for_position_pair(self):
+    def wait_for_position_pair(self, now):
         # Different ROS connections can deliver a new fix before its matching
         # projection. Do not treat that callback order as a new observation or
-        # erase startup/recovery histories. Source age checks still reject a
-        # stale pair, and an initialized bridge must start its budget first.
-        self.runtime_position_active = False
+        # erase tracking/recovery histories. The grace period is bounded and
+        # does not renew on every new unmatched GPS message.
+        if self.pair_wait_since is None:
+            self.pair_wait_since = now
+            self.pair_wait_xy = self.current_anchor() if self.last_local_odom is not None else None
         self.runtime_position_reason = 'position_source_time_mismatch'
+        elapsed = max(0., (now-self.pair_wait_since).to_sec())
+        self.observation_buffer_diagnostics.update(wait_sec=elapsed,
+            wait_timeout_sec=self.pair_wait_timeout_sec,
+            state='pair_timeout' if elapsed >= self.pair_wait_timeout_sec else 'pair_wait')
         if not self.transform_initialized:
             self.set_mode(self.WAITING, 'position_source_time_mismatch')
+        return elapsed < self.pair_wait_timeout_sec
 
     def update_guard(self, now):
-        good, reason = self.data_quality(now)
-        if self.transform_initialized and not good:
-            # Start the budget BEFORE any pairing/runtime early return. A
-            # previous Fixed mode has no active budget and does not accumulate
-            # local travel. Transition it out of TRACKING immediately; begin()
-            # is idempotent and must never erase accumulated distance/time.
-            if self.mode == self.TRACKING:
+        with self.state_lock:
+            health = self.latest_heading_health(now)
+            if not health['valid'] and self.mode in (self.TRACKING, self.RECOVERING):
                 self.recovery_candidates.clear()
                 self.heading_transform_history.clear()
-                self.set_mode(self.DEAD_RECKONING, reason)
+                self.set_mode(self.DEAD_RECKONING, health['reason'])
+            selected = self.select_observation(now)
+            saved = {} if selected is None else {name: getattr(self, name) for name in selected}
+            try:
+                for name, value in (selected or {}).items():
+                    setattr(self, name, value)
+                self._update_guard(now)
+            finally:
+                # Do not overwrite callbacks' latest data with the historical
+                # observation used for this update. The same lock covers both.
+                for name, value in saved.items():
+                    setattr(self, name, value)
+
+    def _update_guard(self, now):
+        if self.alignment_conflict:
+            self.source_pairing = {'valid': False, 'reason': 'alignment_conflict_latched', 'stamp': now.to_sec()}
+            self.runtime_position_active = False
+            self.runtime_position_reason = 'alignment_conflict_latched'
+            self.invalidate_alignment_error('alignment_conflict_latched')
+            return
+        good, reason = self.data_quality(now)
+        if not good and reason == 'position_source_time_mismatch':
+            self.invalidate_alignment_error(reason)
+            if self.wait_for_position_pair(now):
+                return
+            reason = 'position_pair_timeout'
+        if self.transform_initialized and not good:
+            # Callback ordering/interpolation may briefly lack a pair between
+            # fresh observations. Do not erase an accumulating conflict window
+            # on that wait; stale/invalid quality still resets it below.
+            if reason != 'position_source_time_mismatch':
+                self.alignment_conflict_since = None
+                self.alignment_conflict_diagnostics = {'state': 'not_qualified', 'reason': reason, 'stamp': now.to_sec()}
+            # Real quality loss or an expired pairing grace starts the budget
+            # before runtime fallback. Count an expired wait from its start;
+            # begin() never erases an already accumulated distance/time budget.
             xy = None
             if self.last_local_odom is not None:
                 position = self.last_local_odom.pose.pose.position
                 xy = (position.x, position.y)
-            self.dead_reckoning_budget.begin(now.to_sec(), xy)
-        if not good and reason == 'position_source_time_mismatch':
-            self.wait_for_position_pair()
-            return
+            if reason == 'position_pair_timeout' and self.pair_wait_since is not None:
+                self.dead_reckoning_budget.begin(self.pair_wait_since.to_sec(), self.pair_wait_xy)
+                if xy is not None:
+                    self.dead_reckoning_budget.observe(xy)
+            else:
+                self.dead_reckoning_budget.begin(now.to_sec(), xy)
+            if self.mode == self.TRACKING:
+                self.recovery_candidates.clear()
+                self.heading_transform_history.clear()
+                self.set_mode(self.DEAD_RECKONING, reason)
         if self.transform_initialized and self.allow_nonfixed_runtime and not good:
             position_good, position_reason = self.data_quality(now, runtime_position=True)
             if position_good:
@@ -921,8 +1465,10 @@ class GlobalOdomBridge:
                 self.update_runtime_position(now)
                 return
             if position_reason == 'position_source_time_mismatch':
-                self.wait_for_position_pair()
-                return
+                self.invalidate_alignment_error(position_reason)
+                if self.wait_for_position_pair(now):
+                    return
+                position_reason = reason = 'position_pair_timeout'
             self.clear_runtime_position(position_reason)
         else:
             self.clear_runtime_position('fixed_policy' if good else 'waiting_for_initialization')
@@ -935,9 +1481,13 @@ class GlobalOdomBridge:
             good, reason = self.data_quality(now, low_precision=True)
             low_precision = good
         if not good and reason == 'position_source_time_mismatch':
-            self.wait_for_position_pair()
-            return
+            self.invalidate_alignment_error(reason)
+            if self.wait_for_position_pair(now):
+                return
+            reason = 'position_pair_timeout'
         if not good:
+            self.invalidate_alignment_error(reason)
+            self.recovery_diagnostics = {'valid': False, 'reason': reason, 'samples': 0}
             self.stable_since = None
             self.last_recovery_candidate = None
             self.recovery_candidates.clear()
@@ -963,6 +1513,7 @@ class GlobalOdomBridge:
         if self.last_processed_gps_stamp_ns is not None and stamp_ns <= self.last_processed_gps_stamp_ns:
             return
         self.last_processed_gps_stamp_ns = stamp_ns
+        self.pair_wait_since = self.pair_wait_xy = None
         correction_dt = max(0.0, min(0.5, (now - self.last_correction_time).to_sec()))
         self.last_correction_time = now
 
@@ -984,8 +1535,13 @@ class GlobalOdomBridge:
                 if low_precision:
                     # One coarse position anchor; do not chase subsequent GPS noise.
                     samples = [entry[1] for entry in self.recovery_candidates]
-                    candidate = (sum(p[0] for p in samples) / len(samples),
-                                 sum(p[1] for p in samples) / len(samples), candidate[2])
+                    anchor = self.current_anchor()
+                    projected = [self.project_alignment(p, anchor) for p in samples]
+                    mean_x = sum(p[0] for p in projected)/len(projected)
+                    mean_y = sum(p[1] for p in projected)/len(projected)
+                    c, s = math.cos(candidate[2]), math.sin(candidate[2])
+                    candidate = (mean_x-c*anchor[0]+s*anchor[1],
+                                 mean_y-s*anchor[0]-c*anchor[1], candidate[2])
                 self.transform_x, self.transform_y, self.transform_yaw = candidate
                 self.transform_initialized = True
                 self.initialization_precision = "low" if low_precision else "high"
@@ -1009,13 +1565,18 @@ class GlobalOdomBridge:
         position_error, yaw_error = self.transform_error(candidate)
         self.last_position_error = position_error
         self.last_yaw_error_deg = math.degrees(yaw_error)
+        self.alignment_error_valid = True
+        self.alignment_error_stamp = now.to_sec()
+        self.alignment_error_reason = 'fixed_paired_observation'
+        if self.check_alignment_conflict(now, position_error):
+            return
 
         if self.mode == self.TRACKING:
             if self.last_tracking_candidate is not None:
-                self.last_candidate_step_m = math.hypot(
-                    candidate[0] - self.last_tracking_candidate[0],
-                    candidate[1] - self.last_tracking_candidate[1],
-                )
+                anchor = self.current_anchor()
+                before = self.project_alignment(self.last_tracking_candidate, anchor)
+                after = self.project_alignment(candidate, anchor)
+                self.last_candidate_step_m = math.hypot(after[0]-before[0], after[1]-before[1])
                 if (
                     self.max_tracking_candidate_step > 0.0
                     and self.last_candidate_step_m > self.max_tracking_candidate_step
@@ -1042,9 +1603,13 @@ class GlobalOdomBridge:
                 self.recovery_candidates.clear()
                 self.set_mode(self.DEAD_RECKONING, "gps_heading_inconsistent")
                 return
-            self.move_transform_toward(
+            corrected = self.move_transform_toward(
                 candidate, correction_dt, self.tracking_position_rate, self.tracking_yaw_rate
             )
+            if not corrected:
+                self.invalidate_alignment_error('invalid_correction')
+                self.set_mode(self.DEAD_RECKONING, 'invalid_alignment_correction')
+                return
             self.last_tracking_candidate = candidate
             self.set_mode(self.TRACKING, "gps_good")
             return
@@ -1060,9 +1625,13 @@ class GlobalOdomBridge:
             if not self.recovery_window_stable(self.recovery_stable_sec):
                 self.set_mode(self.DEAD_RECKONING, "gps_recovery_unstable")
                 return
-            self.move_transform_toward(
+            corrected = self.move_transform_toward(
                 candidate, correction_dt, self.recovery_position_rate, self.recovery_yaw_rate
             )
+            if not corrected:
+                self.invalidate_alignment_error('invalid_correction')
+                self.set_mode(self.DEAD_RECKONING, 'invalid_alignment_correction')
+                return
             position_error, yaw_error = self.transform_error(candidate)
             self.last_position_error = position_error
             self.last_yaw_error_deg = math.degrees(yaw_error)
@@ -1110,6 +1679,8 @@ class GlobalOdomBridge:
     def localization_is_safe(self, now):
         return bool(
             self.transform_initialized
+            and not self.gnss_timebase.fault
+            and not self.alignment_conflict
             and self.last_local_recv is not None
             and (now - self.last_local_recv).to_sec() <= self.data_timeout_sec
             and now >= self.local_bad_until
@@ -1126,6 +1697,10 @@ class GlobalOdomBridge:
         localization_safe = self.localization_is_safe(now)
         payload = {
             "stamp": now.to_sec(),
+            "timebase_contract": {'mode': self.gnss_timebase.mode,
+                'fault': self.gnss_timebase.fault, 'session': self.gnss_timebase.session,
+                'clock_ready': self.gnss_timebase.clock_ready, 'wait_reason': self.gnss_timebase.wait_reason,
+                'metadata_samples': len(self.gnss_timebase.metadata)},
             "mode": self.mode,
             "reason": self.reason,
             "initialized": self.transform_initialized,
@@ -1162,6 +1737,7 @@ class GlobalOdomBridge:
             "cov_y": cov_y,
             "gga_quality": gga_quality,
             "gnss_solution": self.last_solution,
+            "latest_heading_health": self.latest_heading_health(now),
             "gnss_solution_age_sec": None if self.last_solution_recv is None else
             (now - self.last_solution_recv).to_sec(),
             "satellites": satellites,
@@ -1178,6 +1754,23 @@ class GlobalOdomBridge:
             "local_lateral_speed_mps": self.local_lateral_speed_mps,
             "local_yaw_rate_deg_s": self.local_yaw_rate_deg_s,
             "position_error_m": self.last_position_error,
+            "position_error_reference": "current_vehicle_anchor",
+            "alignment_error_valid": self.alignment_error_valid,
+            "alignment_error_reason": self.alignment_error_reason,
+            "alignment_error_stamp": self.alignment_error_stamp,
+            "alignment_error_age_sec": None if self.alignment_error_stamp is None else
+                max(0., now.to_sec()-self.alignment_error_stamp),
+            "source_pairing": self.source_pairing,
+            "observation_buffer": self.observation_buffer_diagnostics,
+            "recovery_window": self.recovery_diagnostics,
+            "alignment_correction": self.correction_diagnostics,
+            "alignment_correction_age_sec": None if self.correction_diagnostics.get('stamp') is None else
+                max(0., now.to_sec()-self.correction_diagnostics['stamp']),
+            "alignment_conflict": {**self.alignment_conflict_diagnostics,
+                "latched": self.alignment_conflict,
+                "position_limit_m": self.alignment_conflict_position_m,
+                "stable_sec": self.alignment_conflict_stable_sec,
+                "resume_policy": "park_verify_restart_system_and_send_new_route"},
             "yaw_error_deg": self.last_yaw_error_deg,
             "candidate_step_m": self.last_candidate_step_m,
             "max_tracking_candidate_step_m": self.max_tracking_candidate_step,
@@ -1210,7 +1803,23 @@ class GlobalOdomBridge:
             )
 
     def timer_cb(self, _event):
+        with self.state_lock:
+            self._timer_cb(_event)
+
+    def _timer_cb(self, _event):
         now = rospy.Time.now()
+        self.gnss_timebase.tick(now.to_nsec(), time.monotonic_ns())
+        if self.gnss_timebase.mode == 'measurement' and not self.gnss_timebase.clock_ready:
+            rospy.logwarn_throttle(3., 'Waiting for GNSS measurement clock: %s (NUC sync + FINE PVTSLNA + GGA UTC)',
+                                   self.gnss_timebase.wait_reason)
+        if self.gnss_timebase.fault:
+            self.stable_since = None
+            self.recovery_candidates.clear()
+            self.heading_transform_history.clear()
+            self.local_pose_history.clear()
+            self.runtime_position_window.clear()
+            rospy.logwarn_throttle(2., 'GPS timebase fault: %s; park and restart localization/system',
+                                   self.gnss_timebase.fault)
         self.update_guard(now)
         self.publish_global_odom(now)
         self.safety_pub.publish(Bool(data=self.localization_is_safe(now)))

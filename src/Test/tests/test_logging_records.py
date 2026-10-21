@@ -1,4 +1,4 @@
-"""Offline log/bag acceptance: mocked ROS lifecycle, real temporary JSONL/bag indexes.
+"""Central offline log/bag acceptance: mocked ROS, temporary JSONL/bag indexes.
 
 Never opens a serial port, starts a ROS node, or publishes onto the vehicle.
 """
@@ -103,6 +103,66 @@ class LoggingRecordsTests(unittest.TestCase):
         self.assertEqual(topics['remote_command'], '/cmd_vel_remote')
         self.assertEqual(topics['mode_request'], '/vehicle/control_mode')
         self.assertEqual(topics['command_audit'], '/vehicle/command_audit')
+        self.assertIs(subscriptions['/gnss/serial_diagnostics'], String)
+        self.assertEqual(topics['gnss_serial_diagnostics'], '/gnss/serial_diagnostics')
+        self.assertIs(subscriptions['/gnss/time_diagnostics'], String)
+        self.assertEqual(topics['gnss_time_diagnostics'], '/gnss/time_diagnostics')
+
+    def test_time_observations_remain_per_frame_in_shared_jsonl(self):
+        logger = self.logger()
+        for i in range(20):
+            payload = {'family': 'GGA', 'sequence': i, 'mode': 'shadow',
+                       'host_read_ros_ns': 100000000000+i,
+                       'measurement_stamp_ns': 99900000000+i,
+                       'candidate_age_ms': 100., 'measurement_age_ms': None,
+                       'time_valid': True, 'epoch_order': 'new', 'clock_verified': False}
+            logger.gnss_time_diagnostics_cb(String(data=json.dumps(payload)))
+        logger.timer_cb(None)
+        rows = self.records(logger)
+        events = [r for r in rows if r['record_type'] == 'gnss_time_diagnostics_event']
+        self.assertEqual(len(events), 20)
+        self.assertEqual([r['data']['sequence'] for r in events], list(range(20)))
+        self.assertEqual(events[-1]['data']['measurement_stamp_ns'], 99900000019)
+        self.assertIsInstance(events[-1]['host_receive_mono_ns'], int)
+        self.assertEqual(rows[-1]['data']['gnss_time_diagnostics']['sequence'], 19)
+        logger.gnss_time_diagnostics_cb(String(data='[]'))
+        self.assertFalse(self.records(logger)[-1]['data']['time_valid'])
+
+    def test_auto_clock_wait_and_ready_are_preserved_in_shared_log(self):
+        logger = self.logger()
+        for waiting in (True, False):
+            payload = {'mode': 'measurement', 'clock_waiting': waiting,
+                       'clock_verified': not waiting,
+                       'clock_verification': 'auto_consistency_not_hardware_sync',
+                       'host_clock_synchronized': True,
+                       'clock_gate_reason': 'wait_gnss' if waiting else 'ready'}
+            logger.gnss_time_diagnostics_cb(String(data=json.dumps(payload)))
+            logger.timer_cb(None)
+            rows = self.records(logger)
+            self.assertEqual(rows[-2]['data'], payload)
+            summary = rows[-1]['data']['gnss_time_diagnostics']
+            for key, value in payload.items():
+                self.assertEqual(summary[key], value)
+
+    def test_serial_diagnostics_full_event_and_compact_sample_share_existing_log(self):
+        logger=self.logger()
+        data={'stamp':99.9,'session_id':'test-session','sequence':1,'state':'open',
+              'metadata':{'driver':{'path':'/test/driver.py','sha256':'abc'}},
+              'total':{'solution_publish_calls':10},
+              'rates_per_sec':{'pvtslna_recognized':10.,'solution_publish_calls':10.}}
+        logger.gnss_serial_diagnostics_cb(String(data=json.dumps(data)))
+        logger.timer_cb(None)
+        rows=self.records(logger)
+        event=next(r for r in rows if r['record_type']=='gnss_serial_diagnostics_event')
+        self.assertEqual(event['data'],data)
+        self.assertEqual(event['stamp'],100.)
+        summary=rows[-1]['data']['gnss_serial_diagnostics']
+        self.assertNotIn('metadata',summary)
+        self.assertEqual(summary['rates_per_sec']['solution_publish_calls'],10.)
+        for raw in ('[]','{broken','{"rates_per_sec": []}'):
+            logger.gnss_serial_diagnostics_cb(String(data=raw))
+        self.assertEqual(len([r for r in self.records(logger)
+                              if r['record_type']=='gnss_serial_diagnostics_event']),4)
 
     def test_every_remote_and_mode_request_including_invalid_is_recorded(self):
         logger = self.logger()
@@ -289,7 +349,7 @@ class LoggingRecordsTests(unittest.TestCase):
 
     def test_all_profiles_include_small_volume_evidence_without_duplicates(self):
         required = {'/vehicle/control_mode', '/vehicle/control_mode/status',
-                    '/vehicle/command_audit', '/cmd_vel_remote', '/gnss/solution_status',
+                    '/vehicle/command_audit', '/cmd_vel_remote', '/gnss/solution_status', '/gnss/serial_diagnostics',
                     '/gps_goal_ll', '/move_base_simple/goal', '/goal_arrived', '/osm_global_path_ll'}
         for name in ('vehicle_data', 'hybridnets_data', 'camera_right_test'):
             with self.subTest(profile=name):
@@ -298,6 +358,7 @@ class LoggingRecordsTests(unittest.TestCase):
                 self.assertEqual(len(topics), len(set(topics)))
                 self.assertTrue(required <= set(topics))
                 self.assertTrue(set(config['required_topics']) <= set(topics))
+                self.assertNotIn('/gnss/serial_diagnostics',config['required_topics'])
 
 
 if __name__ == '__main__':

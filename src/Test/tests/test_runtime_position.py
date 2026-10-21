@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]/'src/robot_base_driver/scripts'))
 import rospy
 from global_odom_bridge import GlobalOdomBridge, RuntimePositionWindow
 from nav_msgs.msg import Odometry
@@ -65,8 +65,13 @@ class RuntimePositionTests(unittest.TestCase):
         gga.gps_qual, gga.num_sats, gga.hdop = quality, 12, 1.2
         b.gga_cb(gga)
         # No valid or fixed GNSS heading throughout non-Fixed runtime tests.
-        b.last_solution = {'stamp': self.now.to_sec(), 'heading_fixed': False, 'heading_valid': False}
+        b.last_solution = {'stamp': self.now.to_sec(), 'stamp_ns': self.now.to_nsec(), 'heading_fixed': False, 'heading_valid': False}
         b.last_solution_recv = self.now
+        # These synchronous fixtures deliberately mutate latest messages after
+        # callbacks to test rejection paths. Buffer/arrival-order tests use
+        # real immutable callbacks separately in test_global_alignment.py.
+        for history in b.observation_history.values():
+            history.clear()
         return local_x
 
     def drive(self, b, until=106., quality=5, covariance=1., bias=0., start=100.):
@@ -243,7 +248,7 @@ class RuntimePositionTests(unittest.TestCase):
         self.drive(b)
         for i in range(31):
             self.sample(b, 107.+i*.2, quality=4, covariance=.01)
-            b.last_solution = {'stamp': self.now.to_sec(), 'heading_fixed': True, 'heading_valid': True}
+            b.last_solution = {'stamp': self.now.to_sec(), 'stamp_ns': self.now.to_nsec(), 'heading_fixed': True, 'heading_valid': True}
             b.last_heading_yaw, b.last_heading_recv = .3, self.now
             b.last_heading_stamp = self.now
             b.update_guard(self.now)
@@ -300,7 +305,7 @@ class SourceTimeAndTransitionTests(unittest.TestCase):
 
     def fixed_sample(self, b, t, local_x=None):
         self.sample(b, t, quality=4, covariance=.01, local_x=local_x)
-        b.last_solution = {'stamp': self.now.to_sec(), 'heading_fixed': True, 'heading_valid': True}
+        b.last_solution = {'stamp': self.now.to_sec(), 'stamp_ns': self.now.to_nsec(), 'heading_fixed': True, 'heading_valid': True}
         b.last_heading_yaw, b.last_heading_recv, b.last_heading_stamp = .3, self.now, self.now
 
     def tracking_bridge(self):
@@ -414,6 +419,11 @@ class SourceTimeAndTransitionTests(unittest.TestCase):
         b = self.tracking_bridge()
         self.fixed_sample(b, 101.)
         b.last_gps_odom.header.stamp = rospy.Time.from_sec(100.8)
+        b.update_guard(self.now)
+        self.assertEqual(b.mode, b.TRACKING)
+        self.assertIsNone(b.dead_reckoning_budget.started_at)
+        self.fixed_sample(b, 101.6)
+        b.last_gps_odom.header.stamp = rospy.Time.from_sec(101.4)
         b.update_guard(self.now)
         self.assertEqual(b.mode, b.DEAD_RECKONING)
         self.assertEqual(b.dead_reckoning_budget.started_at, 101.)
@@ -551,6 +561,7 @@ class RuntimeRosProcessTest(unittest.TestCase):
             last_credit = 0
             float_start_x = None
             phase = 'fixed_init'
+            local_delay = float(os.environ.get('GPS_RUNTIME_LOCAL_DELAY_SEC', '0'))
             mismatch_seen = False
             fixed_transform_x = None
             deadline = time.monotonic()+40
@@ -560,18 +571,18 @@ class RuntimeRosProcessTest(unittest.TestCase):
                 monotonic = time.monotonic()
                 x = 0. if motion_started is None else .4*(monotonic-motion_started)
                 local = Odometry()
-                local.header.stamp = now
-                local.pose.pose.position.x = x
+                local.header.stamp = now-rospy.Duration(local_delay)
+                local.pose.pose.position.x = max(0., x-.4*local_delay)
                 local.pose.pose.orientation.w = 1.
                 pubs['local'].publish(local)
                 if monotonic-last_emit >= .18:
                     last_emit = monotonic
                     if phase != 'stale_fixed':
                         gps = Odometry()
-                        # Keep the projection exactly one genuine fix behind,
-                        # not an older/out-of-order source. This specifically
-                        # exercises the persistent pairing-wait early return.
-                        gps.header.stamp = last_fix[1].header.stamp if phase=='pairing_wait' else now
+                        # No matching fix exists within 50ms at this 180ms
+                        # cadence. An actual one-fix delay is now supported by
+                        # the buffer and must not be used to simulate failure.
+                        gps.header.stamp = now-rospy.Duration(.08) if phase=='pairing_wait' else now
                         gps.pose.pose.position.x, gps.pose.pose.position.y = 100.+x, 20.
                         fix = NavSatFix()
                         fix.header.stamp = now
@@ -591,9 +602,13 @@ class RuntimeRosProcessTest(unittest.TestCase):
                     heading = QuaternionStamped()
                     heading.header.stamp = now
                     heading.quaternion.w = 1.
-                    pubs['heading'].publish(heading)
+                    # Match the real Fixed-gated driver: heading Float/invalid
+                    # emits solution status, but NO effective heading message.
+                    if phase in ('fixed_init','fixed_recovery','stale_fixed'):
+                        pubs['heading'].publish(heading)
                     pubs['solution'].publish(String(data=json.dumps({
                         'stamp': now.to_sec(),
+                        'stamp_ns': now.to_nsec(),
                         'position_type':'NARROW_INT' if phase in ('fixed_init','fixed_recovery','stale_fixed') else 'NARROW_FLOAT',
                         'position_fixed':phase in ('fixed_init','fixed_recovery','stale_fixed'),
                         'heading_fixed':phase in ('fixed_init','fixed_recovery','stale_fixed'),

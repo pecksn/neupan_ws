@@ -29,8 +29,13 @@
     <arg name="gps_use_rmc" default="false" />
     <arg name="gps_rotation" default="90.0" />
     <arg name="gps_use_gnss_time" default="false" />
+    <arg name="gps_time_mode" default="shadow" />
+    <arg name="gps_time_clock_verified" default="false" />
     <arg name="gps_heading_source_is_north_cw" default="true" />
     <arg name="use_global_ekf" default="false" />
+    <!-- Fail during launch parsing, before starting any node: the legacy
+         global EKF does not implement this measurement-time safety contract. -->
+    <arg name="gps_time_mode_validated" default="$(eval {'allowed': arg('gps_time_mode')}['unsupported_measurement_with_global_ekf' if arg('gps_time_mode') == 'measurement' and arg('use_global_ekf') else 'allowed'])" />
     <arg name="publish_static_map_odom_outdoor" default="true" />
     <arg name="global_odom_use_heading" default="true" />
     <arg name="global_odom_heading_filter_window_sec" default="10.0" />
@@ -104,6 +109,8 @@
             <arg name="use_rmc" value="$(arg gps_use_rmc)" />
             <arg name="gps_rotation" value="$(arg gps_rotation)" />
             <arg name="use_gnss_time" value="$(arg gps_use_gnss_time)" />
+            <arg name="gps_time_mode" value="$(arg gps_time_mode)" />
+            <arg name="gps_time_clock_verified" value="$(arg gps_time_clock_verified)" />
             <arg name="heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         </include>
     </group>
@@ -136,6 +143,8 @@
          导致GPS点和OSM蓝线出现稳定米级偏移。 -->
     <group if="$(arg outdoor_mode)">
         <node pkg="robot_base_driver" type="gps_fix_to_map_odom.py" name="gps_fix_to_map_odom" clear_params="true" output="screen">
+            <param name="gps_time_mode" value="$(arg gps_time_mode)" />
+            <param name="gps_time_clock_verified" value="$(arg gps_time_clock_verified)" />
             <param name="fix_topic" value="/gps/fix" />
             <param name="heading_topic" value="$(arg global_odom_heading_topic)" />
             <param name="output_topic" value="/odometry/gps" />
@@ -161,6 +170,8 @@
         <group unless="$(arg use_global_ekf)">
             <!-- 稳定模式：使用OSM一致投影后的GPS里程计，并在GPS异常时由本地里程计续推。 -->
             <node pkg="robot_base_driver" type="global_odom_bridge.py" name="global_odom_bridge" output="screen">
+                <param name="gps_time_mode" value="$(arg gps_time_mode)" />
+                <param name="gps_time_clock_verified" value="$(arg gps_time_clock_verified)" />
                 <param name="input_topic" value="/odometry/gps" />
                 <param name="local_topic" value="/odometry/local" />
                 <param name="fix_topic" value="/gps/fix" />

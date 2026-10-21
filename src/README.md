@@ -6,7 +6,7 @@
 |---|---|
 | `src/` | 核心实现和可复用模块，Python、C++ 都可以 |
 | `scripts/` | 可直接执行的 ROS 节点和工具脚本 |
-| `tests/` | 单元、回归及隔离进程测试 |
+| `Test/tests/` | 自维护代码的单元、回归及隔离进程测试（集中管理） |
 | `launch/`、`config/` | 系统装配和参数 |
 | `msg/`、`srv/` | ROS 消息和服务定义（需要时才建） |
 | `example/` | 车辆配置、模型与仿真案例，保留现有结构 |
@@ -17,7 +17,7 @@
 |---|---|
 | `osm_map_handler` | OSM 全局 A*、返程衔接和相机参考路径；核心在 `src/`，节点入口在 `scripts/` |
 | `neupan_ros` | 局部优化和避障控制；`src/neupan_core.py`、`src/neupan_diagnostics.py` 为实现，`scripts/neupan_node.py` 为入口 |
-| `robot_base_driver` | 底盘、定位保护、控制选择与日志；可执行节点统一在 `scripts/`，回归在 `tests/` |
+| `robot_base_driver` | 底盘、定位保护、控制选择与日志；可执行节点统一在 `scripts/`，回归在 `Test/tests/` |
 | `hybridnets_receiver` | GPU 视频与 JSON 接收、叠加验证、视频录制；节点在 `scripts/` |
 | `usb_camera` | 相机启动、内外参标定和离线验证；工具在 `scripts/`，标定参数在 `config/` |
 | `vehicle_bag_recorder` | rosbag 录制；节点在 `scripts/`，录制话题和分包规则在 `config/` |
@@ -26,7 +26,7 @@
 
 OSM 公共模块直接平铺在 `osm_map_handler/src/`，不再创建内层同名目录；文件名用 `osm_` 前缀避免跨包冲突。`scripts/camera_right_path.py` 只是入口，唯一的核心实现在 `src/osm_camera_path_refinement.py`，入口和实现不同名。NeuPAN 的核心 Python 源码继续留在 `src/`，不机械搬进 `scripts/`。
 
-已有布局合理的包不搬文件。FAST-LIO、Livox、Wheeltec、NMEA 消息、共享 Hybrid A* 及其第三方依赖保留原目录；现有 C++ 辅助包也不因分类而迁移。
+项目自编测试统一到 `Test/`，厂家/第三方原带测试及其配套数据保留原目录。已有布局合理的业务源码不搬文件。FAST-LIO、Livox、Wheeltec、NMEA 消息、共享 Hybrid A* 及其第三方依赖保留原目录；现有 C++ 辅助包也不因分类而迁移。
 
 ## 编译和安全回归
 
@@ -38,7 +38,7 @@ conda activate lxw
 source /opt/ros/noetic/setup.bash
 catkin_make --pkg hybrid_astar neupan_ros robot_base_driver osm_map_handler -j2
 source devel/setup.bash
-python -m unittest discover -s src/robot_base_driver/tests -v
+python -m unittest discover -s src/Test/tests -v
 NEUPAN_CPP_SMOKE=1 NEUPAN_ROS_SMOKE=1 python src/Test/tests/test_outdoor_start_connection.py -v
 ```
 

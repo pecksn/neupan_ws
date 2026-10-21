@@ -1,250 +1,180 @@
-# 阿克曼无人车项目问题与整改记录
+# 阿克曼无人车：待解决问题与技术方案
 
-> 更新：2026-10-20。审查对象：提交 `704e6fc` 加当前工作区未提交的日志修改。
-> 本文件只维护问题、修改进度和验证证据；架构与接口说明见 [PROJECT_ANALYSIS_CN.md](PROJECT_ANALYSIS_CN.md)。
-> 本次已修复第3节L1、L2并做离线回归；没有重启实车节点、连接真实串口或发送控制指令。
+更新日期：2026-10-21。本文只保留未完成的整改和验收；项目架构见 `PROJECT_ANALYSIS_CN.md`。修改完成后删除对应实施任务，仍未完成的实车验收继续保留。
 
-## 1. 现在还有什么需要做
+## 1. 当前任务与顺序
 
-**日志主要缺口及L1/L2边界问题已修复，离线回归通过，待下一趟实车录制验收。** 本次仅完善异常关闭清单与统一合法JSON，不改变控制算法。
-
-其余工作主要是验证新增记录在实车上实际落盘，以及补充测量和部署资料。03仍然先采集数据，不实施过期结果拦截。
-
-| 编号 | 事项 | 当前状态 | 下一步 |
+| 编号 | 待解决事项 | 当前判断 | 下一步 |
 | --- | --- | --- | --- |
-| L1 | 录包异常关闭跳过结束清单 | **已修复，离线验证通过** | 实车确认退出原因与结束清单落盘 |
-| L2 | 自动指令异常值产生非标准JSON | **已修复，离线验证通过** | 实车日志保持严格JSON可读 |
-| 02 | 非法/越界输入保护及发送审计 | 已实现，离线通过，待实车验证 | 核对审计协议、实际限速和低速行为 |
-| 03 | 求解结果时效 | 待测量，暂不修改 | 取得正常行驶runtime并分析耗时 |
-| 05 | 非Fixed定位精度 | 待实测 | 建立独立位置/航向基准 |
-| 06 | GPS参考点、外参与时间 | 待测量评估 | 测安装偏移和采集/接收时间差 |
-| 07 | 路网与通行能力 | 待场景验证 | 核对起步接入、急弯、道路宽度和净距 |
-| 08 | 相机路径及回退 | 启用功能后验证 | 使用视觉录包配置，检查回退轨迹 |
-| 09 | 接管与自动恢复 | 待操作验证 | 核对请求、实际模式、审计动作 |
-| 10 | 云端任务状态 | 待业务验证 | 验证顺序目标与重连，不先重构 |
-| 11 | 部署和验收证据 | 部分已有，仍需完善 | 归档参数、地图、外参、版本及测量记录 |
+| P1 | 定位输入频率、测量时间、天线参考点及长距离验收 | 输入时序和安装偏移尚未实测闭环 | 停车采集基线，按2.2推进时间对齐，再做动态验收 |
+| P2 | 避障转向迟缓、预测轨迹安全与求解器异常 | 存在轨迹几何复查缺口，参数也需对照 | 先补安全复查与失败处理，再单变量调参 |
+| P3 | 相机靠右未生效 | 延迟与门限不相容，还需检查双边界和策略回退 | 定位稳定后验收；上游延迟排查可并行 |
 
-原问题编号不重排；已明确不整改的条目不再列入。L1、L2仅用于本次日志审查，分别关联11录包完整性和02异常输入记录。
+执行顺序：P1输入核验及必要整改 → P1动态验收 → P2安全复查/异常处理 → P2调参 → P3动态验收。整车室外入口已默认measurement＋auto，室内无有效GNSS时间时只等待；无需到室外改代码/参数。自动时间一致性门控不代替室外时基及动态精度验收，不标记实车偏移问题已解决。
 
-## 2. 本次日志修改：已完成的部分
+## 2. P1：定位剩余整改与验收
 
-以下基于当前源码和重新运行的测试，不再作为缺失功能重复开发。
+### 2.1 实际输出频率与接收链路：室内基线已采，待有效定向验收
 
-| 已完成项 | 实现及记录位置 | 仍需注意 |
-| --- | --- | --- |
-| 驱动实际发送审计 | `/vehicle/command_audit`，JSONL `command_audit_event`，三种bag均配置 | `written`只表示串口API返回完整字节数，不是MCU执行确认 |
-| 审计内容 | 原始输入、限幅/死区/量化原因、最终协议、轮速、转角、限值、字节数和错误 | 无真实轮速和前轮角反馈，审计为尽力发布 |
-| 遥控与模式原始事件 | JSONL `remote_command_event`、`mode_request_event`；三种bag均配置原始topic | Twist/UInt8无Header，记录的是NUC接收时间 |
-| 目标与到达链 | 三种bag均有gps_goal、map_goal、goal_arrived和经纬度路径；JSONL原有事件保留 | 不等于包含云端发送/确认/显示记录 |
-| GNSS解状态 | 三种bag及JSONL均配置 `/gnss/solution_status` | 仍要确认本趟实际收到消息 |
-| 录包结束核验 | 同目录原清单JSON新增 `recording_result`，累计分包索引消息数、缺失必录项及读取错误 | L1异常关闭已补测；仍不能保证强杀/断电时落盘 |
+用户已确认同一台G90、同一串口的PVTSLN配置为10 Hz且已生效；旧bag中解状态约1 Hz，位置约20 Hz。两者不一致，尚不能确定设备出包、格式识别或接收调度中的唯一原因。历史完整串口原文未保存，后续新采数据只说明当前链路。
 
-驱动审计的 `write_status` 为 `written`、`short_write`、`write_error` 或 `port_unavailable`；始终 `mcu_execution_confirmed=false`。审计在串口尝试后发布，发布异常不触发额外控制或重试。
+本次室内基线已确认当前PVTSLNA约10 Hz、GGA约20 Hz、约3335 B/s、无解析/CRC错误；没有修改设备频率。此时定向NONE，仍需在有效定向条件下补验航向频率和最大间隔，不能把本次结果倒推为旧bag问题已经定位。
 
-综合JSONL仍是一套日志，不需要另开“审计日志”进程。完整launch默认启用日志，但**rosbag仍需另开录制**。此前运行中的旧节点和旧bag不会自动补出新增字段，后续需在停车后使用更新后的节点验证。
-
-依据：[base_driver_node.py](src/robot_base_driver/scripts/base_driver_node.py)、[system_run_logger.py](src/robot_base_driver/scripts/system_run_logger.py)、[bag_recorder.py](src/vehicle_bag_recorder/scripts/bag_recorder.py)。
-
-## 3. 已修复的日志边界问题
-
-### L1. 异常关闭时未能保存录包结束核验
-
-- **状态（2026-10-20）**：已修复，离线验证通过，待实车核对。
-- **位置**：[bag_recorder.py](src/vehicle_bag_recorder/scripts/bag_recorder.py) 的 `stop`。
-- **触发**：SIGINT后等待20秒超时，发送SIGTERM后再次等待5秒仍超时。进程在取进程组或发信号时恰好退出，也可能抛出相关异常。
-- **修复前已复现**：用mock模拟两次 `TimeoutExpired`，第二次异常向外抛出，`_record_bag_inventory` 没被调用。由于 `stopping` 已为true，再次调用 `stop` 也不会补写。
-- **影响**：最需要核对的不完整录制只留下起始清单，缺少结束原因和核验状态。正常关闭的现有测试通过，并未覆盖这个分支。这是原关闭流程在新增核验职责下暴露的缺口，不是证明正常bag会丢失。
-- **实现**：`stop`以finally兜底核验，保持原SIGINT等待20秒→SIGTERM等待5秒，不新增SIGKILL。`recording_result.shutdown`保存请求原因、关闭结果和分阶段异常；同时记录 `return_code`、`process_running`。仍运行或进程状态无法查询时不标核验完成。清单更新失败保留原文件，重复stop可重试清单，但不重发退出信号。
-- **离线验收**：新增5项覆盖双重超时、SIGTERM成功、getpgid/killpg退出竞态、清单写失败后重试、poll异常；原active遗留、正常退出和损坏索引测试继续通过。测试使用mock进程及临时bag，核对原bag内容未变，没有操作真实进程。
-- **限制**：强杀记录器或断电无法保证执行finally；磁盘不可写时只能告警，不能保证结束清单落盘。进程仍存活时保存的是当时的不完整快照，不会偷偷强杀或自动修复bag。
-
-### L2. 新事件合法，但综合JSONL仍可能出现NaN/Infinity
-
-- **状态（2026-10-20）**：已修复，离线验证通过，待实车日志验收。
-- **位置**：[system_run_logger.py](src/robot_base_driver/scripts/system_run_logger.py) 的 `auto_command_cb`、`command_cb`、`write_record_locked`。
-- **已实现部分**：新遥控回调和驱动审计已把非有限数保留为文本。
-- **修复前遗漏**：自动指令、selected采样等旧入口仍保留浮点NaN/Inf；统一写入层使用默认 `json.dumps`，会输出标准JSON不允许的NaN/Infinity。
-- **修复前已复现**：向模拟logger传入 `linear.x=NaN` 的自动和selected指令，自动事件及后续sample两行均被严格JSON解析拒绝。测试仅写临时文件，未发ROS消息。
-- **影响**：02能正确停车并不代表异常输入的日志可被其他分析器读取；Python默认宽松 `json.loads` 会接受NaN，因此现有普通解析测试可能漏检。
-- **实现**：统一写入边界递归转换字典、列表和元组中的非有限浮点数为 `"nan"`、`"inf"`、`"-inf"`，正常数值/布尔/空值保持原类型；随后 `allow_nan=False` 严格序列化。不改原内存状态，不将异常值伪装为0。其他不可序列化对象告警并返回失败，不使异常逃逸，后续记录仍可写入。
-- **离线验收**：新增3项覆盖自动、selected、遥控、审计和嵌套状态的三种非有限数；测试解析器遇NaN/Infinity常量直接报错，全部记录可读且证据保留。另核对正常类型及原始数据未改变、非法对象后仍能继续记录。
-
-本次只修复L1、L2；未修改NeuPAN、定位策略或电机行为，也未重启已有系统。安全停车后重新启动日志/录包节点应用代码，旧文件不会被改写为新的记录格式。
-
-## 4. 已实现与待验证事项
-
-### 02. 输入保护及发送结果
-
-**状态：代码已实现、离线回归通过，待实车验证。**
-
-已实现非有限值停车、正反向独立限幅（默认各1.5 m/s）、±25°转角限制、0.05 m/s死区、停车回正、参数合法性检查及串口最终边界复查。新增审计已能记录限幅和协议量化后的发送内容。
-
-下次验证：
-
-1. 检查实际部署的轮半径和正反向限值；不把软件默认值当作硬件安全极速。
-2. 同时记录selected与command_audit，核对限幅、死区及量化结果，检查写入状态。
-3. 通过实际车辆运动或已有独立反馈确认低速、倒车及转角行为。`command_speed_mps`只是指令换算值；`/odom.twist`当前为零，不能当真实速度反馈。
-4. 不要求在车辆运动中注入NaN或超限指令；异常输入已有模拟串口测试，实车先验证正常边界和真实执行。
-
-依据：[base_driver_node.py](src/robot_base_driver/scripts/base_driver_node.py)、[test_base_driver_command_limits.py](src/robot_base_driver/tests/test_base_driver_command_limits.py)。
-
-### 03. 求解性能与结果时效
-
-**状态：待测量评估，暂不修改。** 用户当前执行完路线后再发下一目标，不把途中抢占任务作为必改理由。
-
-源码仍是求解前检查扫描、求解后发布动作。现有 `/neupan/runtime`、JSONL `neupan_runtime_event`、`auto_command_event` 和资源记录已经能用于第一轮分析，不重复开发性能日志。
-
-- **历史证据**：此前检查的10份 `system_run_full_20261019_*.jsonl` 无可用runtime，不能据此证明性能不足或性能足够；本次未重新分析一趟新实车数据。
-- **待采集**：直线、弯道、障碍较多以及视觉接收开启时的 `solver_ms`、`command_interval_ms`、mux原因、扫描/定位状态和资源占用。
-- **统计方式**：样本数、p50/p95/p99、最大值及超过0.5秒次数；区分等待路径、到达和传感器故障。没有返回的求解不产生完成事件，要结合进程及自动超时判断。
-- **修改条件**：如果观察到慢求解后迟到动作重新放行，再设计结果期限或发布前检查；稳定正常则暂缓。名义50 Hz不等于应采用20毫秒硬拒绝门限。
-- **剩余记录边界**：每次动作所用扫描/位姿的完整时间绑定尚未记录；仅当需要追查输入年龄时再决定补充。
-
-### 05. 非Fixed定位精度
-
-- **已实现**：全局桥允许合格Float/差分位置缓慢校正平移，稳定条件满足后可更新续推预算；不使用未固定GNSS航向改变地图航向对齐。
-- **尚未证明**：一致性好不等于绝对位置准确。100米/600秒不是无Fixed总行程上限，不能用持续运行代替精度验证。
-- **排查方法**：对比独立位置基准，按Fixed、Float、无解、恢复分段统计误差，并记录 `runtime_position.budget_renewals`。
-- **代码**：[global_odom_bridge.py](src/robot_base_driver/scripts/global_odom_bridge.py)。
-
-### 06. GPS参考点、外参与时间对齐
-
-- **已确认**：GPS投影直接使用天线经纬度，默认输出为 `base_link`，该处未做水平杆臂补偿；是否造成明显误差取决于真实安装位置。
-- **本次补充**：普通扫描转换使用 `lookupTransform(..., Time(0))`，掉头扫描另有采集时刻TF处理。车辆运动时应检查扫描延迟与TF时间差，不能认为两个分支的时序策略相同。
-- **排查方法**：先测安装偏移和采集/接收时差；若延迟为Δt，运动引入的平移量级约为vΔt，转弯还叠加旋转影响。存在偏差再设计补偿。
-- **代码**：[gps_fix_to_map_odom.py](src/robot_base_driver/scripts/gps_fix_to_map_odom.py)、[neupan_core.py](src/neupan_ros/src/neupan_core.py) 的 `scan_callback`、`refresh_connection_scan`。
-
-### 07. 路网与实车通行能力
-
-- **已确认**：默认起终点吸附上限50米，道路宽度可估算；OSM最大右偏量0，即便enable为true也不代表参考线已靠右。
-- **已有机制**：新路线方向与车头夹角至少135°时进入局部前进掉头连接；普通跟踪没有这一分支同等的车体扫掠准入。
-- **排查方法**：核对实际道路宽度、离路起步、路口急弯和目标吸附位置。区分“道路图可达”“局部控制可跟踪”和“车体实际可通行”。
-- **代码**：[global_astar_node.cpp](src/osm_map_handler/src/global_astar_node.cpp)、[osm_outdoor_start_connection.py](src/osm_map_handler/src/osm_outdoor_start_connection.py)。
-
-### 08. 相机路径与回退
-
-- **适用范围**：完整launch默认关闭相机控制；未启用时，不应将相机修正风险当成当前行驶故障原因。
-- **已实现**：消费端核对心跳、路线时间戳和路径摘要，不匹配回退OSM，无原路线停车。默认目标距离是相机中心到右边界2米，不是右轮净距2米。
-- **排查方法**：启用后检查GPU/NUC时间、采集时刻TF、相机外参、地面投影，以及回退中心线时的横向轨迹和转角变化。
-- **代码**：[osm_camera_path_guard.py](src/osm_map_handler/src/osm_camera_path_guard.py)、[osm_camera_path_refinement.py](src/osm_map_handler/src/osm_camera_path_refinement.py)。
-
-### 09. 接管与恢复
-
-- **当前行为**：切回自动可立即使用未超时的自动指令，模式本身无心跳超时；手动模式不受自动定位门控限制。
-- **本次判断**：这是需与实际操作方式核对的行为，不直接认定为缺陷。
-- **排查方法**：人工移动车辆后恢复自动、遥控断线、定位恢复分别测试；先明确操作员期望，再决定是否修改。
-- **代码**：[control_mode_mux.py](src/robot_base_driver/scripts/control_mode_mux.py)。
-
-### 10. 云端任务状态
-
-- **当前接口**：到达状态为0/1，经纬度路径JSON没有任务ID；云端完整实现本次未审查。
-- **本次判断**：顺序单任务场景下，不应仅因为没有任务ID就要求重做任务系统。
-- **排查方法**：先验证到达后发下一目标、旧锁存状态和重连时的展示是否正确；若实际出现错归属、取消或并发需求，再扩展契约。
-- **代码**：[gps_goal_bridge.py](src/osm_map_handler/scripts/gps_goal_bridge.py)、[neupan_core.py](src/neupan_ros/src/neupan_core.py)。
-
-### 11. 部署与验收
-
-- **环境依据**：宿主机 `/opt/ros` 只有humble，但已有运行中的 `Neupan` Noetic容器。不能再用上一轮宿主机缺少Noetic来断言本轮无法测试。
-- **依赖边界**：本仓库主要提供ROS包装，外部 `neupan` 算法包、模型、地图和外参同样决定运行结果；当前未完整审计外部算法源码和GPU/MCU实现。
-- **排查方法**：每次试验保留commit、容器/依赖版本、launch参数、模型/地图/外参版本、运行数据和人工接管记录。
-- **已有TF行为**：`map_odom_align_bridge` 输入超时会继续广播最近变换，因此“能查询TF”不能独立证明定位健康；要结合安全状态和消息年龄。
-
-## 5. 当前日志覆盖与剩余证据
-
-### 5.1 记录方式
-
-完整launch默认综合JSONL按10 Hz采样部分状态，同时逐回调记录部分控制、任务和诊断事件。异步队列、磁盘写入和节点退出都可能影响记录，不能把“逐回调写事件”理解为绝不丢消息。
-
-rosbag需单独启动。`record.launch` 默认 `vehicle_data.yaml`；现场常用命令选择 `hybridnets_data.yaml`，靠右测试选择 `camera_right_test.yaml`。视觉测试优先用对应专题配置，普通vehicle配置没有完整GPU图像/推理JSON及camera_right输入输出。
-
-### 5.2 仍缺什么，分别怎么补
-
-| 类别 | 关联问题 | 剩余内容 | 处理方式 |
-| --- | --- | --- | --- |
-| 软件修复待实车验收 | L1、L2 | 异常结束清单、统一合法JSON已修复并补回归 | 下趟运行核对新记录，见第3节限制 |
-| 部署复现资料 | 11 | Git/依赖/容器版本、全量参数、地图与外参内容/哈希 | 建立每趟归档；可先操作留存，不必马上新建节点 |
-| 真实物理反馈 | 02 | 实际轮速、前轮角、MCU执行确认 | 核实硬件已有能力或实测，不能由发送日志推断 |
-| 独立定位与几何基准 | 05～07 | 位置/航向真值、天线安装偏移、道路宽度和净距 | 测量/标定；不能靠增加自身状态字段替代 |
-| 时序与上游证据 | 06、08～10 | 两机时钟偏差、云端发送/确认、具体求解输入年龄 | 有对应现象时采集，两端时序不能只用NUC接收时间替代 |
-| 场景验收 | 全部 | 真实运行数据是否齐全，指标是否符合需求 | 下次录制核验，不重复补已存在的话题 |
-
-`/neupan/config_snapshot` 已包含规划节点参数、规划YAML和模型SHA256；它不是全系统参数和依赖归档。bag清单已含录制配置与命令，也不是完整部署快照。
-
-消息计数只能证明有消息，不证明全程连续或无掉帧。`required_topics`不应无条件加入仅操作时才出现的目标、模式请求或遥控事件；按本趟实际操作核对计数。runtime在实际规划执行时才应出现。
-
-## 6. 下次实车记录验收
-
-| 阶段 | 检查内容 | 合格证据 |
-| --- | --- | --- |
-| 启动前 | 停车后使用更新的驱动、logger和录包程序；选正确配置 | 新订阅/发布接口已加载，配置和版本有记录 |
-| 正常行驶 | 自动指令、selected、command_audit、runtime及定位/扫描状态 | JSONL字段非空；审计协议与实际限值一致，写入错误能识别 |
-| 实际执行接管时 | remote、mode_request、control_mode、command_audit | 请求与生效顺序可解释；未做遥控操作则不要求有遥控消息 |
-| 顺序目标任务 | gps_goal、map_goal、path、goal_arrived | 能关联本趟开始与结束；不把旧锁存数据当新任务证据 |
-| 使用视觉时 | 图像、推理JSON、camera_right路径/状态、TF | 视觉专题bag中实际有消息；关闭功能时不要求对应消息 |
-| 停止录制后 | 原清单中的 `recording_result` | 退出码、索引读取、active遗留和缺失必录项均核对；不能只看一个true标志 |
-
-结束后重点检查 `topic_message_counts`：`/vehicle/command_audit`、`/neupan/runtime`、`/cmd_vel/selected`、`/gps_guard/status`、`/neupan/scan_health`；以及本趟实际操作应产生的目标、模式和遥控消息。
-
-`index_verification_complete`要求记录子进程已退出、已有索引全部可读且无active遗留，不代表全程录制完整；`all_required_topics_recorded`只要求配置中的每项有消息，不保证频率。还要看 `shutdown` 及退出码。强杀或断电可能没有结束结果，应明确标记未验证，不能当作通过。
-
-## 7. 本次审查与测试记录
-
-### 7.1 审查范围
-
-审查当前未提交修改中的驱动审计、综合logger新增回调、三份录包配置、录包索引清单、依赖声明和测试。本次仅在现有修改上修复L1/L2及补测，保留其他用户改动。
-
-### 7.2 重新运行的回归
-
-| 测试组 | 环境 | 本次结果 |
-| --- | --- | --- |
-| `robot_base_driver/tests/test_*.py` | Neupan容器，Noetic/devel | 122项：120通过、2跳过 |
-| `src/Test/tests/test_*.py` | 宿主机系统Python | 101项：95通过、6跳过 |
-| 合计 | 离线回归 | **215通过、8跳过，无失败** |
-
-此前日志补齐新增14项，本次L1/L2再新增8项（L1为5、L2为3）；其中 `test_logging_records.py` 当前17项全部通过，包含真实临时bag索引与严格JSON解析。模拟串口、进程和ROS生命周期，不操作车辆。测试中的不可序列化对象告警属于预期注入，不是实车报错。`git diff --check`通过；本次没有完整catkin构建、Gazebo或实车验收。
-
-本次普通回归仍默认跳过8项可选导航集成测试；它们此前已补跑，历史结果保留在7.3，本次没有重新运行这些专项测试。
+- 保持当前10 Hz配置及0.5 s航向时效，停车采集至少30–60 s；同一串口只允许一个读取者。需要UPrecise保存原文时先停止ROS串口驱动，采完后关闭UPrecise再交还ROS。
+- 使用已有 `/gnss/serial_diagnostics` 比较字节/报文分类、PVTSLNA识别、解析与发布累计值，定位第一处数量差异；同时看实际有效航向的最大间隔和失锁比例。统计话题自身1 Hz不表示原始报文1 Hz。
+- 若需在ROS运行中留原文，应由现有唯一读取路径异步、限时记录，不能另开串口读取程序。按实际长度和频率核算115200/8N1约11520 B/s的名义预算，未实测前不直接认定串口超载。
 
 ```bash
-docker exec -w /home/nuc/lxw/neupan_ws Neupan bash -c \
-  'source /opt/ros/noetic/setup.bash; source devel/setup.bash; PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest discover -s src/robot_base_driver/tests -p "test_*.py" -q'
-/usr/bin/python3 -m unittest discover -s src/Test/tests -p 'test_*.py' -q
+rostopic echo /gnss/serial_diagnostics
+rostopic hz -w 200 /gnss/solution_status
+rostopic hz -w 200 /heading
 ```
 
-### 7.3 已补跑此前跳过的8项集成测试（2026-10-20）
+验收：确认有效定向时的真实频率、最大间隔与0.5 s时效相容。若当前仍只有1 Hz，按串口计数逐层定位，不用重复发布旧航向掩盖间隔。
 
-在现有Neupan容器的Noetic/devel环境中，使用 `/root/miniconda3/envs/lxw/bin/python3`，分别在独立解释器中显式开启测试开关。三项ROS测试使用临时端口的独立Master和模拟传感器/消息；规划器控制输出重映射到测试话题，不启动底盘驱动。五项C++测试调用现有已编译worker，不依赖实车Master。
+### 2.2 测量时间对齐：软件链路已实现，实车切换待验收
 
-| 开关 / 测试类 | 验证内容 | 本次结果 |
-| --- | --- | --- |
-| `MUX_SAFETY_ROS_SMOKE=1` / `SafetyHeartbeatRosTest` | 安全状态缺失、心跳中断、手动接管、恢复 | 1项通过；本次心跳断流约1.037秒后测试输出归零 |
-| `GPS_RUNTIME_ROS_SMOKE=1` / `RuntimeRosProcessTest` | Fixed初始化、源时间失配、Float恢复、旧Fixed数据超限停车 | 1项通过 |
-| `NEUPAN_CPP_SMOKE=1` / `SharedCppTests` | 异步通信、迭代上限、非原点精度、前进掉头、未知区域拒绝 | 5项全部通过 |
-| `NEUPAN_ROS_SMOKE=1` / `RosProcessTest` | 真实规划进程、正常路线、相机影子入口及反向路线阻塞停车 | 1项通过 |
+**目标：让GPS位置和航向匹配“测量发生时”的局部位姿，同时保留真实接收时间，正确判断延迟与过期。** 该项是时序风险优化，尚未证明它是实车偏移的原因。0.8 m/s运动200 ms为0.16 m，仅作量级示例。
 
-**此前8项跳过均已实际执行：8通过、0跳过。结合当时修复前普通回归207通过，两批覆盖原215项测试，合计215通过。** 这是历史补跑记录，不是本次L1/L2修复后223项的一次全量输出；ROS测试分别运行以隔离各自的初始化与关闭生命周期。
+当前代码边界：
 
-启动初期曾出现Master尚未就绪的重试提示，随后连接成功；部分rospy调用有socket ResourceWarning，但测试断言通过并正常退出。未进行本次完整重编译、Gazebo或实车验收。1.037秒仅为该测试中的ROS输出响应，不是实车物理制动时间。现有C++二进制被实际测试，不代表本次已验证干净环境构建。
+- [driver.py](src/wheeltec_gps_driver/src/libnmea_navsat_driver/driver.py)：独立入口默认shadow；整车室外入口默认measurement＋auto，将fix/GGA统一到位置测量历元、航向/解状态统一到同条PVTSLNA测量历元。旧 `gps_use_gnss_time` 不能统一两条链路，保持false。
+- [parser.py](src/wheeltec_gps_driver/src/libnmea_navsat_driver/parser.py)：GGA只有UTC时分秒，现有 `convert_time()` 用主机日期补齐；RMC解析具备日期，但尚未用于建立统一的接收机日期基准。
+- [unicore.py](src/wheeltec_gps_driver/src/libnmea_navsat_driver/unicore.py) 保持定位/定向质量解析；新增 [observation_time.py](src/wheeltec_gps_driver/src/libnmea_navsat_driver/observation_time.py) 按 [厂家N4协议表7-49](https://en.unicorecomm.com/uploads/file/Unicore%20Reference%20Commands%20Manual%20For%20N4%20High%20Precision%20Products_V2_EN_R1.14.pdf) 旁路解析CRC正确的PVTSLNA头，仅接受GPS/GPST、FINE、完整周数与周内毫秒，闰秒偏移取同条头字段，不写死18 s；BDST/UNKNOWN/非法时间明确拒绝。还须用这台G90当前有效原文核验字段与日期，不能因协议换算通过就认定整车时基已同步。
+- 投影和 [global_odom_bridge.py](src/robot_base_driver/scripts/global_odom_bridge.py) 共用 [gnss_timebase.py](src/robot_base_driver/scripts/gnss_timebase.py)：measurement核对精确历元、观测身份、session/clock_epoch与主机读取单调时间，桥分别按位置/航向测量时刻插值LIO；无前后样本不外推，晚到元数据走已有有界等待。
 
-复现方法：在容器中source Noetic及devel，将lxw环境bin加入PATH，再到对应tests目录分别运行：
+**阶段T0：确认时间来源与同一时钟基准。**
+
+2026-10-21室内静止60 s采集已完成（[报告](tracker_logs/sensor_time_20261021_145525/结论.md)）：PVTSLNA约10 Hz、GGA约20 Hz，无CRC/串口IO错误；但接收机时间UNKNOWN、位置/定向NONE、GGA UTC为空，不能完成GNSS共同历元核验。NUC报告NTP已同步；3个实测雷达UDP包time_type=0/NoSync，当前驱动采用主机接收时刻，FAST-LIO约10 Hz。未开启测量时标控制，仍待室外有效时间和完整定位链路验收。
+
+1. 采集校验通过的GGA、PVTSLNA及现有RMC，核实PVTSLNA头的时间字段是否对应本条解的测量历元，以及接收机何时声明时间可信。时间有效性与位置/定向Fixed状态分别判断，不能因定向Float就丢掉可信的位置时间。
+2. 将协议确认的接收机时间转换为UTC/Unix纳秒。若原字段为GPS周和周内时间，应核实周数、单位、时间状态及GPS→UTC转换；闰秒差使用可信来源并验证，不写死一个秒数。未知时间系统/无效时间状态不放行成测量时标。
+3. GGA日期优先关联接收机的可信日期基准：可用已验证的PVTSLNA时间或有效RMC日期。处理UTC午夜、跨月/年、日期晚到及数据乱序；不直接沿用主机当天日期。利用RMC日期不代表切换 `useRMC` 位置源，位置仍保持GGA质量语义。
+4. 停车时使用可靠UTC校时源同步NUC，记录校时状态与偏差，并确认ROS和雷达时间来源；显示时区不改变Unix时间，不额外加8小时。链路应覆盖MID360驱动 → FAST-LIO扫描末时刻 → LIO保护 → 本地EKF输出，而不只比较回调接收时间。运行期间避免跳变校时；PPS/PTP硬同步仅在实测表明软件时基或精度不够时评估。
+
+**阶段T1：旁路记录已实现；待停车采集、核实时基后评估延迟。**
+
+| 已记录字段 | 含义 |
+| --- | --- |
+| `measurement_stamp_ns` | 已验证并转换到共同时间基准的测量时刻 |
+| `host_read_ros_ns` / `host_read_mono_ns` | 唯一读取路径完成读取时的ROS时间/单调时间，位于解析之前 |
+| `publish_ros_ns` | 发布时刻，用于分离读取后的处理耗时 |
+| `time_valid` / `time_source` / `clock_epoch` | 时间是否可信、来源及当前连续时钟段 |
+| `observation_id` | 报文观测身份，独立于接收时刻；具体传递方式须与现有ROS消息契约一致 |
+
+- 独立静止诊断入口保留shadow，整车室外为measurement＋auto。`/gnss/time_diagnostics`逐观测保留读取、测量、发布时间及拒绝理由；socket/topic入口明确标为parser-entry，不伪装串口读取时间。室内UNKNOWN记录不能当作GNSS时基已验收。
+- 原综合JSONL逐条保存 `gnss_time_diagnostics_event`（不是只保存10 Hz最后一条）；三份现有录包配置均加入该可选话题。原 `/gnss/serial_diagnostics.observation_timing` 每秒包含计数与有界512样本的年龄p50/p95/p99/最大值。里程计日志增加整数 `msg_stamp_ns` 和主机接收ROS/单调时间，便于核对投影、LIO保护输出和EKF链路；未记录完整串口原文，不宣称已采到设备完整流量。
+- GGA日期仅借可信PVTSLNA或有效RMC日期，最长60 s且跨日选邻日；没有接收机日期就报告缺失，不拿主机日期冒充。时钟阶跃超过250 ms撤销clock_verified；measurement桥/投影还会锁存时间故障、停止校正并禁止AUTO，需停车重启整套定位，不能靠清缓存清掉累计续推预算。shadow维持原控制行为。
+- 时间门控未通过时只记录`candidate_age_ms`，`measurement_age_ms=null`；auto通过后记录自动一致性依据，不能当作硬同步证明。手工true仍只供独立核时后使用，不能拿它跳过现场确认。年龄包含接收机处理和发送排队，不能全解释为网络耗时；任何模式都不自动校时。
+- 统计位置、航向各自年龄的p50/p95/p99/最大值、突发积压、重复/倒序历元及时钟异常；静止和CPU有负载时都采集。保留主机接收时间，不使用单次差值自动校时，也不先硬减固定100/200 ms。
+
+**阶段T2：软件已实现；待现场核实后停车统一切换。**
+
+- 已有host/shadow/measurement。整车`outdoor_mode:=true`默认measurement、`gps_time_clock_verified:=auto`，三端参数统一；false仍拒绝measurement启动，true保留人工确认语义。auto不是预设已验证：先读取[Linux内核同步状态](https://man7.org/linux/man-pages/man2/adjtimex.2.html)（零mode只读查询、不校时），再等待FINE PVTSLNA和有效GGA UTC各至少10个新历元、连续窗口≥2 s且最新样本≤0.5 s，源龄须在-50～500 ms范围。通过后自动继续原定位初始化，不必修改室外命令。
+- 自动启动阶段UNKNOWN/空UTC/NUC未同步只等待，启动校时阶跃重建窗口；运行放行后钟跳或失去NUC同步锁存禁止AUTO，需停车重启。自动一致性门控不是独立UTC精度或硬同步证明。GPS位置仍用GGA、航向仍用同条PVTSLNA；禁止混用旧use_GNSS_time/useRMC/非Fixed门控HDT模式。
+- 同历元位置/质量和航向/质量精确整数纳秒绑定，投影不改原Header；measurement的 `stamp_ns` 是控制身份、float `stamp` 仅供显示。重复/乱序源历元不重发新fix/heading，投影不会在30 Hz计时器中把20 Hz同一fix反复当成新数据；CRC或无效时间仍发布失败的最新解状态，不给它填“现在”。
+- 桥核对256条有界时间元数据，分别检查位置1 s、航向0.5 s源年龄及读取单调年龄；无元数据/历史LIO括号时等待，超时按原策略降级，不外推、不加固定100/200 ms补偿。合法Float位置继续受原协方差、HDOP、创新量及窗口门控，yaw冻结；没有放宽质量或100 m/600 s预算。
+- 模式混入或运行放行后会话/clock_epoch改变会锁存禁止AUTO，清稳定/配对窗口但不重置续推累计。无效测量只拒绝GNSS校正，不用host兜底；正常GNSS失锁保持原LIO预算策略。旧全局EKF暂不支持新契约，measurement+use_global_ekf=true在launch解析时拒绝。
+- 室外操作无需改参数：先停车启动原`roslaunch neupan_ros full_system_run.launch outdoor_mode:=true`，终端黄色等待消息说明NUC校时或有效GNSS时间尚未满足；通过后仍需原定向Fixed等条件，不能只因有时间就行驶。首次低速验证前核对位置/朝向，时间事件和`/gps_guard/status.timebase_contract`用于查等待原因。室内UNKNOWN不会被当成已取得GNSS时间。
+
+**阶段T3：软件回归已完成，现场验收待执行。**
+
+已覆盖延迟、不同位置/航向测量历元的转弯插值、跨日/周边界、重复/乱序、无效时间/CRC、四种质量组合、投影去重及保留续推预算；原模式的独立ROS进程回归通过。测试入口与环境限制见 [Test说明](src/Test/README.md#gnss测量时间回归与静止采集)，软件测试不是实车精度证明。
+
+仍需：取得室外有效时间后，停车核验完整链路，再低速直线、转弯、失锁/恢复，最后复测原长距离路线。比较改前/改后测量年龄、拒绝比例、位置/航向残差与独立位置参照；门限按道路净宽、车速和转弯角速度验收，不凭空承诺厘米级改善。
+
+停车采集：沿用原全系统及录包命令即可，shadow默认启用；先不下发目标，采30–60 s，再看以下诊断。不要只把旧的 `gps_use_gnss_time` 改成true。
 
 ```bash
-# src/robot_base_driver/tests（各命令为独立进程）
-MUX_SAFETY_ROS_SMOKE=1 /root/miniconda3/envs/lxw/bin/python3 -m unittest test_control_mode_mux.SafetyHeartbeatRosTest -v
-GPS_RUNTIME_ROS_SMOKE=1 /root/miniconda3/envs/lxw/bin/python3 -m unittest test_runtime_position.RuntimeRosProcessTest -v
-# src/Test/tests
-NEUPAN_CPP_SMOKE=1 /root/miniconda3/envs/lxw/bin/python3 -m unittest test_outdoor_start_connection.SharedCppTests -v
-NEUPAN_ROS_SMOKE=1 /root/miniconda3/envs/lxw/bin/python3 -m unittest test_outdoor_start_connection.RosProcessTest -v
+rostopic echo /gnss/time_diagnostics
+rostopic echo /gnss/serial_diagnostics
 ```
 
-这8项验证导航集成功能，不覆盖L1/L2；两个日志边界问题的本次修复与新增测试见第3节及7.2。
+链路已核查：本次实测Livox NoSync，驱动采用主机接收时刻；FAST-LIO使用扫描末时刻，LIO保护复制源Header，EKF室外TF偏置默认0。**主机实际UTC偏差、GNSS FINE历元与完整EKF输出时标仍待室外新数据核验**。NoSync并不等于软件时基无法对齐，但当前不是PTP/GPS硬同步；约100 ms组帧差不能直接视为GNSS补偿量。
 
-## 8. 维护与执行规则
+### 2.3 天线参考点与杆臂：待测量，非零时需补偿
 
-- bug修改、状态、测试和实车验收仅更新本文。架构/接口契约改变时才更新项目分析，不复制第二份问题进度。
-- 状态区分：待排查、待修改、已修改待验证、已验证。已验证需注明是离线还是实车、适用场景和限制。
-- 技术负责人确认问题依据、修改范围及验收标准；执行模型不得把待测量事项自动改成软件重构。
-- 每项后续补充：日期、根因、修改文件/提交、测试命令与结果、实车结果、剩余限制。尽量更新原条目，避免在末尾持续追加重复“审查/修复说明”。
-- 软件记录完整性与物理执行准确性分开验收；不将串口写入成功当作MCU执行确认。
+- 确认接收机位置对应哪根天线/哪个参考点，实测其相对base_link的前、左、上偏移及双天线安装方向，不填猜测值。
+- `full_system_run.launch` 的 `gps_offset_*` 当前只生成静态TF；[gps_fix_to_map_odom.py](src/robot_base_driver/scripts/gps_fix_to_map_odom.py) 仍直接把经纬度投影作为base_link位置，数值链路没有应用杆臂。单改TF不会自动修正它。
+- 水平偏移不为零时，在一个明确位置统一补偿：`p_base_map = p_antenna_map - R(yaw_base_map)*r_base_to_antenna`。建议使用桥节点的同刻位姿/对齐关系，明确原始天线位置与车体位置语义，避免重复补偿；位置-only阶段使用已对齐的LIO朝向，不采用无效GNSS航向。
+- 验收用已知参考点、不同车头朝向和弯道验证，同时核对 `gps_rotation` 的安装补偿与朝向实测是否一致。
 
-源码与配置：[system_run_logger.py](src/robot_base_driver/scripts/system_run_logger.py)、[bag_recorder.py](src/vehicle_bag_recorder/scripts/bag_recorder.py)、[test_logging_records.py](src/robot_base_driver/tests/test_logging_records.py)、[vehicle_data.yaml](src/vehicle_bag_recorder/config/vehicle_data.yaml)、[hybridnets_data.yaml](src/vehicle_bag_recorder/config/hybridnets_data.yaml)、[camera_right_test.yaml](src/vehicle_bag_recorder/config/camera_right_test.yaml)。
+### 2.4 P1实车验收：待执行
+
+复测同一路段及相近长距离，覆盖位置/定向质量切换、定向失锁和恢复；保存独立位置参照。检查车当前位置的校正量、地图轨迹连续性、位置-only时对齐yaw冻结及冲突停车/恢复流程。
+
+按道路净宽确认冲突阈值；现有3 m默认值和100 m/600 s预算不代表车辆始终在安全道路内。`localization_safe=true` 只是保护状态，不能作为位置精度真值。
+
+## 3. P2：避障与求解器整改
+
+### 3.1 当前参数与问题依据
+
+配置：[neupan_config_outdoor.yaml](src/neupan_ros/example/lxw_car/config/neupan_config_outdoor.yaml)。部分注释仍与实现不符，实施时同步纠正。
+
+| 参数 | 当前值与含义 |
+| --- | --- |
+| `ref_speed` | 0.8 m/s；旁边0.5 m/s注释待纠正 |
+| `max_speed` | `[1.5,0.35]`，第二项是转角上限，轴距0.67 m时几何最小半径约1.84 m |
+| `max_acce` | `[0.8,0.08]`，dt=0.1 s时预测相邻步转角最多变化0.008 rad；首步与上一实际指令的连续性约束仍缺失 |
+| `p_u` / `eta` | 21是速度跟踪残差倍率后平方；eta当前1.0，是安全距离变量的奖励系数 |
+| `d_max` / `d_min` | 0.8/0.2，是安全距离优化变量范围，不能将d_max解释成障碍筛选半径 |
+| DUNE / NRMP点数 | 100/10，NRMP的10是障碍点数，不是搜索步数 |
+| 预测时域 | `receding=50, step_time=0.1`，约5 s |
+
+已有[障碍报告](videos/neupan_obstacle_check_20261020_160851/report.json)发现：完整扫描点下预测车体有重叠，部分重叠在降采样后消失；16:12:47完整点净距约-5.5 cm，而100点约+15.4 cm。另一样本使用全部402点后仍约-2.5 cm。它是静态障碍假设下的离线几何证据，不能当作真实接触时刻；单加点数或调eta都不保证安全。
+
+### 3.2 输出轨迹安全复查：待实施
+
+- 在求解返回后、速度发布前，用过滤后的完整扫描及真实车体轮廓检查整条轨迹净距；相邻姿态检查扫掠区域或插值，定义参考点、外扩裕量和TF失效行为。
+- 当前 `check_stop()` 主要检查t=0距离和0.001 m阈值，不能代替未来轨迹检查。复查失败时禁止发布原动作，输出零速并记录原因；无有效输入不能判安全。
+- 记录完整/优化点数、最小净距、首个冲突位置/时间、检查耗时、扫描时间/位姿及最终动作。停止距离结合实际制动、感知和计算延迟实测。
+
+### 3.3 选点、时序和调参：待实施
+
+1. 选点保留最近车体点、预测走廊关键点与空间覆盖，保留点数上限；验证细杆、斜墙和局部凸起。普通扫描分支使用采集时刻TF或明确运动补偿，定义TF缺失处理。
+2. 求解绑定输入时间并测结果年龄。下午已有约0.65 s的完成求解，需与mux超时结合检查；按实测可接受动作年龄决定过期拒绝，不能用名义50 Hz直接设20 ms硬限。
+3. 安全复查具备后，以0.3–0.5 m/s为低速候选，实测舵机响应，区分规划慢与执行慢。对转角变化率0.08/0.16/0.24 rad/s做离线对照，并补首步与上一有效指令的连续性约束。
+4. 对 `p_u=21/10/5` 单变量比较；再评估eta、距离范围、点数及迭代次数，同时记录求解耗时。用户当前eta=1.0保持为对照，未经验证不标记为避障修复。
+5. 指标包括车体最小净距、开始转向位置、降速时机、转角变化、通过率和求解耗时，并保留直线不摆动回归。串口写成功不能代替前轮实际执行反馈。
+
+### 3.4 ECOS异常与验收：待实施
+
+- 晚间19:34:49出现 `Solver ecos errored` 并导致规划退出；利用[失败JSON](tracker_logs/neupan_failure_20261020_193449_8ehjcv6v.json)及同名NPZ构造复现，区分数值病态、不可行与求解器问题。下午文件中的16:17:42历史事件不能算成后两趟各崩溃一次。
+- 失败时保存诊断、输出零速、禁止重复旧动作；仅允许有上限、可记录的重置/重试，超限保持故障。不得无条件吞异常继续或无限重启。
+- 离线覆盖正前障碍、斜墙、细杆、急弯、无通道、扫描/TF过期和求解失败，再受控低速验证制动与转向。保留现有MCU失速停车和mux超时机制，不重做已明确的策略。
+
+## 4. P3：相机靠右剩余整改
+
+### 4.1 仍需解决的条件
+
+下午最后两趟相机控制已开，但 `active` 始终为0；旧合并理由无法拆分置信度与过期占比。晚间11054条packet中源龄中位数约480 ms、p95约515 ms，均超过300 ms；模型推理中位数约79 ms，说明还需排查推理以外的流水线延迟。
+
+| 门控 | 当前条件 |
+| --- | --- |
+| Receiver | 源龄上限约800 ms |
+| 相机路径修正 | `source_age<=300 ms`、采集年龄<=500 ms、未来容忍50 ms、置信度>=0.65 |
+| 几何/策略 | 需要左右双边界；路口/OSM转弯回退；地图对齐改变会清缓存 |
+
+Receiver接受不代表靠右激活，消费端guard通过也可能只是在使用原OSM路径。晚间缺camera_right状态，不能把其时序统计当作晚间靠右实车验收。
+
+### 4.2 待执行方案
+
+1. 补录 `/hybridnets/timing_diagnostics` 到三份现有bag配置；现有JSONL事件继续使用，不设为所有运行必需话题。启动时记录控制开关、策略、门限、外参、GPU版本和时钟状态。
+2. 分解取图、编码/传输、解码、排队、模型、后处理与结果回传耗时。图像/结果队列采用有界保留最新策略；跨机时间差需先确认时钟偏差，不能全部解释为网络延迟。
+3. 把300/500 ms等硬编码门限参数化并记录；先降低延迟，再按车速、转弯、投影净距评估门限，不能直接放宽到800 ms。保留采集时刻TF、超时/未来时间异常回退。
+4. 增加发送进程session标识，乱序包不回退序号基线，跳号不直接等同网络丢包；记录完整未通过项/计数，避免首个reason掩盖双边界不足等其他失败。
+5. 双边界不足先核对GPU图像与输出；先在直路验证，再检查OSM转弯回退和定位变化清缓存。默认2 m是相机中心到右边界距离，右轮净距需结合轮距、车宽和外参换算。
+
+验收：先静止确认门限、双边界和采集时刻TF通过；再确认生产端 `active=true`、来源为相机且路径相对OSM确有横移，随后检查消费端及低速实际指令。覆盖路口、遮挡、停止GPU发送和缓存清空，记录具体操作时间。定位不稳时不据横向偏差调视觉参数。
+
+## 5. 其他保留排查项
+
+| 项目 | 何时检查 |
+| --- | --- |
+| 激光/相机外参、轮距和车体轮廓 | 几何安全复查、视觉靠右验收前测量 |
+| OSM路宽、起终点吸附与急弯能力 | 地图路线与实路不符时；OSM回退不保证自动靠右 |
+| 手动接管后恢复自动 | 按实际流程确认切回时是否允许立即采用仍新鲜的自动指令 |
+| 云端到达、下一任务与重连展示 | 按现有顺序单任务场景验证 |
+| 每趟部署资料 | 归档代码/外部NeuPAN版本、参数、模型、地图、外参和时基模式，便于复现实车问题 |
+
+问题依据保留在原始资料：下午三趟及晚间 `tracker_logs/system_run_full_20261020_*.jsonl`、对应bag、上述障碍报告与失败快照。JSONL为异步状态快照；GPS与融合位置差不能直接当作定位真值。本文不再保留已完成修复过程、通过次数或排除项流水；自动测试统一入口见 [src/Test/README.md](src/Test/README.md)。

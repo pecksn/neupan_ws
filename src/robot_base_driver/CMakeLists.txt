@@ -39,3 +39,9 @@ catkin_install_python(PROGRAMS
   scripts/system_resource_monitor.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
+
+# Imported helper: use a normal module, not a catkin executable relay (whose
+# exec context does not export classes when imported by another relay).
+configure_file(scripts/gnss_timebase.py
+  ${CATKIN_DEVEL_PREFIX}/${CATKIN_PACKAGE_BIN_DESTINATION}/gnss_timebase.py COPYONLY)
+install(FILES scripts/gnss_timebase.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

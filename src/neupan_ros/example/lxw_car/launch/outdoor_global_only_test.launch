@@ -56,6 +56,8 @@
     <arg name="gps_rotation" default="90.0" />
     <arg name="gps_heading_source_is_north_cw" default="true" />
     <arg name="gps_use_gnss_time" default="false" />
+    <arg name="gps_time_mode" default="measurement" />
+    <arg name="gps_time_clock_verified" default="auto" />
     <arg name="use_global_ekf" default="false" />
     <arg name="gps_map_projection_rate" default="30.0" />
     <arg name="gps_guard_enable" default="true" />
@@ -123,6 +125,8 @@
         <arg name="gps_rotation" value="$(arg gps_rotation)" />
         <arg name="gps_heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         <arg name="gps_use_gnss_time" value="$(arg gps_use_gnss_time)" />
+        <arg name="gps_time_mode" value="$(arg gps_time_mode)" />
+        <arg name="gps_time_clock_verified" value="$(arg gps_time_clock_verified)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
         <arg name="gps_map_projection_rate" value="$(arg gps_map_projection_rate)" />
         <arg name="gps_guard_enable" value="$(arg gps_guard_enable)" />

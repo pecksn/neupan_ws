@@ -2,6 +2,64 @@
 
 `scripts/` 放人工运动测试和采集工具，`tests/` 放自动回归；两者不要混用。目录约定见 [功能包分类](../README.md)。
 
+## 统一回归入口
+
+自编的底盘限幅、控制切换、定位保护、驱动与定位组合、GNSS串口诊断、日志录包、相机路径及仿真几何测试均集中在 `tests/`。厂家/第三方自带测试和配套数据保持原位，不重复复制。这里只调整测试位置与导入路径，不修改运行节点或车辆参数。
+
+进入 `Neupan`、按 `e`，在 ROS1 Noetic 的 `lxw` 环境执行：
+
+```bash
+cd /home/nuc/lxw/neupan_ws
+conda activate lxw
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+python3 -m unittest discover -s src/Test/tests -p 'test_*.py' -v
+```
+
+默认不启动底盘；需要独立 ROS 进程、C++ 搜索或规划器依赖的可选测试按各自条件跳过。单项可将 `-p` 换成对应文件名，例如 `test_serial_diagnostics.py`。无 ROS 环境不能直接执行全部回归。
+
+Gazebo 整车测试需要显式运行 `scripts/test_command_gate.py` 或 `scripts/test_legacy_entry.py`，并指定 `--output-dir /home/nuc/lxw/neupan_ws/videos/<实验名>`，不混入默认单元测试。仿真模型和规划实现仍留在原仿真包，详见 [仿真报告](../neupan_ros/example/lxw_car_simulation/docs/planner_comparison.md)。
+
+2026-10-21 迁移验证：隔离ROS1环境234项（230通过、4项可选测试跳过）；室外路径测试在具备曲线库/Tk依赖的主机验证73项（67通过、6项可选测试跳过）。合计307项、297通过、10跳过。临时ROS1基础镜像缺少曲线库的Tk导入依赖，因此采用分环境验证；不代表完整Gazebo或实车验收。
+
+## GNSS测量时间回归与静止采集
+
+实物静止采集（不启动底盘或规划）：先在ROS1 lxw环境运行 `roslaunch test_motion_tools sensor_time_check.launch`，另一个相同环境终端执行下列被动订阅命令。默认保存到 `tracker_logs/sensor_time_日期_时间/`，一分钟后采集器自动退出，随后Ctrl+C关闭传感器launch。无需开启车辆全系统。
+
+```bash
+python3 src/Test/scripts/check_sensor_time.py --seconds 60
+```
+
+此入口只运行GNSS、雷达及FAST-LIO，缺少LIO保护/EKF属于预期，不能当作完整定位链路验收。
+
+`test_gnss_observation_time.py` 覆盖整数纳秒、GPS周/周内毫秒、接收机闰秒、GGA接收机日期、跨日/月/年、0/50/120/200 ms延迟、重复/乱序、时钟阶跃、CRC及未知时间系统；ROS1下还验证shadow不改变fix/GGA/heading/solution原时间契约。只验证旁路实现，不代表已将定位切到测量时标。
+
+```bash
+python3 -m unittest discover -s src/Test/tests -p 'test_gnss_observation_time.py' -v
+```
+
+2026-10-21 旁路验收：新增23项时间回归全部通过；隔离ROS1扩展回归共258项，254通过、4项可选测试跳过。室外launch仅做配置解析（shadow/未核时时基参数贯通），未启动实车；测量时标控制切换和T3动态验收仍未完成。
+
+measurement软件补测：`test_gnss_measurement_contract.py` 检查真实驱动→桥的不同位置/航向历元、0/50/120/200 ms延迟下转弯插值、四种位置/定向质量组合、投影同历元去重与元数据晚到、无效时间/CRC拒绝、时钟阶跃禁止AUTO及保留续推预算。测试为假发布器，不允许据此声称实车切换已验收；Float测试使用合格的模拟协方差，未修改实车协方差阈值。
+
+```bash
+python3 -m unittest discover -s src/Test/tests -p 'test_gnss_measurement_contract.py' -v
+```
+
+2026-10-21最终软件验证：真实ROS1/lxw环境统一回归358项，350通过、8项可选测试跳过；另一次隔离ROS master进程测试通过（局部位姿延迟120 ms）。底盘包编译、devel共享模块及室外原命令三端measurement/auto参数解析通过，禁止的旧全局EKF组合在启动前拒绝。未启动实车控制，未取得室外有效时间或动态验收。
+
+`test_gnss_auto_start.py`新增启动UNKNOWN→有效GNSS时间无需重启/改参即可放行、两秒连续窗口、NUC未同步、重复帧、启动钟跳重新等待、运行钟跳/失同步锁存保护等测试。真实NUC只读内核查询返回已同步；测试不修改系统时间，不把自动一致性门控称为硬同步证明。
+
+```bash
+python3 -m unittest discover -s src/Test/tests -p 'test_gnss_auto_start.py' -v
+```
+
+本机lxw没有`defusedxml`，启动配置测试需要它；ROS系统环境已安装。本次完整回归仅给当前测试进程追加系统库搜索路径，没有安装库或改conda配置，可复用：
+
+```bash
+python3 -c 'import sys,unittest; sys.path.append("/usr/lib/python3/dist-packages"); suite=unittest.defaultTestLoader.discover("src/Test/tests", pattern="test_*.py"); result=unittest.TextTestRunner(verbosity=1).run(suite); sys.exit(not result.wasSuccessful())'
+```
+
 ## 室外返程路径衔接回归（不驱动车辆）
 
 在 ROS1 的 `lxw` 环境运行；覆盖反向目标、前进连接、实车 0.4 m 扫描过滤、近场缓冲区未验证标记、车身进入盲区拒绝、缓冲区障碍、采集 TF 延迟重试、空间/观测不足停车、靠右路径切换及室内配置隔离。规划与路径策略归属 `osm_map_handler`，另检查迁移后的引用及独立 3 s 心跳回退；NeuPAN 仅保留控制接入。
@@ -28,6 +86,21 @@ python src/Test/tests/test_camera_right_refinement.py
 ```
 
 `--ros` 是历史影子联调入口，要求预先启动独立 `127.0.0.1:11319` master 和影子节点，并保留原 20261008 测试 bag；不会自动启动这些依赖，禁止指向实车 master。
+
+## NeuPAN录包障碍复核（不驱动车辆）
+
+`verify_neupan_obstacles.py` 在Neupan容器的ROS1、lxw环境中，读取bag和对应综合日志，校验模型哈希，对比完整/降采样障碍点、记录轨迹与当前停车判据，并对少量样本做条件重算。它不启动节点、发布速度或打开串口。原回调时序和求解器warm-start未全部记录，因此不是逐步精确重放，也不等于实车碰撞验收。
+
+```bash
+cd /home/nuc/lxw/neupan_ws
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 python3 \
+  src/Test/scripts/verify_neupan_obstacles.py \
+  --bag rosbags/rosbag20261020_160851/hybridnets_vehicle_data_20261020_160851_0.bag \
+  --log tracker_logs/system_run_full_20261020_160844.jsonl \
+  --output videos/neupan_obstacle_check_20261020_160851
+```
+
+输出JSON及扫描/预测车体叠加图，不更改原bag、模型或业务配置。
 
 ## 左右电机映射测试
 

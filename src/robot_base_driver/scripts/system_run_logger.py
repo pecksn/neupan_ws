@@ -78,6 +78,8 @@ class SystemRunLogger:
             "gga": None,
             "heading": None,
             "gnss_solution": None,
+            "gnss_serial_diagnostics": None,
+            "gnss_time_diagnostics": None,
             "gps_odom": None,
             "global_odom": None,
             "local_odom": None,
@@ -101,6 +103,7 @@ class SystemRunLogger:
             "localization_safe": None,
             "motor": None,
             "camera_right": None,
+            "hybridnets_timing": None,
             "neupan_failure": None,
             "neupan_reference_path": None,
             "camera_path_guard": None,
@@ -129,6 +132,8 @@ class SystemRunLogger:
         rospy.Subscriber(self.gga_topic, Gpgga, self.gga_cb, queue_size=20)
         rospy.Subscriber(self.heading_topic, QuaternionStamped, self.heading_cb, queue_size=30)
         rospy.Subscriber(self.solution_topic, String, self.solution_cb, queue_size=10)
+        rospy.Subscriber('/gnss/serial_diagnostics', String, self.gnss_serial_diagnostics_cb, queue_size=10)
+        rospy.Subscriber('/gnss/time_diagnostics', String, self.gnss_time_diagnostics_cb, queue_size=200)
         rospy.Subscriber(self.gps_odom_topic, Odometry, self.gps_odom_cb, queue_size=30)
         rospy.Subscriber(self.global_odom_topic, Odometry, self.global_odom_cb, queue_size=30)
         rospy.Subscriber(self.local_odom_topic, Odometry, self.local_odom_cb, queue_size=50)
@@ -157,6 +162,8 @@ class SystemRunLogger:
         rospy.Subscriber("/neupan_initial_path", Path, self.neupan_reference_path_cb, queue_size=1)
         rospy.Subscriber("/camera_right/status", String,
                          lambda msg: self.update("camera_right", self.parse_status(msg)), queue_size=10)
+        rospy.Subscriber("/hybridnets/timing_diagnostics", String,
+                         self.hybridnets_timing_cb, queue_size=200)
         rospy.Subscriber(self.global_path_topic, Path, self.global_path_cb, queue_size=2)
         rospy.Subscriber(self.gps_guard_topic, String, self.gps_guard_cb, queue_size=20)
         rospy.Subscriber(self.lio_guard_topic, String, self.lio_guard_cb, queue_size=20)
@@ -187,6 +194,8 @@ class SystemRunLogger:
             "gga": self.gga_topic,
             "heading": self.heading_topic,
             "gnss_solution": self.solution_topic,
+            "gnss_serial_diagnostics": '/gnss/serial_diagnostics',
+            "gnss_time_diagnostics": '/gnss/time_diagnostics',
             "gps_odom": self.gps_odom_topic,
             "global_odom": self.global_odom_topic,
             "local_odom": self.local_odom_topic,
@@ -210,6 +219,7 @@ class SystemRunLogger:
             "safety": self.safety_topic,
             "motor": self.motor_status_topic,
             "camera_right": "/camera_right/status",
+            "hybridnets_timing": "/hybridnets/timing_diagnostics",
             "neupan_failure": "/neupan/failure",
             "neupan_reference_path": "/neupan_initial_path",
             "camera_path_guard": "/neupan/camera_path_guard",
@@ -424,6 +434,45 @@ class SystemRunLogger:
             payload = {"valid": False, "error": str(exc)}
         self.update("gnss_solution", payload)
 
+    def gnss_serial_diagnostics_cb(self, msg):
+        payload = self.parse_status(msg)
+        if not isinstance(payload, dict):
+            payload = {'valid': False, 'error': 'diagnostics must be a JSON object'}
+        rates = payload.get('rates_per_sec', {})
+        if not isinstance(rates, dict):
+            rates = {}
+        summary = {key: payload.get(key) for key in ('stamp', 'session_id', 'sequence', 'state')}
+        summary['rates_per_sec'] = {key: rates.get(key) for key in (
+            'read_bytes', 'complete_lines', 'ascii_decode_errors', 'partial_reads',
+            'pvtslna_recognized', 'pvtslna_parse_ok', 'pvtslna_parse_errors', 'solution_publish_calls')}
+        with self.log_lock:
+            # Full counters and module hashes once per diagnostic message;
+            # retain only a compact summary in the existing 10Hz snapshots.
+            self.update('gnss_serial_diagnostics', summary)
+            self.write_record({
+                'record_type': 'gnss_serial_diagnostics_event',
+                'stamp': self.received_at['gnss_serial_diagnostics'],
+                'wall_stamp': time.time(), 'topic': '/gnss/serial_diagnostics',
+                'data': payload,
+            })
+
+    def gnss_time_diagnostics_cb(self, msg):
+        payload = self.parse_status(msg)
+        if not isinstance(payload, dict):
+            payload = {'time_valid': False, 'reason': 'time diagnostic must be an object'}
+        with self.log_lock:
+            summary = {key: payload.get(key) for key in (
+                'session_id', 'sequence', 'family', 'mode', 'clock_epoch',
+                'time_valid', 'reason', 'clock_verified', 'clock_waiting',
+                'clock_verification', 'host_clock_synchronized', 'clock_gate_reason',
+                'candidate_age_ms',
+                'measurement_age_ms', 'epoch_order', 'processing_ms')}
+            self.update('gnss_time_diagnostics', summary)
+            self.write_record({'record_type': 'gnss_time_diagnostics_event',
+                'stamp': self.received_at['gnss_time_diagnostics'], 'wall_stamp': time.time(),
+                'host_receive_mono_ns': time.monotonic_ns(),
+                'topic': '/gnss/time_diagnostics', 'data': payload})
+
     def heading_cb(self, msg):
         yaw = self.yaw_deg(msg.quaternion)
         jump = None
@@ -442,6 +491,9 @@ class SystemRunLogger:
     def odom_dict(self, msg):
         return {
             "msg_stamp": self.message_stamp(msg.header),
+            "msg_stamp_ns": msg.header.stamp.to_nsec(),
+            "host_receive_ros_ns": rospy.Time.now().to_nsec(),
+            "host_receive_mono_ns": time.monotonic_ns(),
             "frame_id": msg.header.frame_id,
             "child_frame_id": msg.child_frame_id,
             "x": float(msg.pose.pose.position.x),
@@ -525,6 +577,12 @@ class SystemRunLogger:
         payload = self.parse_status(msg)
         self.update("neupan_runtime", payload)
         self.write_record({"record_type": "neupan_runtime_event", "data": payload})
+
+    def hybridnets_timing_cb(self, msg):
+        payload = self.parse_status(msg)
+        self.update("hybridnets_timing", payload)
+        self.write_record({"record_type": "hybridnets_timing_event", "data": payload,
+                           "logger_receive_timestamp_ns": rospy.Time.now().to_nsec()})
 
     def route_connection_cb(self, msg):
         payload = self.parse_status(msg)

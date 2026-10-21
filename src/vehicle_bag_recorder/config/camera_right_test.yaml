@@ -25,6 +25,8 @@ required_topics:
 topics:
   - /scan
   - /gnss/solution_status
+  - /gnss/serial_diagnostics
+  - /gnss/time_diagnostics
   - /livox/lidar
   - /livox/imu
   - /cloud_registered_body

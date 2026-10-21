@@ -4,6 +4,8 @@
 import json
 import math
 import socket
+import time
+from collections import deque
 
 import rospy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
@@ -52,6 +54,11 @@ class HybridNetsJsonReceiver:
         self.valid_streak = 0
         self.last_sender = ""
         self.last_reason = "waiting_for_packet"
+        self.receive_times = deque(maxlen=120)
+        self.last_result_seq = None
+        self.last_timeout_diagnostic = None
+        self.diag_json_pub = rospy.Publisher(
+            "/hybridnets/timing_diagnostics", String, queue_size=100)
 
         self.json_pub = rospy.Publisher(
             rospy.get_param("~result_json_topic", "/hybridnets/result_json"),
@@ -214,6 +221,8 @@ class HybridNetsJsonReceiver:
     def receive_once(self):
         try:
             raw, sender = self.sock.recvfrom(65535)
+            receive_ns = rospy.Time.now().to_nsec()
+            receive_mono = time.monotonic()
         except socket.timeout:
             return
         if self.allowed_sender and sender[0] != self.allowed_sender:
@@ -287,8 +296,54 @@ class HybridNetsJsonReceiver:
                 self.last_reason = "out_of_order_frame"
             elif not confidence_ok:
                 self.last_reason = "low_confidence"
+            elif not result["valid"]:
+                self.last_reason = "sender_result_invalid"
+            elif effective_age > self.max_source_age_ms:
+                self.last_reason = "receiver_source_age_exceeded"
             else:
                 self.last_reason = "invalid_or_stale_result"
+            interval_ms = ((receive_mono-self.receive_times[-1])*1000
+                           if self.receive_times else None)
+            self.receive_times.append(receive_mono)
+            span = self.receive_times[-1]-self.receive_times[0]
+            receive_hz = ((len(self.receive_times)-1)/span if span > 0 else None)
+            result_seq = result.get("result_seq")
+            if not isinstance(result_seq, int) or isinstance(result_seq, bool) or result_seq < 1:
+                result_seq = None
+            gap = (max(0, result_seq-self.last_result_seq-1)
+                   if result_seq is not None and self.last_result_seq is not None else None)
+            if result_seq is not None:
+                self.last_result_seq = result_seq
+            send_ns = result.get("send_timestamp_ns")
+            raw_send_age = ((receive_ns-send_ns)/1.e6
+                            if isinstance(send_ns, int) and not isinstance(send_ns, bool) and send_ns > 0 else None)
+            gpu_timing = result.get("timing_ms", {})
+            gpu_timing = ({str(k): v for k, v in list(gpu_timing.items())[:32]
+                           if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)}
+                          if isinstance(gpu_timing, dict) else {})
+            diagnostic = {
+                "schema_version": 1, "event": "packet", "frame_seq": frame_seq,
+                "result_seq": result_seq, "result_seq_gap": gap,
+                "receive_timestamp_ns": receive_ns,
+                "capture_timestamp_ns": capture, "send_timestamp_ns": send_ns if raw_send_age is not None else None,
+                "publish_timestamp_ns": result.get("publish_timestamp_ns"),
+                "receiver_valid": bool(packet_valid), "receiver_reason": self.last_reason,
+                "confidence": confidence, "source_age_ms": source_age,
+                "capture_age_at_receive_ms_clock_dependent": (receive_ns-capture)/1.e6,
+                "send_to_receive_ms_clock_dependent": raw_send_age,
+                "clocks_plausible_not_verified": clocks_comparable,
+                "effective_age_ms": effective_age, "receiver_max_source_age_ms": self.max_source_age_ms,
+                "receiver_min_confidence": self.min_control_confidence,
+                "receive_interval_ms": interval_ms, "receive_hz_window": receive_hz,
+                "gpu_send_hz": result.get("gpu_send_hz"),
+                "inference_hz": result.get("inference_hz"),
+                "inference_ms": result.get("inference_ms"),
+                "inference_backend": result.get("inference_backend"),
+                "timing_ms": gpu_timing, "datagram_bytes": len(raw),
+                "receiver_validation_wall_ms": (time.monotonic()-receive_mono)*1000,
+            }
+            result["receiver_diagnostics"] = diagnostic
+            self.diag_json_pub.publish(json.dumps(diagnostic, separators=(",", ":")))
             normalized = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
             self.json_pub.publish(normalized)
             self.valid_pub.publish(packet_valid)
@@ -307,6 +362,12 @@ class HybridNetsJsonReceiver:
             self.valid_streak = 0
             self.last_reason = "bad_packet"
             self.valid_pub.publish(False)
+            self.diag_json_pub.publish(json.dumps({
+                "schema_version": 1, "event": "bad_packet",
+                "receive_timestamp_ns": receive_ns,
+                "receiver_valid": False, "receiver_reason": "bad_packet",
+                "error": str(error), "datagram_bytes": len(raw),
+            }, separators=(",", ":")))
             rospy.logwarn_throttle(2.0, "Rejected HybridNets packet: %s", error)
 
     def health_timer(self, _event):
@@ -316,6 +377,16 @@ class HybridNetsJsonReceiver:
             self.valid_streak = 0
             self.valid_pub.publish(False)
             self.last_reason = "network_timeout" if self.last_receive else "waiting_for_packet"
+            mono = time.monotonic()
+            if self.last_timeout_diagnostic is None or mono-self.last_timeout_diagnostic >= 1.0:
+                self.last_timeout_diagnostic = mono
+                self.diag_json_pub.publish(json.dumps({
+                    "schema_version": 1, "event": "health",
+                    "receive_timestamp_ns": now.to_nsec(),
+                    "receiver_valid": False, "receiver_reason": self.last_reason,
+                    "last_receive_age_ms": (now-self.last_receive).to_sec()*1000 if self.last_receive else None,
+                    "receiver_timeout_sec": self.timeout,
+                }, separators=(",", ":")))
         diagnostic = DiagnosticStatus()
         diagnostic.name = "hybridnets/network_receiver"
         diagnostic.hardware_id = self.last_sender or "udp_remote_gpu"

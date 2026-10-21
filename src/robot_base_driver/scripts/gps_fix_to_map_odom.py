@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 
 import math
+import json
+import time
+import threading
+from gnss_timebase import GnssTimebase
 
 import rospy
 from geometry_msgs.msg import QuaternionStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import NavSatFix
+from std_msgs.msg import String
 from tf.transformations import quaternion_from_euler
 
 
@@ -39,6 +44,11 @@ class GpsFixToMapOdom:
 
         self.earth_radius = 6378137.0
         self.last_fix = None
+        self.time_lock = threading.RLock()
+        self.timebase = GnssTimebase(rospy.get_param('~gps_time_mode', 'shadow'),
+                                    rospy.get_param('~gps_time_clock_verified', False))
+        self.last_published_source_ns = None
+        rospy.Subscriber('/gnss/time_diagnostics', String, self.time_metadata_cb, queue_size=200)
         self.last_fix_recv = None
         self.last_heading = None
         self.last_heading_recv = None
@@ -81,6 +91,20 @@ class GpsFixToMapOdom:
         y = (lat - self.origin_lat) * (math.pi / 180.0) * self.earth_radius
         return x, y
 
+    def time_metadata_cb(self, msg):
+        with self.time_lock:
+            self._time_metadata_cb(msg)
+
+    def _time_metadata_cb(self, msg):
+        try:
+            event = json.loads(msg.data)
+            if not isinstance(event, dict):
+                raise ValueError('time metadata must be an object')
+            self.timebase.receive(event, rospy.Time.now().to_nsec(), time.monotonic_ns())
+        except (TypeError, ValueError):
+            if self.timebase.mode == 'measurement':
+                self.timebase.fault = 'malformed_time_metadata'
+
     def fix_cb(self, msg):
         if not self._finite(msg.latitude) or not self._finite(msg.longitude):
             return
@@ -105,11 +129,23 @@ class GpsFixToMapOdom:
         return cov
 
     def timer_cb(self, _event):
+        with self.time_lock:
+            self._timer_cb(_event)
+
+    def _timer_cb(self, _event):
         if self.last_fix is None:
             return
 
         fix = self.last_fix
         now = rospy.Time.now()
+        source_ns = fix.header.stamp.to_nsec()
+        good, reason = self.timebase.check('GGA', source_ns, now.to_nsec(), time.monotonic_ns(), 1.)
+        if not good:
+            rospy.logwarn_throttle(2., 'GPS projection time gate: %s', reason)
+            return
+        if self.timebase.mode == 'measurement' and (
+                source_ns <= 0 or self.last_published_source_ns is not None and source_ns <= self.last_published_source_ns):
+            return
         x, y = self.latlon_to_xy(fix.latitude, fix.longitude)
 
         odom = Odometry()
@@ -135,6 +171,7 @@ class GpsFixToMapOdom:
             odom.pose.pose.orientation.w = 1.0
 
         self.pub.publish(odom)
+        self.last_published_source_ns = source_ns
 
 
 if __name__ == "__main__":

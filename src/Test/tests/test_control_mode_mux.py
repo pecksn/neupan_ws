@@ -7,7 +7,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'src/robot_base_driver/scripts'))
 import rospy
 from control_mode_mux import ControlModeMux
 from geometry_msgs.msg import Twist

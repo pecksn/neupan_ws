@@ -54,6 +54,8 @@
     <arg name="gps_rotation" default="90.0" doc="沿用 wheeltec_gps_driver 的航向旋转参数" />
     <arg name="gps_heading_source_is_north_cw" default="true" doc="true: G90 HDT 航向按北为0、顺时针为正进行转换" />
     <arg name="gps_use_gnss_time" default="false" doc="是否使用 GNSS 自身时间戳" />
+    <arg name="gps_time_mode" default="$(eval 'measurement' if arg('outdoor_mode') else 'shadow')" doc="室外默认measurement，时间无效时等待，不退回主机时标" />
+    <arg name="gps_time_clock_verified" default="$(eval 'auto' if arg('outdoor_mode') else 'false')" doc="auto启动门控：NUC同步、连续有效GNSS时间；不修改系统时钟" />
     <arg name="use_global_ekf" default="false" doc="false: 稳定模式直接使用/odometry/gps; true: 使用ekf_global" />
     <arg name="gps_map_projection_rate" default="30.0" doc="GPS投影里程计发布频率" />
     <arg name="global_odom_heading_filter_window_sec" default="10.0" doc="G90与局部航向关系的时间窗口；桥口退化时冻结进入窗口前后的稳健航向" />
@@ -132,7 +134,7 @@
     <arg name="publish_snap_debug_markers" default="true" />
     <arg name="gps_marker_timeout" default="2.0" />
     <arg name="enable_gps_goal_bridge" default="true" />
-    <arg name="enable_system_log" default="true" doc="Ctrl+C后生成一个包含定位、GPS、保护状态和控制指令的综合日志" />
+    <arg name="enable_system_log" default="true" doc="运行中实时写入定位、GNSS时间诊断、保护、控制和资源占用的综合日志，Ctrl+C完成收尾" />
     <!-- 0=AUTO, 1=MANUAL -->
     <arg name="default_control_mode" default="0" />
     <arg name="auto_command_timeout" default="0.5" />
@@ -180,6 +182,8 @@
         <arg name="gps_rotation" value="$(arg gps_rotation)" />
         <arg name="gps_heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
         <arg name="gps_use_gnss_time" value="$(arg gps_use_gnss_time)" />
+        <arg name="gps_time_mode" value="$(arg gps_time_mode)" />
+        <arg name="gps_time_clock_verified" value="$(arg gps_time_clock_verified)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
         <arg name="gps_map_projection_rate" value="$(arg gps_map_projection_rate)" />
         <arg name="global_odom_heading_filter_window_sec" value="$(arg global_odom_heading_filter_window_sec)" />

@@ -34,6 +34,7 @@
 
 import math
 import json
+import time
 
 import rospy
 
@@ -49,6 +50,7 @@ from nmea_msgs.msg import Gpgga
 from geometry_msgs.msg import PoseStamped 
 from std_msgs.msg import Float32, String
 from libnmea_navsat_driver.unicore import parse_pvtslna
+from libnmea_navsat_driver.observation_time import ObservationTiming
 from geometry_msgs.msg import TwistWithCovarianceStamped
 
 class RosNMEADriver(object):
@@ -98,6 +100,12 @@ class RosNMEADriver(object):
         self.solution_timeout = max(0.1, float(rospy.get_param('~solution_timeout_sec', 2.5)))
         self.last_solution = None
         self.last_solution_recv = None
+        self.serial_diagnostics = None  # Attached only by the existing serial reader.
+        self.observation_timing = ObservationTiming(
+            rospy.get_param('~time_mode', 'shadow'),
+            rospy.get_param('~time_clock_verified', False))
+        self.time_diagnostics_pub = rospy.Publisher('/gnss/time_diagnostics', String, queue_size=200)
+        self._time_event = None
 
         self.eagleye_vel_pub =rospy.Publisher('/gps/nmea/vel',TwistWithCovarianceStamped,  queue_size=1)
 
@@ -107,12 +115,19 @@ class RosNMEADriver(object):
         self.heading_deg_pub = rospy.Publisher("heading_deg", Float32, queue_size=10)
 
         self.use_GNSS_time = rospy.get_param('~use_GNSS_time', False)
+        if self.use_GNSS_time:
+            rospy.logwarn('Legacy use_GNSS_time only changes NMEA stamps, not the PVTSLNA chain; '
+                          'it is NOT unified measurement-time alignment. Use host stamps for shadow acceptance.')
         if not self.use_GNSS_time:
             self.time_ref_pub = rospy.Publisher(
                 'time_reference', TimeReference, queue_size=1)
 
         self.time_ref_source = rospy.get_param('~time_ref_source', None)
         self.use_RMC = rospy.get_param('~useRMC', False)
+        if self.observation_timing.mode == 'measurement' and (
+                self.use_GNSS_time or self.use_RMC or not self.require_heading_fixed):
+            raise ValueError('measurement mode requires GGA position, same-PVTSLNA heading, and legacy use_GNSS_time=false')
+        self._measurement_event = None
 
         self.rotation_data = rospy.get_param('~rotation', 90.0)
         self.heading_source_is_north_cw = rospy.get_param('~heading_source_is_north_cw', True)
@@ -199,7 +214,79 @@ class RosNMEADriver(object):
             str(fix_type),
         )
 
-    def add_sentence(self, nmea_string, frame_id, timestamp=None):
+    def _publish_counted(self, publisher, message, kind):
+        if self._time_event is not None:
+            self._time_event['published'][kind] = {
+                'publish_ros_ns': rospy.Time.now().to_nsec(),
+                'source_stamp_ns': message.header.stamp.to_nsec() if hasattr(message, 'header') else None,
+                'publish_call_ok': False,
+            }
+        try:
+            publisher.publish(message)
+        except Exception as exc:
+            if self.serial_diagnostics is not None:
+                self.serial_diagnostics.error(kind+'_publish_errors', exc)
+            raise
+        if self._time_event is not None:
+            self._time_event['published'][kind]['publish_call_ok'] = True
+        if self.serial_diagnostics is not None:
+            self.serial_diagnostics.count(kind+'_publish_calls')
+
+    def add_sentence(self, nmea_string, frame_id, timestamp=None,
+                     host_read_ros_ns=None, host_read_mono_ns=None):
+        """Observe timing without changing the existing host-time data contract."""
+        captured = host_read_ros_ns is not None and host_read_mono_ns is not None
+        read_ros = rospy.Time.now().to_nsec() if host_read_ros_ns is None else host_read_ros_ns
+        read_mono = time.monotonic_ns() if host_read_mono_ns is None else host_read_mono_ns
+        publications = {'published': {}}
+        measurement = self.observation_timing.mode == 'measurement'
+        self._time_event = publications if self.observation_timing.mode != 'host' else None
+        event = None
+        if measurement:
+            # Measurement stamps must be resolved before any sensor data is
+            # published. Shadow keeps its original post-publication tap.
+            event = self.observation_timing.observe(nmea_string, read_ros, read_mono,
+                        'serial_read_complete' if captured else 'parser_entry_not_serial_read')
+        self._measurement_event = event
+        result = None
+        try:
+            result = self._add_sentence(nmea_string, frame_id, timestamp)
+            return result
+        finally:
+            self._time_event = None
+            try:
+                # Parse the diagnostic AFTER data publication, not on the
+                # critical path before choosing the original host timestamps.
+                if not measurement:
+                    event = self.observation_timing.observe(nmea_string, read_ros, read_mono,
+                                'serial_read_complete' if captured else 'parser_entry_not_serial_read')
+                if event is not None:
+                    event.update(publications)
+                    event['navigation_stamp_policy'] = ('measurement' if measurement else
+                        'legacy_nmea_gnss_pvts_host' if self.use_GNSS_time else 'host')
+                    event['parser_accepted'] = None if result is None else bool(result)
+                    event['diagnostic_publish_ros_ns'] = rospy.Time.now().to_nsec()
+                    event['processing_ms'] = (time.monotonic_ns()-read_mono)/1000000.
+                    self.time_diagnostics_pub.publish(String(data=json.dumps(
+                        event, allow_nan=False, separators=(',', ':'))))
+            except Exception as exc:
+                # Diagnostics cannot suppress a parser/IO exception or change
+                # normal position/heading publication behavior.
+                rospy.logwarn_throttle(5., 'GNSS time diagnostics publish failed: %s', str(exc))
+            self._measurement_event = None
+
+    def measurement_accepted(self):
+        event = self._measurement_event or {}
+        timeout = .5 if event.get('family') == 'PVTSLNA' else 1.
+        return (event.get('time_valid') is True and event.get('clock_verified') is True
+                and event.get('epoch_order') == 'new'
+                and -.05 <= event.get('measurement_age_ms', float('inf'))/1000. <= timeout)
+
+    def measurement_stamp(self):
+        seconds, nanos = divmod(self._measurement_event['measurement_stamp_ns'], 1000000000)
+        return rospy.Time(seconds, nanos)
+
+    def _add_sentence(self, nmea_string, frame_id, timestamp=None):
         """Public method to provide a new NMEA sentence to the driver.
 
         Args:
@@ -211,19 +298,70 @@ class RosNMEADriver(object):
         Returns:
             bool: True if the NMEA string is successfully processed, False if there is an error.
         """
+        if self.serial_diagnostics is not None:
+            self.serial_diagnostics.count('parser_calls')
         if nmea_string.startswith('#PVTSLNA,'):
+            if self.serial_diagnostics is not None:
+                self.serial_diagnostics.recognized_pvtslna()
             now = rospy.Time.now()
+            if (self.require_heading_fixed and self.last_solution_recv is not None
+                    and (now-self.last_solution_recv).to_sec() > .4):
+                rospy.logwarn_throttle(5., 'PVTSLNA host arrival gap exceeds 0.4s; inspect '
+                                      '/gnss/serial_diagnostics and actual serial output. '
+                                      'This does not prove the receiver configuration is slow.')
             try:
                 self.last_solution = parse_pvtslna(nmea_string)
+                if self.serial_diagnostics is not None:
+                    self.serial_diagnostics.count('pvtslna_parse_ok')
             except (ValueError, IndexError, UnicodeError) as exc:
                 self.last_solution = {'source': 'PVTSLNA', 'heading_valid': False,
                                       'heading_fixed': False, 'error': str(exc)}
                 rospy.logwarn_throttle(2.0, 'Rejected GNSS solution status: %s', str(exc))
+                if self.serial_diagnostics is not None:
+                    self.serial_diagnostics.error('pvtslna_parse_errors', exc)
+                    if 'CRC32' in str(exc):
+                        self.serial_diagnostics.count('pvtslna_crc_errors')
             self.last_solution_recv = now
-            self.solution_pub.publish(String(data=json.dumps(
-                dict(self.last_solution, stamp=now.to_sec()), allow_nan=False)))
+            source_time = now
+            if self.observation_timing.mode == 'measurement':
+                event = self._measurement_event or {}
+                stamp_ns = event.get('measurement_stamp_ns')
+                # Invalid latest time/CRC is still published as failed health;
+                # never stamp it with "now" as a healthy GNSS observation.
+                if event.get('time_valid') and event.get('clock_verified'):
+                    source_time = self.measurement_stamp()
+                else:
+                    source_time = rospy.Time(0)
+                    self.last_solution.update(heading_valid=False, heading_fixed=False,
+                        error='measurement_time_invalid:'+str(event.get('clock_gate_reason', event.get('reason'))))
+                self.last_solution.update(time_mode='measurement',
+                    measurement_stamp_ns=stamp_ns, time_valid=event.get('time_valid') is True,
+                    clock_verified=event.get('clock_verified') is True,
+                    clock_waiting=event.get('clock_waiting', False),
+                    clock_gate_reason=event.get('clock_gate_reason'),
+                    clock_epoch=event.get('clock_epoch'), session_id=event.get('session_id'),
+                    observation_id=event.get('observation_id'),
+                    host_read_ros_ns=event.get('host_read_ros_ns'), host_read_mono_ns=event.get('host_read_mono_ns'))
+            self._publish_counted(self.solution_pub, String(data=json.dumps(
+                dict(self.last_solution, stamp=source_time.to_sec(), stamp_ns=source_time.to_nsec()), allow_nan=False)), 'solution')
+            # HDT has no measurement epoch or quality. In Fixed-gated mode use
+            # heading and quality from ONE CRC-checked PVTSLNA packet instead
+            # of letting a new HDT borrow the previous packet's Fixed state.
+            if (self.require_heading_fixed and self.last_solution.get('heading_valid') is True
+                    and (self.observation_timing.mode != 'measurement' or self.measurement_accepted())):
+                angle = self.last_solution['heading_deg'] + self.rotation_data
+                yaw_deg = self._normalize_deg(90.0-angle if self.heading_source_is_north_cw else angle)
+                q = quaternion_from_euler(0, 0, math.radians(yaw_deg))
+                heading = QuaternionStamped()
+                heading.header.stamp, heading.header.frame_id = source_time, frame_id
+                heading.quaternion.x, heading.quaternion.y, heading.quaternion.z, heading.quaternion.w = q
+                self._publish_counted(self.heading_pub, heading, 'heading')
+                self.heading_deg_pub.publish(Float32(data=self._normalize_deg(angle)))
             return 'error' not in self.last_solution
         if not check_nmea_checksum(nmea_string):
+            if self.serial_diagnostics is not None:
+                self.serial_diagnostics.count('nmea_checksum_rejected' if nmea_string.startswith('$')
+                                              else 'unsupported_or_unparsed')
             #rospy.logwarn("Received a sentence with an invalid checksum. " +
             #              "Sentence was: %s" % repr(nmea_string))
             
@@ -232,6 +370,8 @@ class RosNMEADriver(object):
         parsed_sentence = libnmea_navsat_driver.parser.parse_nmea_sentence(
             nmea_string)
         if not parsed_sentence:
+            if self.serial_diagnostics is not None:
+                self.serial_diagnostics.count('unsupported_or_unparsed')
             rospy.logdebug(
                 "Failed to parse NMEA sentence. Sentence was: %s" %
                 nmea_string)
@@ -254,6 +394,10 @@ class RosNMEADriver(object):
                 current_time_ref.source = frame_id
 
         if not self.use_RMC and 'GGA' in parsed_sentence:
+            if self.observation_timing.mode == 'measurement':
+                if not self.measurement_accepted():
+                    return False
+                current_fix.header.stamp = self.measurement_stamp()
             current_fix.position_covariance_type = \
                 NavSatFix.COVARIANCE_TYPE_APPROXIMATED
 
@@ -306,22 +450,24 @@ class RosNMEADriver(object):
             current_fix.position_covariance[8] = (
                 2 * hdop * self.alt_std_dev) ** 2  # FIXME
 
-            self.fix_pub.publish(current_fix)
+            self._publish_counted(self.fix_pub, current_fix, 'fix')
             self._log_fix(current_fix, fix_type)
 
             if not (math.isnan(data['utc_time'][0]) or self.use_GNSS_time):
-                current_time_ref.time_ref = rospy.Time(
-                    data['utc_time'][0], data['utc_time'][1])
+                current_time_ref.time_ref = (current_fix.header.stamp if self.observation_timing.mode == 'measurement'
+                    else rospy.Time(data['utc_time'][0], data['utc_time'][1]))
                 self.last_valid_fix_time = current_time_ref
                 self.time_ref_pub.publish(current_time_ref)
 
             # wheeltec tues debug    
             gga_msg = Gpgga()
-            gga_msg.header.stamp = current_time
+            gga_msg.header.stamp = current_fix.header.stamp
             gga_msg.header.frame_id = frame_id
             
             #gga_msg.utc_seconds = float(data['utc_time']) if not math.isnan(data['utc_time']) else 0.0
             gga_msg.utc_seconds = float(data['utc_time'][0]) if not math.isnan(data['utc_time'][0]) else 0.0
+            if self.observation_timing.mode == 'measurement':
+                gga_msg.utc_seconds = current_fix.header.stamp.to_sec()
             gga_msg.lat = latitude
             gga_msg.lat_dir = data['latitude_direction']
             gga_msg.lon = longitude
@@ -336,7 +482,7 @@ class RosNMEADriver(object):
             gga_msg.diff_age = int(round(data.get('age_gps_data', 0.0)))
             gga_msg.station_id = data.get('ref_station_id', '')
 
-            self.gpgga_pub.publish(gga_msg)
+            self._publish_counted(self.gpgga_pub, gga_msg, 'gga')
 
             nmea_msg = Sentence()
             nmea_msg.header.stamp = current_time
@@ -407,7 +553,7 @@ class RosNMEADriver(object):
                 current_fix.position_covariance_type = \
                     NavSatFix.COVARIANCE_TYPE_UNKNOWN
 
-                self.fix_pub.publish(current_fix)
+                self._publish_counted(self.fix_pub, current_fix, 'fix')
                 self._log_fix(current_fix, 'RMC')
 
                 if not (math.isnan(data['utc_time'][0]) or self.use_GNSS_time):
@@ -436,11 +582,9 @@ class RosNMEADriver(object):
             self.alt_std_dev = data['alt_std_dev']
         elif 'HDT' in parsed_sentence:
             if self.require_heading_fixed:
-                fresh = (self.last_solution_recv is not None and
-                         0 <= (rospy.Time.now() - self.last_solution_recv).to_sec() <= self.solution_timeout)
-                if not fresh or not self.last_solution.get('heading_valid', False):
-                    rospy.logwarn_throttle(2.0, 'GNSS heading suppressed: missing, stale or unfixed heading solution')
-                    return False
+                # The heading was published atomically from PVTSLNA above.
+                # No temporal-nearest fallback to an unqualified HDT packet.
+                return False
             data = parsed_sentence['HDT']
             heading_value = data.get('heading', None)
             if heading_value is not None and math.isfinite(heading_value) and 0 <= heading_value <= 360:
@@ -464,7 +608,7 @@ class RosNMEADriver(object):
                 current_heading.quaternion.y = q[1]
                 current_heading.quaternion.z = q[2]
                 current_heading.quaternion.w = q[3]
-                self.heading_pub.publish(current_heading)
+                self._publish_counted(self.heading_pub, current_heading, 'heading')
                 if self.debug_output:
                     rospy.loginfo_throttle(
                         1.0,

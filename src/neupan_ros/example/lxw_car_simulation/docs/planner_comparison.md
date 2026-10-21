@@ -109,13 +109,13 @@ videos/planner_comparison/日期_时间/
 检查仿真几何和车辆积分：
 
 ```bash
-python3 src/neupan_ros/example/lxw_car_simulation/tests/test_simulation_geometry.py
+python3 src/Test/tests/test_simulation_geometry.py
 ```
 
 实际 Gazebo 指令/扫描超时停车与恢复检查（独立 master，不启动规划器）：
 
 ```bash
-python3 src/neupan_ros/example/lxw_car_simulation/tests/test_command_gate.py \
+python3 src/Test/scripts/test_command_gate.py \
   --output-dir /home/nuc/lxw/neupan_ws/videos/planner_comparison/safety_check
 ```
 

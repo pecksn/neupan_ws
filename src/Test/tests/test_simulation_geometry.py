@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 import threading
 
-HERE = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parents[3] / 'src/neupan_ros/example/lxw_car_simulation'
 
 
 def load(name, path):
@@ -21,7 +21,12 @@ sim = load('comparison', HERE/'scripts/planner_comparison.py')
 class GeometryTest(unittest.TestCase):
     def test_diagnostic_point_clearance_uses_the_rotated_rear_axle_body(self):
         import numpy as np
-        controller=load('sim_neupan_controller', HERE/'scripts/neupan_sim_controller.py')
+        try:
+            controller=load('sim_neupan_controller', HERE/'scripts/neupan_sim_controller.py')
+        except ModuleNotFoundError as error:
+            if error.name != 'neupan':
+                raise
+            self.skipTest('Run with the lxw planner Python environment to verify actual controller geometry')
         vertices=np.array([[-.14,.81,.81,-.14],[-.375,-.375,.375,.375]])
         state=np.array([2.,3.,math.pi/2]).reshape(3,1)
         # Point 0.2 m in front of the actual body, after a 90 degree turn.

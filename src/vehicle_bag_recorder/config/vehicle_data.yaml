@@ -51,6 +51,8 @@ topics:
   - /gnss/gpgga
   - /lio_guard/status
   - /gnss/solution_status
+  - /gnss/serial_diagnostics
+  - /gnss/time_diagnostics
   - /gps_guard/status
   - /localization_safe
 

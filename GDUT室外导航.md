@@ -1760,15 +1760,44 @@ AT+NTRIP=120.253.239.161,8002,<CORS_USER>,<CORS_PASSWORD>,RTCM33_GRCE
 |---|---|---|
 | `/gps/fix` | `sensor_msgs/NavSatFix` | 经纬度、协方差及 ROS 定位状态；当前驱动把 GGA 固定解和浮动解都映射成 `status.status=2`，不能只凭该字段判断固定 |
 | `/gnss/gpgga` | `nmea_msgs/Gpgga` | `gps_qual` 位置质量、卫星数和 HDOP |
-| `/heading` | `geometry_msgs/QuaternionStamped` | 经安装偏角和 ENU 转换后的航向；默认仅在定向状态有效且新鲜时发布 |
-| `/gnss/solution_status` | `std_msgs/String` | JSON，包含独立位置/定向解类型和有效性信息 |
+| `/heading` | `geometry_msgs/QuaternionStamped` | 经原安装偏角和ENU转换后的航向；默认只从定向Fixed且有效的同一条PVTSLNA报文发布，不再用HDT借旧状态 |
+| `/gnss/solution_status` | `std_msgs/String` | JSON，包含独立位置/定向解类型、有效性及整数 `stamp_ns`，与同报文航向Header完全对应 |
 
 相关实现：
 
 - `src/wheeltec_gps_driver/src/libnmea_navsat_driver/unicore.py`：PVTSLNA 字段解析与 CRC32。
-- `src/wheeltec_gps_driver/src/libnmea_navsat_driver/driver.py`：发布解状态并检查 HDT 航向是否允许发布。
+- `src/wheeltec_gps_driver/src/libnmea_navsat_driver/driver.py`：从同一PVTSLNA发布航向及解状态；Fixed模式不再将HDT与前一条解状态关联。
 - `src/robot_base_driver/scripts/global_odom_bridge.py`：定位保护独立检查定向状态。
 - `src/robot_base_driver/scripts/system_run_logger.py`：记录解状态及更新年龄。
+
+**2026-10-21更正与诊断：** 用户已确认同一设备、同一串口配置10 Hz且已生效；旧bag/JSONL仅证明当时ROS解状态约1 Hz，不能据此要求再次提频。保持设备配置和原0.5 s航向保护不变，先核对实际串口出包、读取/解码、解析和ROS发布。
+
+新GPS驱动沿原来的唯一串口读取路径统计，每秒在终端汇总，并发布 `/gnss/serial_diagnostics`。重启GPS驱动及综合日志节点后检查：
+
+```bash
+rostopic echo /gnss/serial_diagnostics
+rostopic hz -w 200 /gnss/solution_status
+rostopic hz -w 200 /heading
+```
+
+`/heading`仅在有效定向时发布。诊断的 `window` 是本周期计数，`total` 是本次驱动会话累计，`rates_per_sec` 按实际单调时钟间隔计算，不是假定每条报文1 Hz；诊断话题自身1 Hz不代表GPS出包1 Hz。`session_id`/`sequence`用于分辨驱动重启或诊断漏收。即使串口正在等待2 s读取超时，也有独立的1 s统计心跳。
+
+- `read_bytes/complete_lines/partial_reads/ascii_decode_errors`：去空白和解码前的实际读入字节、以换行结束的读取、未以换行结束的读取及解码失败。
+- `family_*`、`raw_pvtslna_prefix/embedded_pvtslna/alternate_pvtsln`：各类报文，以及标准前缀、行中嵌入前缀、其他PVTSLN格式；辅助报文也纳入流量，不擅自忽略其负载。
+- `pvtslna_recognized/pvtslna_parse_ok/pvtslna_parse_errors/pvtslna_crc_errors`：识别、解析成功、解析失败及其中的CRC失败。
+- `solution_publish_calls/heading_publish_calls` 和相应 `*_publish_errors`：Publisher调用成功/失败；包含错误解状态，不代表ROS订阅者已收到，也不等于Fixed帧数。
+- `pvtslna_receive_age_sec`、`pvtslna_max_receive_gap_sec`：主机识别时刻的年龄及已观测最大间隔，不是GNSS测量时间；无新包时还要看年龄，不能只看平均Hz。
+- `metadata`：实际串口、波特率、Python路径、PID、读取/解析模块绝对路径和SHA256；115200/8N1的名义数据预算11520 B/s仅供比对，主机已读流量不能证明设备总发送量或丢包率。
+
+完整汇总自动写入原 `tracker_logs/system_run_full_*.jsonl` 的 `gnss_serial_diagnostics_event`，10 Hz采样仅留简要摘要，不另建一套日志。三份现有录包配置已加入该话题，非必需话题，不影响旧包验收要求。终端汇总可通过GPS launch参数 `serial_diagnostics_print:=false`关闭，话题和记录不关闭。
+
+整车室外启动默认measurement＋auto：NUC内核同步，PVTSLNA FINE与GGA有效UTC、新历元的源龄和读取时间连续一致至少2 s后自动放行时间门控，不需要到室外改参数。UNKNOWN/无UTC只在启动时等待，仍需满足原定向Fixed和定位初始化条件；启动校时可重新等待，运行后钟跳/失去同步则锁存保护需停车重启。事件仍逐条进入原JSONL/rosbag；自动一致性检查不是硬同步或精度证明，不自动修改系统时钟，也不使用旧 `gps_use_gnss_time`。见 [时间整改与验收](PROJECT_ISSUES_CN.md#22-测量时间对齐软件链路已实现实车切换待验收)。
+
+本次只加计数，不保存原始串口全文、不新增第二个读取进程、不发送设备配置命令。停车采集完整原始字节仍是后续步骤；只凭统计不能重建旧数据或证明接收机配置错误。详见 `PROJECT_ISSUES_CN.md` 第3.5节。
+
+接收端要求GPS投影/fix/GGA源时间完全一致；完整航向校正还要求航向/解状态同整数 `stamp_ns`，不再容忍相邻50 ms位置帧借质量。该帧位置质量或新航向自身质量未齐时有界等待，不提前消费该帧。位置和定向状态分别判断：定向非Fixed时驱动不发布有效航向；初始化后，合格Fixed/Float位置仍可独立进入位置-only窗口，满足原稳定性与纠偏条件后续期，yaw不变。未初始化时仍需原Fixed定向条件。
+
+最新源健康状态独立记录在 `/gps_guard/status.latest_heading_health`。即使旧Fixed航向尚未超时，新的定向Float、无效或CRC错误也会使完整Fixed跟踪降级；历史选择不能遮盖新失效、不能用后来的Fixed回填旧Float。已知失效后的乱序/重复旧Fixed不得恢复完整跟踪。原GPS诊断、0.5 s时效及100 m/600 s预算保留。旧bag缺少同帧标识时，不放行完整航向校正。
 
 协议字段依据：N4 Products Commands and Logs Reference Book V2 R1.2，
 7.3.23 节表 7-81。`bestpos_type` 是位置类型，`heading_type` 是定向类型。

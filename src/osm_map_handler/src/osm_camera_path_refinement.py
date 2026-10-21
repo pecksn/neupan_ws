@@ -377,12 +377,22 @@ class CameraRightPath:
             raise ValueError('image coordinates mismatch')
         confidence = float(p.get('confidence', -1))
         age = float(p.get('source_age_ms', float('inf')))
-        if not math.isfinite(confidence) or confidence < .65 or not math.isfinite(age) or not 0 <= age <= 300:
-            raise ValueError('low confidence or old inference')
+        if not math.isfinite(confidence):
+            raise ValueError('confidence_invalid')
+        if confidence < .65:
+            raise ValueError('low_confidence')
+        if not math.isfinite(age) or age < 0:
+            raise ValueError('source_age_invalid')
+        if age > 300:
+            raise ValueError('source_age_exceeded_300ms')
         capture = int(p.get('capture_timestamp_ns', 0))
         capture_age = (rospy.Time.now().to_nsec()-capture)/1.e6
-        if capture <= 0 or not -50 <= capture_age <= 500:
-            raise ValueError('capture stale or GPU/NUC clocks unsynchronized')
+        if capture <= 0:
+            raise ValueError('capture_timestamp_invalid')
+        if capture_age < -50:
+            raise ValueError('capture_timestamp_in_future_clock_skew')
+        if capture_age > 500:
+            raise ValueError('capture_age_exceeded_500ms_or_clock_skew')
         if p.get('scene_type') in ('intersection', 'open_area'):
             raise ValueError('junction or open area')
         # unknown is accepted; geometric tests still reject unstable boundaries.
@@ -529,6 +539,8 @@ class CameraRightPath:
                     'capture-time vehicle TF unavailable',
                     'non-finite capture-time vehicle TF',
                     'capture stale or GPU/NUC clocks unsynchronized',
+                    'capture_timestamp_in_future_clock_skew',
+                    'capture_age_exceeded_500ms_or_clock_skew',
                     'stale vehicle TF')):
                 rospy.logwarn_throttle(
                     5., '\033[33mCamera right time alignment: %s\033[0m', reason)
@@ -552,6 +564,25 @@ class CameraRightPath:
             pose.pose.position.y = float(points[i, 1]+c*shifts[i])
 
     def publish_result(self,result,now,reason,active,cached_points):
+        # Diagnostic values only: never alter control gates or route geometry.
+        packet = self.packet or {}
+        capture = packet.get('capture_timestamp_ns')
+        capture_age = ((rospy.Time.now().to_nsec()-capture)/1.e6
+                       if isinstance(capture, int) and capture > 0 else None)
+        inference_diagnostics = {
+            'frame_seq': packet.get('frame_seq'), 'result_seq': packet.get('result_seq'),
+            'capture_age_ms_clock_dependent': capture_age,
+            'source_age_ms': packet.get('source_age_ms'),
+            'confidence': packet.get('confidence'),
+            'min_confidence': .65, 'max_source_age_ms': 300,
+            'max_capture_age_ms': 500, 'future_tolerance_ms': 50,
+            'json_timeout_sec': self.timeout,
+            'json_age_ms': (now-self.received)*1000 if self.received else None,
+            'receiver_valid': bool(getattr(self, 'receiver_valid', False)),
+            'receiver_diagnostics': packet.get('receiver_diagnostics'),
+            'timing_ms': packet.get('timing_ms'),
+            'inference_backend': packet.get('inference_backend'),
+        }
         # Keep source header/route identity, and retain the complete route and goal.
         for i, pose in enumerate(result.poses):
             if i+1 < len(result.poses):
@@ -567,7 +598,7 @@ class CameraRightPath:
         if self.control and signature != self.previous:
             self.output.publish(result)
             self.previous = signature
-        self.status.publish(String(data=json.dumps({'route_stamp_ns':result.header.stamp.to_nsec(),'route_frame_id':result.header.frame_id,'control_path_digest':hashlib.sha256(json.dumps([(round(p.pose.position.x,3),round(p.pose.position.y,3)) for p in result.poses],separators=(',',':')).encode()).hexdigest(),'active':active, 'control_enabled':self.control,'strategy':getattr(self,'strategy','realtime'),'guidance_source':('camera_cache' if getattr(self,'strategy','realtime')=='segment_cache' else 'camera_realtime') if active else 'osm','osm_topology_loaded':getattr(self,'osm_map_loaded',False),'cached_points':cached_points,'distance_reference':getattr(self,'distance_reference','camera_center'),'target_center_clearance_m':getattr(self,'clearance',2.),'target_camera_center_clearance_m':float(getattr(self,'clearance',2.)+getattr(self,'origin',np.zeros(3))[1]),'ground_z_base_m':getattr(self,'ground_z',-.2),'camera_height_above_ground_m':float(getattr(self,'origin',np.zeros(3))[2]-getattr(self,'ground_z',-.2)),'wheel_geometry_verified':getattr(self,'wheel_geometry_verified',False),'camera_origin_base_m':getattr(self,'origin',np.zeros(3)).tolist(),'reason':reason,'shift_m':self.shift,'json_age_sec':now-self.received if self.received else None})))
+        self.status.publish(String(data=json.dumps({'route_stamp_ns':result.header.stamp.to_nsec(),'route_frame_id':result.header.frame_id,'control_path_digest':hashlib.sha256(json.dumps([(round(p.pose.position.x,3),round(p.pose.position.y,3)) for p in result.poses],separators=(',',':')).encode()).hexdigest(),'active':active, 'control_enabled':self.control,'strategy':getattr(self,'strategy','realtime'),'guidance_source':('camera_cache' if getattr(self,'strategy','realtime')=='segment_cache' else 'camera_realtime') if active else 'osm','osm_topology_loaded':getattr(self,'osm_map_loaded',False),'cached_points':cached_points,'distance_reference':getattr(self,'distance_reference','camera_center'),'target_center_clearance_m':getattr(self,'clearance',2.),'target_camera_center_clearance_m':float(getattr(self,'clearance',2.)+getattr(self,'origin',np.zeros(3))[1]),'ground_z_base_m':getattr(self,'ground_z',-.2),'camera_height_above_ground_m':float(getattr(self,'origin',np.zeros(3))[2]-getattr(self,'ground_z',-.2)),'wheel_geometry_verified':getattr(self,'wheel_geometry_verified',False),'camera_origin_base_m':getattr(self,'origin',np.zeros(3)).tolist(),'reason':reason,'inference_diagnostics':inference_diagnostics,'shift_m':self.shift,'json_age_sec':now-self.received if self.received else None})))
 
 
 def main():

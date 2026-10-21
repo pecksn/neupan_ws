@@ -1,10 +1,13 @@
-"""Run with PYTHONPATH=src/wheeltec_gps_driver/src python3 -m unittest discover
--s src/wheeltec_gps_driver/test -p test_unicore_solution.py
+"""Run with python3 -m unittest discover
+-s src/Test/tests -p test_unicore_solution.py
 """
 import unittest
 import json
+from pathlib import Path
+import sys
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'src/wheeltec_gps_driver/src'))
 from libnmea_navsat_driver.unicore import crc32, parse_pvtslna
 
 
@@ -76,6 +79,9 @@ class DriverTests(unittest.TestCase):
             driver.add_sentence(hdt, 'gps_link')
             self.assertFalse(driver.heading_pub.messages)
             driver.add_sentence(solution(), 'gps_link')
+            self.assertEqual(len(driver.heading_pub.messages), 1)
+            status = json.loads(driver.solution_pub.messages[-1].data)
+            self.assertEqual(status['stamp_ns'],driver.heading_pub.messages[-1].header.stamp.to_nsec())
             driver.add_sentence(hdt, 'gps_link')
             self.assertEqual(len(driver.heading_pub.messages), 1)
             self.assertFalse(json.loads(driver.solution_pub.messages[-1].data)['position_fixed'])
@@ -86,6 +92,34 @@ class DriverTests(unittest.TestCase):
                 driver.add_sentence(text, 'gps_link')
                 driver.add_sentence(hdt, 'gps_link')
                 self.assertEqual(len(driver.heading_pub.messages), 1)
+
+    def test_new_hdt_cannot_borrow_previous_fixed_and_pvtslna_pairs_are_atomic(self):
+        try:
+            import rospy
+            from libnmea_navsat_driver.driver import RosNMEADriver
+        except ImportError:
+            self.skipTest('Requires ROS1 environment')
+        from unittest.mock import Mock
+        now=[rospy.Time(100)]
+        with patch.object(rospy,'Publisher',side_effect=lambda *a,**k:Mock()), \
+             patch.object(rospy,'get_param',lambda key,default=None:default), \
+             patch.object(rospy.Time,'now',lambda:now[0]), \
+             patch.object(rospy,'get_rostime',lambda:now[0]):
+            driver=RosNMEADriver()
+            driver.add_sentence(solution(angle='10'),'gps_link')
+            self.assertEqual(driver.heading_pub.publish.call_count,1)
+            now[0]=rospy.Time(100,10000000)
+            driver.add_sentence('$GPHDT,0.0000,T*05','gps_link')
+            self.assertEqual(driver.heading_pub.publish.call_count,1)
+            driver.add_sentence(solution(heading='NARROW_FLOAT',angle='20'),'gps_link')
+            self.assertEqual(driver.heading_pub.publish.call_count,1)
+            now[0]=rospy.Time(100,20000000)
+            driver.add_sentence(solution(angle='30'),'gps_link')
+            self.assertEqual(driver.heading_pub.publish.call_count,2)
+            heading=driver.heading_pub.publish.call_args[0][0]
+            status=json.loads(driver.solution_pub.publish.call_args[0][0].data)
+            self.assertEqual(heading.header.stamp.to_nsec(),status['stamp_ns'])
+            self.assertTrue(status['heading_fixed'])
 
 
 if __name__ == '__main__':

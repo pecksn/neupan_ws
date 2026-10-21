@@ -7,7 +7,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'src/robot_base_driver/scripts'))
 import rospy
 import base_driver_node
 from base_driver_node import RobotBaseDriver
