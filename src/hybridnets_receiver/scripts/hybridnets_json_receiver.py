@@ -57,6 +57,10 @@ class HybridNetsJsonReceiver:
         self.receive_times = deque(maxlen=120)
         self.last_result_seq = None
         self.last_timeout_diagnostic = None
+        self.received_datagrams = 0
+        self.rejected_sender_datagrams = 0
+        self.last_datagram_mono = None
+        self.last_datagram_sender = None
         self.diag_json_pub = rospy.Publisher(
             "/hybridnets/timing_diagnostics", String, queue_size=100)
 
@@ -225,7 +229,23 @@ class HybridNetsJsonReceiver:
             receive_mono = time.monotonic()
         except socket.timeout:
             return
+        self.received_datagrams = getattr(self, 'received_datagrams', 0) + 1
+        self.last_datagram_mono = receive_mono
+        self.last_datagram_sender = '%s:%d' % sender
         if self.allowed_sender and sender[0] != self.allowed_sender:
+            self.rejected_sender_datagrams = getattr(self, 'rejected_sender_datagrams', 0) + 1
+            # Do not confuse a source-IP rejection with an unplugged cable.
+            # Throttle diagnostics, not validation: no rejected packet enters control.
+            last = getattr(self, 'last_sender_reject_diagnostic', None)
+            if last is None or receive_mono-last >= 1.:
+                self.last_sender_reject_diagnostic = receive_mono
+                self.diag_json_pub.publish(json.dumps({
+                    'schema_version': 1, 'event': 'sender_rejected',
+                    'receive_timestamp_ns': receive_ns, 'receiver_valid': False,
+                    'receiver_reason': 'sender_ip_not_allowed',
+                    'sender': self.last_datagram_sender, 'allowed_sender_ip': self.allowed_sender,
+                    'datagram_bytes': len(raw),
+                }, separators=(',', ':')))
             rospy.logwarn_throttle(2.0, "Ignoring HybridNets packet from %s", sender[0])
             return
         try:
@@ -323,6 +343,8 @@ class HybridNetsJsonReceiver:
                           if isinstance(gpu_timing, dict) else {})
             diagnostic = {
                 "schema_version": 1, "event": "packet", "frame_seq": frame_seq,
+                "sender": self.last_datagram_sender,
+                "allowed_sender_ip": self.allowed_sender,
                 "result_seq": result_seq, "result_seq_gap": gap,
                 "receive_timestamp_ns": receive_ns,
                 "capture_timestamp_ns": capture, "send_timestamp_ns": send_ns if raw_send_age is not None else None,
@@ -386,7 +408,19 @@ class HybridNetsJsonReceiver:
                     "receiver_valid": False, "receiver_reason": self.last_reason,
                     "last_receive_age_ms": (now-self.last_receive).to_sec()*1000 if self.last_receive else None,
                     "receiver_timeout_sec": self.timeout,
+                    "received_datagrams": getattr(self, 'received_datagrams', 0),
+                    "rejected_sender_datagrams": getattr(self, 'rejected_sender_datagrams', 0),
+                    "allowed_sender_ip": self.allowed_sender,
+                    "last_datagram_sender": getattr(self, 'last_datagram_sender', None),
+                    "last_datagram_age_ms": None if getattr(self, 'last_datagram_mono', None) is None
+                    else (mono-self.last_datagram_mono)*1000.,
                 }, separators=(",", ":")))
+                if self.require_control_fields:
+                    rospy.logwarn_throttle(5.,
+                        '\033[33mHybridNets control unavailable: %s; UDP received=%d rejected_sender=%d; '
+                        'GPU must send inference JSON to NUC 192.168.10.21:6000 (video alone is insufficient)\033[0m',
+                        self.last_reason, getattr(self, 'received_datagrams', 0),
+                        getattr(self, 'rejected_sender_datagrams', 0))
         diagnostic = DiagnosticStatus()
         diagnostic.name = "hybridnets/network_receiver"
         diagnostic.hardware_id = self.last_sender or "udp_remote_gpu"

@@ -97,7 +97,7 @@ def main():
         'observation_time': source_identity(observation_time.__file__),
     })
     publisher = rospy.Publisher('/gnss/serial_diagnostics', String, queue_size=5, latch=True)
-    print_summary = bool(rospy.get_param('~serial_diagnostics_print', True))
+    print_summary = bool(rospy.get_param('~serial_diagnostics_print', False))
     driver = None
 
     def publish_diagnostics(_event=None):

@@ -5,7 +5,7 @@ robot:
   kinematics: 'acker'   # 保持 'acker' 不变
   wheelbase: 0.67      
   max_speed: [1.0, 0.35]
-  max_acce: [0.8, 0.08] 
+  max_acce: [0.8, 0.05] 
   length: 0.95          
   width: 0.85           
 

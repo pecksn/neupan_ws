@@ -18,10 +18,60 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT/'src/osm_map_handler/src'))
 from osm_outdoor_start_connection import (
     RoadCorridor, ScanEnvelope, StartRouteConnector,
-    clean_route, dubins_candidates, footprint_points, wrap)
+    clean_route, dubins_candidates, footprint_points, wrap,
+    resample_forward_reference, OutdoorTrackingGuard)
 from osm_camera_path_guard import CameraPathGuard, path_digest
 
 VERTICES = np.array([[-.14, .81, .81, -.14], [-.425, -.425, .425, .425]])
+
+
+class ReferenceSamplingTests(unittest.TestCase):
+    def test_sparse_polyline_keeps_all_vertices_endpoint_and_bounded_spacing(self):
+        original = np.array([[0., 0., 0., 1.], [2.5, 0., 0., 1.], [2.5, 2.5, math.pi/2, 1.]])
+        result = resample_forward_reference(original)
+        self.assertLessEqual(np.max(np.linalg.norm(np.diff(result[:, :2], axis=0), axis=1)), .10000001)
+        np.testing.assert_array_equal(result[-1], original[-1])
+        for point in original:
+            self.assertTrue(any(np.array_equal(point, p) for p in result))
+        self.assertTrue(np.all((result[:, 1] == 0) | (result[:, 0] == 2.5)))
+
+    def test_yaw_interpolation_uses_short_angle_and_input_not_mutated(self):
+        original = np.array([[0., 0., math.radians(179), 1.], [2.5, 0., math.radians(-179), 1.]])
+        before = original.copy()
+        result = resample_forward_reference(original)
+        self.assertTrue(np.all(np.abs(result[:, 2]) > 3.))
+        np.testing.assert_array_equal(original, before)
+
+    def test_duplicate_vertices_and_invalid_spacing(self):
+        p = [[0,0,0,1], [0,0,0,1], [2.5,0,0,1]]
+        self.assertGreater(len(resample_forward_reference(p)), 20)
+        for spacing in (0., -1., float('nan'), float('inf'), .019):
+            with self.assertRaises(ValueError):
+                resample_forward_reference(p, spacing)
+
+    def test_fifty_cm_spacing_preserves_geometry_and_has_no_25cm_cap(self):
+        original = np.array([[0., 0., 0., 1.], [2.5, 0., 0., 1.], [2.5, 1., math.pi/2, 1.]])
+        result = resample_forward_reference(original, .5)
+        self.assertEqual(len(result), 8)
+        self.assertLessEqual(np.max(np.linalg.norm(np.diff(result[:, :2], axis=0), axis=1)), .50000001)
+        for point in original:
+            self.assertTrue(any(np.array_equal(point, p) for p in result))
+
+    def test_tracking_guard_latches_and_only_explicit_reset_releases(self):
+        guard = OutdoorTrackingGuard()
+        points = resample_forward_reference([[0,0,0,1], [20,0,0,1]])
+        self.assertFalse(guard.check(points, [5,1.6,0], 50, 0.)['latched'])
+        self.assertTrue(guard.check(points, [5,1.6,0], 50, .6)['latched'])
+        self.assertTrue(guard.check(points, [5,0,0], 50, .7)['latched'])
+        guard.reset()
+        self.assertFalse(guard.check(points, [5,0,0], 50, .8)['latched'])
+
+    def test_tracking_guard_allows_small_detour_and_brief_yaw_error(self):
+        guard = OutdoorTrackingGuard()
+        points = resample_forward_reference([[0,0,0,1], [20,0,0,1]])
+        self.assertFalse(guard.check(points, [5,1.,0], 50, 0.)['latched'])
+        self.assertFalse(guard.check(points, [5,0,math.pi/2], 50, .1)['latched'])
+        self.assertFalse(guard.check(points, [5,0,0], 50, .3)['latched'])
 
 
 def route(yaw=0., origin=(0., 0.)):
@@ -597,7 +647,8 @@ class AdapterTests(unittest.TestCase):
         method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'apply_pending_route')
         ros = SimpleNamespace(loginfo=Mock(), logwarn_throttle=Mock(), Time=SimpleNamespace(now=lambda: SimpleNamespace(to_sec=lambda: 1.)))
         namespace = {'np': np, 'time': SimpleNamespace(monotonic=lambda: 1.),
-                     'rospy': ros, 'Twist': object, 'yellow_terminal_text': lambda x: x}
+                     'rospy': ros, 'Twist': object, 'yellow_terminal_text': lambda x: x,
+                     'resample_forward_reference': resample_forward_reference}
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(filename), 'exec'), namespace)
         node = SimpleNamespace(route_update_lock=threading.Lock(), pending_route_update=None,
             minimum_path_stamp=0, diagnostic_route_update=None, start_connector=connector(),
@@ -635,6 +686,40 @@ class AdapterTests(unittest.TestCase):
         node.neupan_planner.set_initial_path.assert_called_once()
         self.assertFalse(node.waiting_for_new_goal)
         self.assertEqual(node.start_connector.reason, 'normal_route_tracking')
+
+    def test_outdoor_sampling_is_applied_before_admission_and_keeps_goal(self):
+        node, apply = self.node()
+        source = route()[::5]
+        node.outdoor_reference_spacing = .5
+        node.pending_route_update = ('path', [p.reshape(4, 1) for p in source], ('map', 1))
+        apply(node)
+        sent = np.asarray(node.neupan_planner.set_initial_path.call_args[0][0]).reshape(-1,4)
+        self.assertLessEqual(np.max(np.linalg.norm(np.diff(sent[:,:2], axis=0), axis=1)), .50000001)
+        np.testing.assert_array_equal(sent[-1], source[-1])
+
+    def test_invalid_outdoor_reference_holds_stop_without_resetting_planner(self):
+        node, apply = self.node()
+        node.outdoor_reference_spacing = .1
+        source = route()
+        source[2, 0] = np.nan
+        node.pending_route_update = ('path', [p.reshape(4, 1) for p in source], ('map', 1))
+        apply(node)
+        self.assertTrue(node.waiting_for_new_goal)
+        node.vel_pub.publish.assert_called_once()
+        node.neupan_planner.set_initial_path.assert_not_called()
+
+    def test_camera_refresh_does_not_clear_latched_tracking_guard(self):
+        node, apply = self.node()
+        node.outdoor_tracking_guard = OutdoorTrackingGuard()
+        node.outdoor_tracking_guard.latched = True
+        node.arrival_path_key = ('map', 1)
+        # No camera guard needed to exercise the same-route reset policy.
+        node.pending_route_update = ('path', [p.reshape(4, 1) for p in route()], ('map', 1))
+        apply(node)
+        self.assertTrue(node.outdoor_tracking_guard.latched)
+        node.pending_route_update = ('path', [p.reshape(4, 1) for p in route()], ('map', 2))
+        apply(node)
+        self.assertFalse(node.outdoor_tracking_guard.latched)
 
     def test_missing_scan_requeues_new_goal_and_holds_zero(self):
         node, apply = self.node()

@@ -2306,19 +2306,19 @@ GPU 当前输出 `normal` / `unknown`，场景字段不决定是否保留边界�
 | 设备/接口 | 地址 | 用途 |
 |---|---|---|
 | GPU 板 `eno1` | `192.168.10.20/24` | ROS2 推理与发送 |
-| NUC `enxec1ac33f2710`，连接名 `GPU板通信` | `192.168.10.21/24` | ROS1 接收，当前使用百兆 USB 网口 |
+| NUC `enxec1ac30270b6`，连接名 `GPU板通信-千兆` | `192.168.10.21/24` | ROS1 接收，10月21日实机确认的当前千兆网口 |
 | NUC `enp114s0` | `192.168.1.100/24` | MID360 专用 |
 
 NUC 主机检查网络（不要在 ROS1 容器内修改 NetworkManager）：
 
 ```bash
-sudo nmcli connection up "GPU板通信"
+sudo nmcli connection up "GPU板通信-千兆"
 ip -4 -brief addr
 ip route get 192.168.10.20
 ping 192.168.10.20
 ```
 
-路由应显示接口 `enxec1ac33f2710`、源地址 `192.168.10.21`。当前百兆连接 `GPU板通信` 自动连接；备用千兆连接 `GPU板通信-千兆` 关闭自动连接，避免重复配置同一 IP。
+当前路由应显示接口 `enxec1ac30270b6`、源地址 `192.168.10.21`。旧百兆连接 `GPU板通信` 对应 `enxec1ac33f2710`，仅换回该网卡时使用，不要同时在两个接口启用同一IP。
 
 端口约定：
 
@@ -2592,6 +2592,16 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
 RSSM+雷达encoder+neupan
 
 ## 摄像头靠右控制
+
+室内无明显道路边界时，GPU也应持续发送JSON，只是`valid=false`；不能把`waiting_for_packet`当作正常无边界。10月21日测试包缺原视频、相机信息与JSON，靠右未生效；NUC已增加UDP到包数、来源拒绝数和实际来源诊断，GPU图像/发送链路仍待恢复验证。已有全系统运行时直接查看，不要重复启动接收器：
+
+```bash
+rostopic echo -n 1 /hybridnets/timing_diagnostics
+```
+
+`event=packet`说明JSON通过结构解析进入接收链路，`receiver_valid`说明接收时效/有效性检查结果；靠右是否实际使用还需看`/camera_right/status`的`active`。`sender_rejected`说明来源IP不符；`health`且收到数据报数为0说明尚无包进入该监听端口。未验证接收与有效边界前不做靠右实车控制。
+
+普通室外和靠右控制当前使用最大50 cm采样间距加密参考折线（`full_system_run.launch` 中 `outdoor_reference_spacing_m=0.50`，按用户要求由首版10 cm调整，待实车验证），几何路线/终点不变；新增偏离保护（参考段距离>1.5 m或方向误差>75°持续0.5 s）锁定零速，核对后下发新目标，不能靠相机刷新解除。室内混合A*不启用此项。GNSS每秒串口统计默认仅写诊断话题与综合日志，不刷终端；异常警告保留。当前改动通过离线回归，不代表完成实车验收。
 
 独立节点 `osm_map_handler/camera_right_path.py` 使用道路段校正缓存，目标是相机光学中心横向距右边界约 2 m（不是三维斜距，也不是车轮距离）。它只修正全局参考路径，不改原 OSM 文件、不直接发布速度；速度和转角仍由 NeuPAN 计算，雷达避障、定位保护、指令超时和人工接管保留。默认关闭视觉控制。
 

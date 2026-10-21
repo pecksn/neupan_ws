@@ -22,7 +22,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 from neupan import neupan
 from osm_camera_path_guard import CameraPathGuard
-from osm_outdoor_start_connection import RoadCorridor, ScanEnvelope, StartRouteConnector
+from osm_outdoor_start_connection import RoadCorridor, ScanEnvelope, StartRouteConnector, resample_forward_reference, OutdoorTrackingGuard
 import copy
 from collections import deque
 import json
@@ -108,6 +108,13 @@ class neupan_core:
         self.refresh_initial_path = rospy.get_param("~refresh_initial_path", False)
         self.flip_angle = rospy.get_param("~flip_angle", False)
         self.include_initial_path_direction = rospy.get_param("~include_initial_path_direction", False)
+        # Enabled only in the outdoor OSM launch; indoor references are untouched.
+        self.outdoor_reference_spacing = float(rospy.get_param('~outdoor_reference_spacing_m', 0.))
+        if self.outdoor_reference_spacing != 0 and not (
+                np.isfinite(self.outdoor_reference_spacing) and self.outdoor_reference_spacing >= .02):
+            raise ValueError('outdoor_reference_spacing_m must be zero or finite and at least 0.02 m')
+        self.outdoor_tracking_guard = OutdoorTrackingGuard() if self.outdoor_reference_spacing else None
+        self.outdoor_tracking_status = None
         self.camera_guard = CameraPathGuard(float(rospy.get_param('~camera_right_guard_timeout', 3.0))) \
             if rospy.get_param('~camera_right_guard_enabled', False) else None
         self.camera_guard_signature = None
@@ -344,6 +351,21 @@ class neupan_core:
                 r.sleep()
                 continue
 
+            self.diagnostic_stage = "outdoor_tracking_guard"
+            if self.outdoor_tracking_guard is not None:
+                ipath = self.neupan_planner.ipath
+                self.outdoor_tracking_status = self.outdoor_tracking_guard.check(
+                    ipath.cur_curve, self.robot_state, ipath.point_index, time.monotonic())
+                if self.outdoor_tracking_status['latched']:
+                    self.vel_pub.publish(Twist())
+                    self.runtime_pub.publish(json.dumps({
+                        'stamp': rospy.Time.now().to_sec(), 'linear_x': 0., 'steering_deg': 0.,
+                        'command_source': 'outdoor_tracking_guard',
+                        'tracking_guard': self.outdoor_tracking_status}, separators=(',', ':')))
+                    rospy.logwarn_throttle(2., yellow_terminal_text(
+                        'Outdoor tracking lost: holding STOP; verify vehicle/route, then send a NEW goal'))
+                    r.sleep()
+                    continue
             self.diagnostic_stage = "adjust_parameters"
             self.update_adaptive_adjust_parameters()
 
@@ -407,6 +429,14 @@ class neupan_core:
                 "steering_deg": degrees(float(command.angular.z)),
                 "planner_stop": bool(self.stop),
                 "planner_arrive": bool(self.arrive),
+                "tracking_guard": self.outdoor_tracking_status,
+                "path_point_index": int(self.neupan_planner.ipath.point_index),
+                "path_interval_m": float(self.neupan_planner.ipath.interval),
+                "robot_yaw_deg": degrees(float(self.robot_state[2, 0])),
+                "reference_yaw_deg": None if ref_state is None else degrees(float(ref_state[2, 0])),
+                "reference_forward_m": None if ref_state is None else float(
+                    (ref_state[:2, 0]-self.robot_state[:2, 0]) @
+                    np.array([cos(self.robot_state[2, 0]), sin(self.robot_state[2, 0])])),
             }, separators=(",", ":")))
             self.last_command_monotonic = command_time
             self.update_goal_arrival()
@@ -819,6 +849,17 @@ class neupan_core:
         kind, data, path_key = update
         if kind == "path" and path_key[1] < self.minimum_path_stamp:
             return
+        spacing = getattr(self, 'outdoor_reference_spacing', 0.)
+        if kind == 'path' and spacing:
+            # Before connector admission: its prefix/progress indices must
+            # refer to the final sampling, not an independently resampled turn.
+            try:
+                data = [p.reshape(4, 1) for p in resample_forward_reference(data, spacing)]
+            except (ValueError, TypeError) as error:
+                self.waiting_for_new_goal = True
+                self.vel_pub.publish(Twist())
+                rospy.logwarn_throttle(2., 'Outdoor reference rejected; holding STOP: %s', str(error))
+                return
         self.diagnostic_route_update = (kind, data, path_key)
         reseed = False
         if self.start_connector and kind == 'path':
@@ -876,6 +917,9 @@ class neupan_core:
             self.goal = data
             self.neupan_planner.update_initial_path_from_goal(self.robot_state, data)
         self.neupan_planner.reset()
+        if (getattr(self, 'outdoor_tracking_guard', None) is not None and
+                path_key != self.arrival_path_key):
+            self.outdoor_tracking_guard.reset()
         if reseed:
             xy = np.array([p[:2, 0] for p in data])
             self.neupan_planner.ipath.point_index = int(np.argmin(

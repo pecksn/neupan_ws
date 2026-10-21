@@ -26,6 +26,82 @@ def clean_route(points):
     return route
 
 
+def resample_forward_reference(points, spacing=.10):
+    """Densify the SAME polyline, not a new curve or a Hybrid A* search.
+
+    NeuPAN searches discrete nearest points. Multi-metre OSM gaps can leave
+    its current reference behind a forward-moving car. Preserve every vertex,
+    the exact endpoint and shortest-angle orientation interpolation.
+    """
+    if not math.isfinite(spacing) or spacing < .02:
+        raise ValueError('outdoor reference spacing must be finite and at least 0.02 m')
+    route = clean_route(points)
+    lengths = np.linalg.norm(np.diff(route[:, :2], axis=0), axis=1)
+    if not np.isfinite(lengths).all() or float(lengths.sum()/spacing) > 100000:
+        raise ValueError('outdoor reference too large')
+    counts = np.maximum(1, np.ceil(lengths/spacing).astype(int))
+    if int(counts.sum()) > 100000:
+        raise ValueError('outdoor reference too large')
+    pieces = []
+    for a, b, count in zip(route[:-1], route[1:], counts):
+        fractions = np.arange(count, dtype=float)/count
+        part = a + fractions[:, None]*(b-a)
+        part[:, 2] = a[2] + fractions*wrap(b[2]-a[2])
+        pieces.append(part)
+    return np.vstack(pieces + [route[-1:]])
+
+
+class OutdoorTrackingGuard:
+    """Latch a stop on sustained loss of the outdoor reference, not on GNSS quality.
+
+    This is an envelope check, not a replacement steering controller. A new
+    accepted goal is required after a trip; camera refreshes cannot clear it.
+    """
+    def __init__(self, distance=1.5, heading_deg=75., hold_sec=.5):
+        self.distance, self.heading_deg, self.hold_sec = distance, heading_deg, hold_sec
+        self.reset()
+
+    def reset(self):
+        self.bad_since = None
+        self.latched = False
+
+    def check(self, points, state, index, now):
+        route = np.asarray(points, float).reshape(-1, 4)
+        state = np.asarray(state, float).reshape(-1)
+        report = {'latched': self.latched, 'reason': 'ok',
+                  'max_cross_track_m': self.distance, 'max_heading_error_deg': self.heading_deg,
+                  'hold_sec': self.hold_sec}
+        if len(route) < 2 or not np.isfinite(route).all() or not np.isfinite(state[:3]).all():
+            self.latched = True
+            report.update(latched=True, reason='invalid_tracking_reference')
+            return report
+        # Local arclength window avoids selecting a nearby, distant route arm.
+        distances = np.r_[0., np.cumsum(np.linalg.norm(np.diff(route[:, :2], axis=0), axis=1))]
+        index = max(0, min(int(index), len(route)-1))
+        lo = max(0, int(np.searchsorted(distances, distances[index]-2.))-1)
+        hi = min(len(route)-1, max(lo+1, int(np.searchsorted(distances, distances[index]+2.))+1))
+        starts, ends = route[lo:hi, :2], route[lo+1:hi+1, :2]
+        delta = ends-starts
+        norm = np.sum(delta*delta, axis=1)
+        fraction = np.clip(np.sum((state[:2]-starts)*delta, axis=1)/np.maximum(norm, 1.e-12), 0., 1.)
+        projected = starts + fraction[:, None]*delta
+        gaps = np.linalg.norm(projected-state[:2], axis=1)
+        gaps[norm < 1.e-12] = np.inf
+        nearest = int(np.argmin(gaps))
+        gap = float(gaps[nearest])
+        heading_error = abs(math.degrees(wrap(math.atan2(delta[nearest, 1], delta[nearest, 0])-state[2])))
+        bad = gap > self.distance or heading_error > self.heading_deg
+        if bad:
+            if self.bad_since is None:
+                self.bad_since = now
+            self.latched = self.latched or now-self.bad_since >= self.hold_sec
+        else:
+            self.bad_since = None
+        report.update(cross_track_m=gap, heading_error_deg=heading_error, latched=self.latched,
+                      reason='route_tracking_lost' if self.latched else 'tracking_error_pending' if bad else 'ok')
+        return report
+
+
 def footprint_points(poses, vertices, margin=.12):
     poses = np.asarray(poses, float).reshape(-1, 3)
     lower, upper = np.min(vertices, axis=1)-margin, np.max(vertices, axis=1)+margin

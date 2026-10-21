@@ -18,11 +18,15 @@ python3 -m unittest discover -s src/Test/tests -p 'test_*.py' -v
 
 默认不启动底盘；需要独立 ROS 进程、C++ 搜索或规划器依赖的可选测试按各自条件跳过。单项可将 `-p` 换成对应文件名，例如 `test_serial_diagnostics.py`。无 ROS 环境不能直接执行全部回归。
 
+10月21日末段右转/接收诊断整改后：Neupan容器lxw环境368项，360通过、8项可选测试跳过；真实启动入口导入、源码/devel模块一致性及三种launch配置解析通过。不包含实车驾驶验收。
+
 Gazebo 整车测试需要显式运行 `scripts/test_command_gate.py` 或 `scripts/test_legacy_entry.py`，并指定 `--output-dir /home/nuc/lxw/neupan_ws/videos/<实验名>`，不混入默认单元测试。仿真模型和规划实现仍留在原仿真包，详见 [仿真报告](../neupan_ros/example/lxw_car_simulation/docs/planner_comparison.md)。
 
 2026-10-21 迁移验证：隔离ROS1环境234项（230通过、4项可选测试跳过）；室外路径测试在具备曲线库/Tk依赖的主机验证73项（67通过、6项可选测试跳过）。合计307项、297通过、10跳过。临时ROS1基础镜像缺少曲线库的Tk导入依赖，因此采用分环境验证；不代表完整Gazebo或实车验收。
 
 ## GNSS测量时间回归与静止采集
+
+室外日志复核工具 `scripts/verify_outdoor_reference.py` 可在lxw环境读取综合JSONL、按记录位姿重放稀疏/10 cm参考采样及偏离保护，并可通过`--bag`核对实际收到的话题；用`--output`指定新的JSON报告。它不会发布ROS消息，也不会预测修改后真实轨迹，不能替代带完整扫描的避障复现。
 
 实物静止采集（不启动底盘或规划）：先在ROS1 lxw环境运行 `roslaunch test_motion_tools sensor_time_check.launch`，另一个相同环境终端执行下列被动订阅命令。默认保存到 `tracker_logs/sensor_time_日期_时间/`，一分钟后采集器自动退出，随后Ctrl+C关闭传感器launch。无需开启车辆全系统。
 

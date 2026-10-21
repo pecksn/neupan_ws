@@ -107,6 +107,17 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(diagnostic['event'],'bad_packet')
         self.assertFalse(node.valid_pub.messages[-1])
 
+    def test_sender_filter_is_diagnosed_without_forwarding_untrusted_json(self):
+        node = self.receiver()
+        node.allowed_sender = '192.168.10.99'
+        diagnostic = self.receive(node, self.packet())
+        self.assertEqual(diagnostic['receiver_reason'], 'sender_ip_not_allowed')
+        self.assertEqual(diagnostic['sender'], '192.168.10.20:12345')
+        self.assertEqual(node.received_datagrams, 1)
+        self.assertEqual(node.rejected_sender_datagrams, 1)
+        self.assertEqual(node.json_pub.messages, [])
+        self.assertIsNone(node.last_receive)
+
     def test_logger_records_each_diagnostic_event(self):
         ns=load(ROOT/'robot_base_driver/scripts/system_run_logger.py')
         cls=ns['SystemRunLogger']; node=cls.__new__(cls)

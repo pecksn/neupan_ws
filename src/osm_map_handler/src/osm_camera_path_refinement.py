@@ -302,6 +302,8 @@ class CameraRightPath:
         rospy.Subscriber(rospy.get_param('~input_path_topic', '/osm_global_path'), Path, self.path_cb, queue_size=1)
         rospy.Subscriber('/hybridnets/result_json', String, self.json_cb, queue_size=1)
         rospy.Subscriber('/hybridnets/valid', Bool, self.valid_cb, queue_size=1)
+        self.receiver_health = None
+        rospy.Subscriber('/hybridnets/timing_diagnostics', String, self.receiver_health_cb, queue_size=10)
         rospy.Subscriber('/localization_safe', Bool, self.safe_cb, queue_size=1)
         rospy.Timer(rospy.Duration(.5), self.tick)
 
@@ -342,6 +344,15 @@ class CameraRightPath:
         with self.lock:
             self.safe = msg.data
             self.safe_received = time.monotonic()
+
+    def receiver_health_cb(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except (ValueError, TypeError):
+            return
+        if isinstance(data, dict):
+            with self.lock:
+                self.receiver_health = data
 
     def json_cb(self, msg):
         with self.lock:
@@ -580,6 +591,7 @@ class CameraRightPath:
             'json_age_ms': (now-self.received)*1000 if self.received else None,
             'receiver_valid': bool(getattr(self, 'receiver_valid', False)),
             'receiver_diagnostics': packet.get('receiver_diagnostics'),
+            'receiver_health': getattr(self, 'receiver_health', None),
             'timing_ms': packet.get('timing_ms'),
             'inference_backend': packet.get('inference_backend'),
         }

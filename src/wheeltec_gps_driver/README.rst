@@ -19,7 +19,7 @@ The ROS API documentation and other information can be found at http://ros.org/w
 会话ID/序号、模块绝对路径与SHA256用于核对实际运行版本；不保存原始字节全文。
 
 重启GPS驱动及综合日志后，完整报告写入原综合JSONL，三份录包配置也默认订阅。
-launch参数 ``serial_diagnostics_print:=false`` 只关闭终端汇总，不关闭话题。
+launch参数 ``serial_diagnostics_print:=false`` （默认）只关闭终端汇总，不关闭话题；综合日志仍逐秒保存统计，异常警告保留。
 不改设备配置、频率、原串口超时或质量门控；统计率不是设备物理输出率，Publisher
 调用也不是网络交付确认。设备已确认配置10 Hz时，应先核对链路，不能凭旧日志1 Hz提频。
 

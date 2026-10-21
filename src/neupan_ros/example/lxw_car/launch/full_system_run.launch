@@ -31,7 +31,7 @@
     <arg name="enable_hybridnets_overlay" default="true" doc="是否计算HybridNets调试叠加图；关闭后仍接收原视频与JSON"/>
     <arg name="show_hybridnets_overlay" default="false" doc="是否弹出HybridNets结果叠加窗口"/>
     <arg name="hybridnets_receiver_config" default="$(find hybridnets_receiver)/config/receiver.yaml" />
-    <arg name="hybridnets_require_control_fields" default="false" doc="GPU升级为双边界v3 JSON后设为true" />
+    <arg name="hybridnets_require_control_fields" default="$(arg enable_camera_right_control)" doc="靠右控制默认校验完整JSON控制字段；未收到结果时黄色提示，普通接收保持兼容" />
     <arg name="lidar_curb_log_dir" default="/home/nuc/lxw/neupan_ws/tracker_logs" />
     <arg name="lidar_curb_desired_clearance_m" default="0.55" />
     <arg name="lidar_curb_refined_path_topic" default="/osm_global_path_curb_refined" />
@@ -501,6 +501,7 @@
 
         <group unless="$(arg outdoor_use_hybrid_astar)">
             <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
+                <param name="outdoor_reference_spacing_m" value="0.50" />
                 <param name="outdoor_start_connector_enabled" value="$(eval arg('enable_outdoor_start_connector') and arg('outdoor_initial_path_topic') == '/osm_global_path')" />
                 <param name="outdoor_connection_planner" value="$(arg outdoor_connection_planner)" />
                 <param name="outdoor_connection_budget_sec" value="$(arg outdoor_connection_budget_sec)" />
