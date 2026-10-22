@@ -1,3 +1,4 @@
+.diagnostic_backups/
 rosbag_videos/
 src/models/
 calibration_data/

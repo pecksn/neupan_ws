@@ -361,6 +361,7 @@ class HybridNetsJsonReceiver:
                 "inference_hz": result.get("inference_hz"),
                 "inference_ms": result.get("inference_ms"),
                 "inference_backend": result.get("inference_backend"),
+                "camera_time_epoch": result.get("camera_time_epoch"),
                 "timing_ms": gpu_timing, "datagram_bytes": len(raw),
                 "receiver_validation_wall_ms": (time.monotonic()-receive_mono)*1000,
             }

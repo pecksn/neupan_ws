@@ -242,6 +242,7 @@ class CameraRightPath:
         self.safe = False
         self.safe_received = 0.
         self.last_seq = None
+        self.last_camera_epoch = None
         self.shift = 0.
         self.last_tick = time.monotonic()
         self.previous = None
@@ -260,7 +261,19 @@ class CameraRightPath:
             self.osm_map_loaded=True
         except (OSError,ET.ParseError,KeyError,ValueError) as error:
             rospy.logwarn('Camera path: OSM topology unavailable, only route-turn fallback: %s',error)
-        self.timeout = float(rospy.get_param('~timeout_sec', .5))
+        # Segment-cache updates refine a map route, not instantaneous steering.
+        cached = self.strategy == 'segment_cache'
+        def age_limit(name, default, upper):
+            value = float(rospy.get_param('~'+name, -1.))
+            value = default if value == -1 else value
+            if not math.isfinite(value) or not 0 < value <= upper:
+                raise ValueError('unsafe '+name)
+            return value
+        self.timeout = age_limit('timeout_sec', .8 if cached else .5, 1.)
+        self.max_source_age_ms = age_limit('max_source_age_ms', 500. if cached else 300., 800.)
+        self.max_capture_age_ms = age_limit('max_capture_age_ms', 800. if cached else 500., 800.)
+        if self.max_source_age_ms > self.max_capture_age_ms:
+            raise ValueError('source age limit exceeds capture age limit')
         self.max_shift = float(rospy.get_param('~max_shift_m', 1.5))
         self.distance_reference=rospy.get_param('~distance_reference','camera_center')
         if self.distance_reference not in ('camera_center','right_tire_outer','vehicle_center'):
@@ -361,6 +374,16 @@ class CameraRightPath:
                 seq = p['frame_seq']
                 if not isinstance(seq, int) or isinstance(seq, bool):
                     raise ValueError('missing frame sequence')
+                epoch = p.get('camera_time_epoch')
+                if isinstance(epoch, str) and epoch != getattr(self, 'last_camera_epoch', None):
+                    # Never combine confirmation frames from different camera clocks.
+                    # Keep already confirmed map corrections only: cache_pose still
+                    # validates localization, map alignment, route and TTL on use.
+                    self.last_camera_epoch = epoch
+                    self.confirmations = 0
+                    if hasattr(self, 'cache'):
+                        self.cache.pending.clear()
+                    self.last_seq = None
                 if self.last_seq is not None and seq <= self.last_seq and time.monotonic()-self.received < 2:
                     raise ValueError('out of order frame')
                 self.last_seq = seq
@@ -394,16 +417,18 @@ class CameraRightPath:
             raise ValueError('low_confidence')
         if not math.isfinite(age) or age < 0:
             raise ValueError('source_age_invalid')
-        if age > 300:
-            raise ValueError('source_age_exceeded_300ms')
+        max_source_age = getattr(self, 'max_source_age_ms', 300.)
+        if age > max_source_age:
+            raise ValueError('source_age_exceeded_%gms' % max_source_age)
         capture = int(p.get('capture_timestamp_ns', 0))
         capture_age = (rospy.Time.now().to_nsec()-capture)/1.e6
         if capture <= 0:
             raise ValueError('capture_timestamp_invalid')
         if capture_age < -50:
             raise ValueError('capture_timestamp_in_future_clock_skew')
-        if capture_age > 500:
-            raise ValueError('capture_age_exceeded_500ms_or_clock_skew')
+        max_capture_age = getattr(self, 'max_capture_age_ms', 500.)
+        if capture_age > max_capture_age:
+            raise ValueError('capture_age_exceeded_%gms_or_clock_skew' % max_capture_age)
         if p.get('scene_type') in ('intersection', 'open_area'):
             raise ValueError('junction or open area')
         # unknown is accepted; geometric tests still reject unstable boundaries.
@@ -551,7 +576,7 @@ class CameraRightPath:
                     'non-finite capture-time vehicle TF',
                     'capture stale or GPU/NUC clocks unsynchronized',
                     'capture_timestamp_in_future_clock_skew',
-                    'capture_age_exceeded_500ms_or_clock_skew',
+                    'capture_age_exceeded_',
                     'stale vehicle TF')):
                 rospy.logwarn_throttle(
                     5., '\033[33mCamera right time alignment: %s\033[0m', reason)
@@ -585,8 +610,9 @@ class CameraRightPath:
             'capture_age_ms_clock_dependent': capture_age,
             'source_age_ms': packet.get('source_age_ms'),
             'confidence': packet.get('confidence'),
-            'min_confidence': .65, 'max_source_age_ms': 300,
-            'max_capture_age_ms': 500, 'future_tolerance_ms': 50,
+            'min_confidence': .65, 'max_source_age_ms': getattr(self, 'max_source_age_ms', 300.),
+            'max_capture_age_ms': getattr(self, 'max_capture_age_ms', 500.), 'future_tolerance_ms': 50,
+            'camera_time_epoch': packet.get('camera_time_epoch'),
             'json_timeout_sec': self.timeout,
             'json_age_ms': (now-self.received)*1000 if self.received else None,
             'receiver_valid': bool(getattr(self, 'receiver_valid', False)),

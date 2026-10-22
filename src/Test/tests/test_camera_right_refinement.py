@@ -364,14 +364,14 @@ def run_ros_test():
         drive(1.5,raw=raw)
         assert not statuses[-1]['active'], statuses[-1]
         assert any(reason in statuses[-1]['reason'] for reason in (
-            'capture stale', 'low confidence or old inference', 'source_age_exceeded_300ms',
-            'capture_age_exceeded_500ms_or_clock_skew', 'capture_timestamp_in_future_clock_skew')), statuses[-1]
+            'capture stale', 'low confidence or old inference', 'source_age_exceeded_',
+            'capture_age_exceeded_', 'capture_timestamp_in_future_clock_skew')), statuses[-1]
         print('PASS: historical bag JSON is not treated as fresh live control input',flush=True)
         print('Latest rejection:',statuses[-1]['reason'],flush=True)
         old=packet.copy();old['capture_timestamp_ns']=rospy.Time.now().to_nsec()-10_000_000_000
         drive(1.5,raw=json.dumps(old))
         assert ('capture stale' in statuses[-1]['reason'] or
-                'capture_age_exceeded_500ms_or_clock_skew' in statuses[-1]['reason']),statuses[-1]
+                'capture_age_exceeded_' in statuses[-1]['reason']),statuses[-1]
         print('PASS: stale capture timestamp rejected even when JSON has just arrived',flush=True)
         path.header.stamp=rospy.Time.now()
         path.poses=[]

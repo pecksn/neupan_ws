@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import socket
 import time
+import threading
 from types import SimpleNamespace as NS
 import unittest
 import numpy as np
@@ -132,6 +133,7 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(rows[0]['logger_receive_timestamp_ns'],NOW)
 
     def right_reason(self, **updates):
+        limits = updates.pop('_limits', {})
         ns=load(ROOT/'osm_map_handler/src/osm_camera_path_refinement.py')
         def reached(*args): raise ValueError('geometry_reached')
         ns['boundary_curve']=reached
@@ -141,6 +143,7 @@ class TimingTests(unittest.TestCase):
         node.safe=True;node.safe_received=10.;node.control=False
         node.listener=NS(lookupTransform=lambda *args: (np.zeros(3),[0,0,0,1]))
         node.lidar_origin=np.zeros(3);node.resolution=(1920,1080)
+        for key, value in limits.items(): setattr(node,key,value)
         for key in ('matrix','distortion','rotation','origin','ground_z'): setattr(node,key,None)
         try: node.refine(10.)
         except ValueError as error: return str(error)
@@ -160,6 +163,28 @@ class TimingTests(unittest.TestCase):
         for capture in (NOW-500_000_000,NOW+50_000_000):
             self.assertEqual(self.right_reason(confidence=.65,source_age_ms=300.,
                              capture_timestamp_ns=capture),'geometry_reached')
+
+    def test_map_cache_profile_is_moderate_and_bounded(self):
+        limits=dict(max_source_age_ms=500.,max_capture_age_ms=800.)
+        self.assertEqual(self.right_reason(source_age_ms=400.,
+            capture_timestamp_ns=NOW-650_000_000,_limits=limits),'geometry_reached')
+        self.assertEqual(self.right_reason(source_age_ms=500.001,_limits=limits),'source_age_exceeded_500ms')
+        self.assertEqual(self.right_reason(capture_timestamp_ns=NOW-800_001_000,_limits=limits),
+                         'capture_age_exceeded_800ms_or_clock_skew')
+        self.assertEqual(self.right_reason(confidence=.649,_limits=limits),'low_confidence')
+        self.assertEqual(self.right_reason(source_age_ms=49789.,_limits=limits),'source_age_exceeded_500ms')
+
+    def test_camera_epoch_resets_pending_not_confirmed_map(self):
+        ns=load(ROOT/'osm_map_handler/src/osm_camera_path_refinement.py')
+        cls=ns['CameraRightPath'];node=cls.__new__(cls)
+        node.lock=threading.RLock();node.last_camera_epoch='before';node.last_seq=99
+        node.received=time.monotonic();node.confirmations=2
+        node.cache=NS(pending={1:(.2,2)},committed={2:(.3,10.)})
+        node.json_cb(NS(data=json.dumps(dict(frame_seq=1,camera_time_epoch='after'))))
+        self.assertEqual(node.cache.pending,{})
+        self.assertEqual(node.cache.committed,{2:(.3,10.)})
+        self.assertEqual(node.confirmations,0)
+        self.assertEqual(node.last_seq,1)
 
 
 if __name__ == '__main__': unittest.main()
