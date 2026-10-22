@@ -17,10 +17,44 @@ roslaunch hybridnets_receiver receiver.launch show_overlay:=true
 
 For a debug topic without an automatic display window, use
 `start_overlay:=true show_overlay:=false`. Neither the receiver nor its debug
-overlay publishes vehicle control commands. The NeuPAN planner does not yet
-subscribe to `/hybridnets/result_json`; a separate metric fusion and path
-integration step is needed. See the workspace-level
+overlay publishes vehicle control commands. The separate `camera_right_path`
+node in `osm_map_handler` projects valid boundaries into map coordinates and
+provides a refined reference path to NeuPAN when camera-right control is
+explicitly enabled. See the workspace-level
 `REALTIME_HYBRIDNETS_GUIDE.md` for network setup and acceptance checks.
+
+Control-mode confirmation requires three consecutive valid frames in the same
+session. Sessions combine the sender, `camera_time_epoch`, and preferably a
+per-process `producer_session_id` (or `session_id`). GPU now generates a UUID at
+each inference-node startup and includes it in every JSON result. Camera reconnects
+independently change `camera_time_epoch`. Legacy GPU packets without
+a producer ID use the UDP source endpoint as a compatibility fallback; a restart
+reusing both endpoint and epoch cannot be distinguished reliably. New sessions
+reset confirmation; retired sessions, duplicate/out-of-order frames and expired
+packets cannot refresh the active heartbeat. Retired identities are retained
+up to 1024 entries; exhaustion fails closed until the receiver is restarted.
+The path node also checks confirmation for the JSON frame itself, rather than
+trusting an independently delivered Boolean alone. Inspect
+`/hybridnets/timing_diagnostics` for session, forwarding and rejection details;
+the three vehicle bag profiles record this optional topic.
+
+The receiver and path diagnostics expose `producer_session_id` and
+`receiver_session_id` explicitly. Once an explicit producer identity has been
+seen, identity-less packets cannot downgrade that session protection. The
+receiver fails closed on capture ages beyond its age limit, even when the
+GPU-reported source age is small; a clock difference over 60 seconds must not
+bypass the capture-age check. Keep both boards time-synchronized.
+Duplicate/out-of-order datagrams also leave an unexpired confirmation streak
+and valid state unchanged, without extending the heartbeat. A timeout still
+invalidates the state, and a new invalid observation still resets confirmation.
+UUIDs distinguish processes but do not authenticate senders; retain the sender
+IP restriction and isolated network. Retired-session protection applies to
+sessions already observed by this receiver, not arbitrary unseen senders.
+
+After this source update, restart the existing ROS1 receiver and camera path
+refinement nodes in their normal runtime. Do not launch a duplicate receiver
+on UDP 6000. Validate GPU restart, camera unplug/replug, and network disconnect
+while stationary before enabling motion; automated tests are not field acceptance.
 
 The overlay keeps a short image buffer and matches each result by
 `capture_timestamp_ns`, `source_age_ms`, and the configured RTP delay. The

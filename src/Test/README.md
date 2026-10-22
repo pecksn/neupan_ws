@@ -18,7 +18,7 @@ python3 -m unittest discover -s src/Test/tests -p 'test_*.py' -v
 
 默认不启动底盘；需要独立 ROS 进程、C++ 搜索或规划器依赖的可选测试按各自条件跳过。单项可将 `-p` 换成对应文件名，例如 `test_serial_diagnostics.py`。无 ROS 环境不能直接执行全部回归。
 
-10月21日末段右转/接收诊断整改后：Neupan容器lxw环境368项，360通过、8项可选测试跳过；真实启动入口导入、源码/devel模块一致性及三种launch配置解析通过。不包含实车驾驶验收。
+10月22日接收会话整改后：Neupan容器lxw环境389项，381通过、8项可选测试跳过。覆盖跨epoch/生产进程切换、迟到旧包、重复乱序、心跳断流与路径逐帧确认；实包解析使用假发布器，不发送车辆话题。不包含实车驾驶或GPU主动跳时验收。
 
 Gazebo 整车测试需要显式运行 `scripts/test_command_gate.py` 或 `scripts/test_legacy_entry.py`，并指定 `--output-dir /home/nuc/lxw/neupan_ws/videos/<实验名>`，不混入默认单元测试。仿真模型和规划实现仍留在原仿真包，详见 [仿真报告](../neupan_ros/example/lxw_car_simulation/docs/planner_comparison.md)。
 

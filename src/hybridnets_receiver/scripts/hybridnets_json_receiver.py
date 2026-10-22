@@ -4,6 +4,7 @@
 import json
 import math
 import socket
+import threading
 import time
 from collections import deque
 
@@ -46,7 +47,7 @@ class HybridNetsJsonReceiver:
         self.min_road_polygon_points = int(rospy.get_param(
             "~min_road_polygon_points", 3))
         self.min_control_confidence = float(rospy.get_param(
-            "~min_control_confidence", 0.65))
+            "~min_control_confidence", 0.60))
         self.confirm_valid_frames = int(rospy.get_param(
             "~confirm_valid_frames", 3))
         self.last_receive = None
@@ -57,6 +58,13 @@ class HybridNetsJsonReceiver:
         self.receive_times = deque(maxlen=120)
         self.last_result_seq = None
         self.last_timeout_diagnostic = None
+        self.state_lock = threading.RLock()
+        self.active_session = None
+        self.retired_sessions = set()
+        self.identity_seen = False
+        self.producer_identity_seen = False
+        self.last_active_mono = None
+        self.last_capture_ns = None
         self.received_datagrams = 0
         self.rejected_sender_datagrams = 0
         self.last_datagram_mono = None
@@ -222,6 +230,50 @@ class HybridNetsJsonReceiver:
             raise ValueError("%s has too many points" % name)
         return segments
 
+    @staticmethod
+    def session_identity(result, sender):
+        epoch = result.get('camera_time_epoch')
+        producer = result.get('producer_session_id')
+        if producer is None:
+            producer = result.get('session_id')
+        for name, value in (('camera_time_epoch', epoch), ('producer_session_id', producer)):
+            if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 128):
+                raise ValueError('%s must be a nonempty string of at most 128 characters' % name)
+        if (result.get('producer_session_id') is not None and result.get('session_id') is not None
+                and result['producer_session_id'] != result['session_id']):
+            raise ValueError('conflicting producer session identities')
+        # Legacy GPU packets without a producer ID use the UDP source port.
+        # Explicit producer IDs are preferred: a reused source port+epoch cannot
+        # unambiguously distinguish a restart from a delayed packet.
+        basis = 'producer_session' if producer is not None else 'udp_endpoint'
+        return (sender[0], 'producer:'+producer if producer is not None else 'udp:%d' % sender[1], epoch), basis
+
+    def select_session(self, identity, fresh):
+        if identity in self.retired_sessions:
+            return False, False, 'retired_session'
+        if self.identity_seen and identity[2] is None:
+            return False, False, 'session_identity_missing'
+        if self.producer_identity_seen and identity[1].startswith('udp:'):
+            return False, False, 'producer_session_identity_missing'
+        if identity == self.active_session:
+            return True, False, None
+        if not fresh:
+            return False, False, 'session_time_invalid'
+        if len(self.retired_sessions) >= 1024:
+            return False, False, 'session_history_full_restart_receiver'
+        if self.active_session is not None:
+            self.retired_sessions.add(self.active_session)
+        self.active_session = identity
+        self.identity_seen = self.identity_seen or identity[2] is not None
+        self.producer_identity_seen = self.producer_identity_seen or not identity[1].startswith('udp:')
+        self.last_frame_seq = self.last_result_seq = self.last_capture_ns = None
+        self.valid_streak = 0
+        self.last_active_mono = None
+        self.last_receive = None
+        self.receive_times.clear()
+        self.valid_pub.publish(False)
+        return True, True, None
+
     def receive_once(self):
         try:
             raw, sender = self.sock.recvfrom(65535)
@@ -229,6 +281,12 @@ class HybridNetsJsonReceiver:
             receive_mono = time.monotonic()
         except socket.timeout:
             return
+        with self.state_lock:
+            self.process_datagram(raw, sender, receive_ns, receive_mono)
+
+    def process_datagram(self, raw, sender, receive_ns, receive_mono):
+        # Caller holds state_lock; health timer uses the same lock so a session
+        # switch cannot race the confirmation/timeout state.
         self.received_datagrams = getattr(self, 'received_datagrams', 0) + 1
         self.last_datagram_mono = receive_mono
         self.last_datagram_sender = '%s:%d' % sender
@@ -285,55 +343,80 @@ class HybridNetsJsonReceiver:
              left_valid, right_valid) = self.validate_control_fields(result)
 
             now = rospy.Time.now()
-            if (self.last_receive is None or
-                    (now - self.last_receive).to_sec() > self.timeout):
-                self.last_frame_seq = None
             capture = int(result["capture_timestamp_ns"])
             age_ms = (now.to_nsec() - capture) / 1.0e6
             clocks_comparable = -1000.0 <= age_ms <= 60000.0
             source_age = float(result.get("source_age_ms", 0.0))
-            effective_age = max(source_age, age_ms) if clocks_comparable else source_age
-            sequence_ok = (frame_seq is None or self.last_frame_seq is None or
-                           frame_seq > self.last_frame_seq)
+            # Clock disagreement is not permission to accept arbitrarily old images.
+            # Keep the raw skew diagnostic, but fail closed until clocks are fixed.
+            effective_age = max(source_age, age_ms)
+            fresh = (effective_age <= self.max_source_age_ms and age_ms >= -50.)
+            identity, session_basis = self.session_identity(result, sender)
+            session_ok, session_changed, session_reason = self.select_session(identity, fresh)
+            result_seq = result.get('result_seq')
+            if not isinstance(result_seq, int) or isinstance(result_seq, bool) or result_seq < 1:
+                result_seq = None
+            sequence_ok = (session_ok and
+                           (frame_seq is None or self.last_frame_seq is None or frame_seq > self.last_frame_seq) and
+                           (result_seq is None or self.last_result_seq is None or result_seq > self.last_result_seq))
+            capture_ok = self.last_capture_ns is None or capture > self.last_capture_ns
             confidence_ok = (not self.require_control_fields or
                              confidence >= self.min_control_confidence)
-            candidate_valid = (result["valid"] and sequence_ok and confidence_ok and
-                               effective_age <= self.max_source_age_ms)
-            self.valid_streak = self.valid_streak + 1 if candidate_valid else 0
+            forward = session_ok and sequence_ok and capture_ok and fresh
+            candidate_valid = result['valid'] and forward and confidence_ok
+            # A late retired session must not disturb the active session's
+            # confirmation or heartbeat. Invalid current-session frames do.
+            active_timed_out = (session_ok and (self.last_active_mono is None or
+                                receive_mono-self.last_active_mono > self.timeout))
+            if session_ok:
+                if active_timed_out:
+                    self.valid_streak = 0
+                # Duplicated/out-of-order datagrams are not new observations.
+                # Ignore them without extending the heartbeat or breaking a
+                # still-fresh confirmation streak. New invalid frames still reset it.
+                if sequence_ok and capture_ok:
+                    self.valid_streak = self.valid_streak + 1 if candidate_valid else 0
             confirmed = (not self.require_control_fields or
                          self.valid_streak >= self.confirm_valid_frames)
             packet_valid = candidate_valid and confirmed
 
-            self.last_receive = now
-            if frame_seq is not None and sequence_ok:
-                self.last_frame_seq = frame_seq
-            self.last_sender = "%s:%d" % sender
+            if not session_ok and session_reason != 'session_time_invalid':
+                reason = session_reason
+            elif not fresh:
+                reason = 'capture_timestamp_in_future' if age_ms < -50. else 'receiver_source_age_exceeded'
+            elif not capture_ok:
+                reason = 'capture_timestamp_not_increasing'
+            elif not sequence_ok:
+                reason = 'out_of_order_frame'
+            elif packet_valid:
+                reason = 'ok'
+            elif candidate_valid:
+                reason = 'confirming_valid_frames'
+            elif not confidence_ok:
+                reason = 'low_confidence'
+            else:
+                reason = 'sender_result_invalid'
+            gap = (max(0, result_seq-self.last_result_seq-1)
+                   if forward and result_seq is not None and self.last_result_seq is not None else None)
+            if forward:
+                self.last_receive = now
+                self.last_active_mono = receive_mono
+                self.last_capture_ns = capture
+                if frame_seq is not None:
+                    self.last_frame_seq = frame_seq
+                if result_seq is not None:
+                    self.last_result_seq = result_seq
+                self.last_sender = '%s:%d' % sender
+            if session_ok and sequence_ok and capture_ok:
+                self.last_reason = reason
             if packet_valid:
                 self.last_reason = "ok"
-            elif candidate_valid:
-                self.last_reason = "confirming_valid_frames"
-            elif not sequence_ok:
-                self.last_reason = "out_of_order_frame"
-            elif not confidence_ok:
-                self.last_reason = "low_confidence"
-            elif not result["valid"]:
-                self.last_reason = "sender_result_invalid"
-            elif effective_age > self.max_source_age_ms:
-                self.last_reason = "receiver_source_age_exceeded"
-            else:
-                self.last_reason = "invalid_or_stale_result"
             interval_ms = ((receive_mono-self.receive_times[-1])*1000
                            if self.receive_times else None)
-            self.receive_times.append(receive_mono)
-            span = self.receive_times[-1]-self.receive_times[0]
+            if forward:
+                self.receive_times.append(receive_mono)
+            span = self.receive_times[-1]-self.receive_times[0] if self.receive_times else 0.
             receive_hz = ((len(self.receive_times)-1)/span if span > 0 else None)
-            result_seq = result.get("result_seq")
-            if not isinstance(result_seq, int) or isinstance(result_seq, bool) or result_seq < 1:
-                result_seq = None
-            gap = (max(0, result_seq-self.last_result_seq-1)
-                   if result_seq is not None and self.last_result_seq is not None else None)
-            if result_seq is not None:
-                self.last_result_seq = result_seq
             send_ns = result.get("send_timestamp_ns")
             raw_send_age = ((receive_ns-send_ns)/1.e6
                             if isinstance(send_ns, int) and not isinstance(send_ns, bool) and send_ns > 0 else None)
@@ -349,7 +432,11 @@ class HybridNetsJsonReceiver:
                 "receive_timestamp_ns": receive_ns,
                 "capture_timestamp_ns": capture, "send_timestamp_ns": send_ns if raw_send_age is not None else None,
                 "publish_timestamp_ns": result.get("publish_timestamp_ns"),
-                "receiver_valid": bool(packet_valid), "receiver_reason": self.last_reason,
+                "receiver_valid": bool(packet_valid), "receiver_reason": reason,
+                "session_changed": session_changed, "session_basis": session_basis,
+                "active_session": self.active_session, "packet_session": identity,
+                "retired_session_count": len(self.retired_sessions),
+                "valid_streak": self.valid_streak, "forwarded": bool(forward),
                 "confidence": confidence, "source_age_ms": source_age,
                 "capture_age_at_receive_ms_clock_dependent": (receive_ns-capture)/1.e6,
                 "send_to_receive_ms_clock_dependent": raw_send_age,
@@ -362,11 +449,19 @@ class HybridNetsJsonReceiver:
                 "inference_ms": result.get("inference_ms"),
                 "inference_backend": result.get("inference_backend"),
                 "camera_time_epoch": result.get("camera_time_epoch"),
+                "producer_session_id": result.get("producer_session_id", result.get("session_id")),
+                "receiver_session_id": json.dumps(identity, separators=(',', ':')),
                 "timing_ms": gpu_timing, "datagram_bytes": len(raw),
                 "receiver_validation_wall_ms": (time.monotonic()-receive_mono)*1000,
             }
             result["receiver_diagnostics"] = diagnostic
             self.diag_json_pub.publish(json.dumps(diagnostic, separators=(",", ":")))
+            if not forward:
+                if (session_ok and ((sequence_ok and capture_ok) or active_timed_out)
+                        or self.active_session is None):
+                    self.valid_pub.publish(False)
+                return
+            result['receiver_session_id'] = json.dumps(identity, separators=(',', ':'))
             normalized = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
             self.json_pub.publish(normalized)
             self.valid_pub.publish(packet_valid)
@@ -394,8 +489,12 @@ class HybridNetsJsonReceiver:
             rospy.logwarn_throttle(2.0, "Rejected HybridNets packet: %s", error)
 
     def health_timer(self, _event):
+        with self.state_lock:
+            self.health_timer_locked(_event)
+
+    def health_timer_locked(self, _event):
         now = rospy.Time.now()
-        timed_out = self.last_receive is None or (now - self.last_receive).to_sec() > self.timeout
+        timed_out = self.last_active_mono is None or time.monotonic()-self.last_active_mono > self.timeout
         if timed_out:
             self.valid_streak = 0
             self.valid_pub.publish(False)
@@ -407,8 +506,12 @@ class HybridNetsJsonReceiver:
                     "schema_version": 1, "event": "health",
                     "receive_timestamp_ns": now.to_nsec(),
                     "receiver_valid": False, "receiver_reason": self.last_reason,
-                    "last_receive_age_ms": (now-self.last_receive).to_sec()*1000 if self.last_receive else None,
+                    "last_receive_age_ms": (mono-self.last_active_mono)*1000 if self.last_active_mono is not None else None,
                     "receiver_timeout_sec": self.timeout,
+                    "active_session": self.active_session,
+                    "retired_session_count": len(self.retired_sessions),
+                    "last_active_age_ms": None if self.last_active_mono is None
+                    else (mono-self.last_active_mono)*1000.,
                     "received_datagrams": getattr(self, 'received_datagrams', 0),
                     "rejected_sender_datagrams": getattr(self, 'rejected_sender_datagrams', 0),
                     "allowed_sender_ip": self.allowed_sender,

@@ -263,6 +263,9 @@ class CameraRightPath:
             rospy.logwarn('Camera path: OSM topology unavailable, only route-turn fallback: %s',error)
         # Segment-cache updates refine a map route, not instantaneous steering.
         cached = self.strategy == 'segment_cache'
+        self.min_confidence = float(rospy.get_param('~min_confidence', .60))
+        if not math.isfinite(self.min_confidence) or not 0 < self.min_confidence <= 1:
+            raise ValueError('min_confidence must be finite and in (0, 1]')
         def age_limit(name, default, upper):
             value = float(rospy.get_param('~'+name, -1.))
             value = default if value == -1 else value
@@ -375,17 +378,32 @@ class CameraRightPath:
                 if not isinstance(seq, int) or isinstance(seq, bool):
                     raise ValueError('missing frame sequence')
                 epoch = p.get('camera_time_epoch')
-                if isinstance(epoch, str) and epoch != getattr(self, 'last_camera_epoch', None):
+                session = p.get('receiver_session_id')
+                if session is not None and (not isinstance(session, str) or not session or len(session) > 512):
+                    raise ValueError('invalid receiver session identity')
+                if session is None:
+                    session = json.dumps([p.get('producer_session_id', p.get('session_id')), epoch], separators=(',', ':'))
+                previous = getattr(self, 'last_receiver_session', None)
+                retired = getattr(self, 'retired_receiver_sessions', set())
+                if session in retired:
+                    return  # A delayed old session cannot replace current observations.
+                if session != previous:
                     # Never combine confirmation frames from different camera clocks.
                     # Keep already confirmed map corrections only: cache_pose still
                     # validates localization, map alignment, route and TTL on use.
+                    if len(retired) >= 1024:
+                        raise ValueError('receiver session history full; restart node')
+                    if previous is not None:
+                        retired.add(previous)
+                    self.retired_receiver_sessions = retired
+                    self.last_receiver_session = session
                     self.last_camera_epoch = epoch
                     self.confirmations = 0
                     if hasattr(self, 'cache'):
                         self.cache.pending.clear()
                     self.last_seq = None
-                if self.last_seq is not None and seq <= self.last_seq and time.monotonic()-self.received < 2:
-                    raise ValueError('out of order frame')
+                if self.last_seq is not None and seq <= self.last_seq:
+                    return  # Do not refresh receipt age or roll the baseline back.
                 self.last_seq = seq
                 self.packet = p
                 self.received = time.monotonic()
@@ -398,6 +416,10 @@ class CameraRightPath:
             raise ValueError('json missing or stale')
         if not self.receiver_valid or now-self.valid_received > self.timeout:
             raise ValueError('receiver not valid')
+        diagnostic = p.get('receiver_diagnostics')
+        if isinstance(diagnostic, dict) and (diagnostic.get('receiver_valid') is not True or
+                diagnostic.get('frame_seq') != p.get('frame_seq')):
+            raise ValueError('receiver has not confirmed this frame')
         if not self.safe or now-self.safe_received > 1:
             raise ValueError('localization unsafe or stale')
         if self.control and getattr(self,'distance_reference','right_tire_outer')=='right_tire_outer' and not self.wheel_geometry_verified:
@@ -413,7 +435,7 @@ class CameraRightPath:
         age = float(p.get('source_age_ms', float('inf')))
         if not math.isfinite(confidence):
             raise ValueError('confidence_invalid')
-        if confidence < .65:
+        if confidence < getattr(self, 'min_confidence', .60):
             raise ValueError('low_confidence')
         if not math.isfinite(age) or age < 0:
             raise ValueError('source_age_invalid')
@@ -610,9 +632,11 @@ class CameraRightPath:
             'capture_age_ms_clock_dependent': capture_age,
             'source_age_ms': packet.get('source_age_ms'),
             'confidence': packet.get('confidence'),
-            'min_confidence': .65, 'max_source_age_ms': getattr(self, 'max_source_age_ms', 300.),
+            'min_confidence': getattr(self, 'min_confidence', .60), 'max_source_age_ms': getattr(self, 'max_source_age_ms', 300.),
             'max_capture_age_ms': getattr(self, 'max_capture_age_ms', 500.), 'future_tolerance_ms': 50,
             'camera_time_epoch': packet.get('camera_time_epoch'),
+            'producer_session_id': packet.get('producer_session_id', packet.get('session_id')),
+            'receiver_session_id': packet.get('receiver_session_id'),
             'json_timeout_sec': self.timeout,
             'json_age_ms': (now-self.received)*1000 if self.received else None,
             'receiver_valid': bool(getattr(self, 'receiver_valid', False)),

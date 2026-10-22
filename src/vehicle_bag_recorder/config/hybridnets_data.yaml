@@ -65,6 +65,7 @@ topics:
   - /vehicle/command_audit
   - /cmd_vel_remote
   - /neupan/runtime
+  - /hybridnets/timing_diagnostics
   - /neupan/failure
   - /neupan/camera_path_guard
   - /neupan/route_connection

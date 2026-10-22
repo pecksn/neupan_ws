@@ -2374,6 +2374,7 @@ rostopic echo -n 1 /hybridnets/result_json
 | `/hybridnets/inference_hz` | `std_msgs/Float32` | GPU 推理频率 |
 | `/hybridnets/network_age_ms` | `std_msgs/Float32` | 两板对时后的结果年龄 |
 | `/hybridnets/capture_header` | `std_msgs/Header` | GPU 采集时间戳 |
+| `/hybridnets/timing_diagnostics` | `std_msgs/String` | 会话身份、帧确认、时效及拒绝原因；三份录包配置均记录 |
 | `/hybridnets/debug_image` | `sensor_msgs/Image` | NUC 生成的道路/边界叠加图 |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 接收健康状态 |
 
@@ -2386,6 +2387,8 @@ sudo tcpdump -ni enxec1ac33f2710 udp port 5000 or udp port 6000
 ```
 
 结果超时 `0.8 s`、过期 `800 ms`、无效或格式不符时发布 `/hybridnets/valid=false`。两板需用 `chrony` 或 PTP 对时。
+
+靠右控制模式按同会话连续3帧确认；epoch/生产进程变化后重新确认，退役会话、重复乱序及过期包不刷新活动心跳。路径端同时校验当前JSON自身的确认结果。当前GPU未发`producer_session_id`时兼容UDP源端口＋epoch；若重启时两者均复用则无法可靠区分，GPU应增加每进程唯一ID，NUC已支持。实际重启/跳时恢复及室外靠右仍需验收，详见 [待解决问题](PROJECT_ISSUES_CN.md#42-接收端会话已补齐动态恢复待验收)。
 
 ## 12.8 Vision + LiDAR 道路约束融合（待完成）
 
