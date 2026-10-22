@@ -28,6 +28,8 @@ Gazebo 整车测试需要显式运行 `scripts/test_command_gate.py` 或 `script
 
 室外日志复核工具 `scripts/verify_outdoor_reference.py` 可在lxw环境读取综合JSONL、按记录位姿重放稀疏/10 cm参考采样及偏离保护，并可通过`--bag`核对实际收到的话题；用`--output`指定新的JSON报告。它不会发布ROS消息，也不会预测修改后真实轨迹，不能替代带完整扫描的避障复现。
 
+可选`--no-obstacle-window 15:57:44 15:57:50`对首个日志做去障碍物求解对照：校验模型哈希，使用近似求解开始位姿、记录参考索引及两种假定初始控制序列。它不是原始求解复现，不会运行车辆控制，不能证明当时具体障碍物或唯一根因。
+
 实物静止采集（不启动底盘或规划）：先在ROS1 lxw环境运行 `roslaunch test_motion_tools sensor_time_check.launch`，另一个相同环境终端执行下列被动订阅命令。默认保存到 `tracker_logs/sensor_time_日期_时间/`，一分钟后采集器自动退出，随后Ctrl+C关闭传感器launch。无需开启车辆全系统。
 
 ```bash

@@ -1797,7 +1797,7 @@ rostopic hz -w 200 /heading
 
 接收端要求GPS投影/fix/GGA源时间完全一致；完整航向校正还要求航向/解状态同整数 `stamp_ns`，不再容忍相邻50 ms位置帧借质量。该帧位置质量或新航向自身质量未齐时有界等待，不提前消费该帧。位置和定向状态分别判断：定向非Fixed时驱动不发布有效航向；初始化后，合格Fixed/Float位置仍可独立进入位置-only窗口，满足原稳定性与纠偏条件后续期，yaw不变。未初始化时仍需原Fixed定向条件。
 
-最新源健康状态独立记录在 `/gps_guard/status.latest_heading_health`。即使旧Fixed航向尚未超时，新的定向Float、无效或CRC错误也会使完整Fixed跟踪降级；历史选择不能遮盖新失效、不能用后来的Fixed回填旧Float。已知失效后的乱序/重复旧Fixed不得恢复完整跟踪。原GPS诊断、0.5 s时效及100 m/600 s预算保留。旧bag缺少同帧标识时，不放行完整航向校正。
+最新源健康状态独立记录在 `/gps_guard/status.latest_heading_health`。即使旧Fixed航向尚未超时，新的定向Float、无效或CRC错误也会使完整Fixed跟踪降级；历史选择不能遮盖新失效、不能用后来的Fixed回填旧Float。已知失效后的乱序/重复旧Fixed不得恢复完整跟踪。原GPS诊断、0.5 s时效保留；全系统续推预算现为200 m/600 s（10月22日用户调整，独立底层入口仍默认100 m）。旧bag缺少同帧标识时，不放行完整航向校正。
 
 协议字段依据：N4 Products Commands and Logs Reference Book V2 R1.2，
 7.3.23 节表 7-81。`bestpos_type` 是位置类型，`heading_type` 是定向类型。
@@ -1888,7 +1888,7 @@ roslaunch neupan_ros full_system_run.launch \
 
 开关打开后优先尝试高精度初始化；质量或位置稳定性达不到高精度要求时才
 采用低精度条件。低精度初始化取稳定窗口中的平均平移、有效定向建立
-一次全局参考，随后进入 `LOCAL_DEAD_RECKONING`，100 米 / 600 秒预算从初始化时开始，停车等待也计入。新的运行中非 Fixed 位置策略在独立条件通过后才纠偏及恢复预算，不沿用启动时宽松的 100 m² 条件；单点解不用于运行中校正。关闭运行中策略后则保持原来的冻结参考与续推预算。可靠 RTK 位置和航向恢复后，通过原有稳定窗口和平滑校正回到 `GPS_TRACKING`。后续目标点沿用当前参考，不会重新执行粗位置初始化。
+一次全局参考，随后进入 `LOCAL_DEAD_RECKONING`，全系统200 米 / 600 秒预算从初始化时开始，停车等待也计入。新的运行中非 Fixed 位置策略在独立条件通过后才纠偏及恢复预算，不沿用启动时宽松的 100 m² 条件；单点解不用于运行中校正。关闭运行中策略后则保持原来的冻结参考与续推预算。可靠 RTK 位置和航向恢复后，通过原有稳定窗口和平滑校正回到 `GPS_TRACKING`。后续目标点沿用当前参考，不会重新执行粗位置初始化。
 
 `/gps_guard/status` 新增：
 
@@ -1931,9 +1931,9 @@ roslaunch neupan_ros full_system_run.launch \
 
 使用新 GPS 样本与 LIO 构成的地图平移候选，至少 8 个不同源时间样本、连续≥5 s，候选相对窗口中值的散布≤0.75 m；相邻候选跳变超过 1 m、样本中断超过 1 s 或来源类型变化时重新确认。候选与当前地图平移偏差超过 3 m 时拒绝，不自动拉回。通过后最多以 0.10 m/s 缓慢修正平移，残差≤0.5 m 才恢复续推预算，最多每个 5 s 窗口恢复一次。0.5 m 是候选一致性残差，不是对真实定位误差的保证；Float／差分精度仍可能明显低于 RTK。
 
-`GPS_POSITION_TRACKING` 表示位置校正有效；`runtime_position` 记录 `enabled/active/reason/profile/samples/residual_m/budget_renewals/last_budget_renewal_sec` 和实际门槛。终端每 5 s 黄色提示该粗位置模式；JSONL 与原录包配置已有 `/gps_guard/status`，不需新增录制话题。没有可靠位置时重新累计 100 m / 600 s，LIO 超时/跳变保护始终保留；不能靠旧报文或单帧 Float 重置预算。
+`GPS_POSITION_TRACKING` 表示位置校正有效；`runtime_position` 记录 `enabled/active/reason/profile/samples/residual_m/budget_renewals/last_budget_renewal_sec` 和实际门槛。终端每 5 s 黄色提示该粗位置模式；JSONL 与原录包配置已有 `/gps_guard/status`，不需新增录制话题。没有可靠位置时，全系统重新累计200 m / 600 s，任一到限停车；LIO超时/跳变保护始终保留，不能靠旧报文或单帧Float重置预算。扩大续推距离不代表定位误差受控。
 
-源时间保护对 Fixed、粗位置启动和运行中校正统一生效：检查 GPS fix、投影、GGA、LIO 的新鲜度、顺序与时间配对；使用 GNSS 航向时另查航向及解状态源时间。同一 GPS 源样本只处理一次，重复转发不能累计启动/恢复窗口、重复纠偏或恢复预算。Fixed 失效时先进入续推并启动预算，再等待配对；短暂配对等待保留已有窗口，但不新增样本或发放预算，持续失配仍受 100 m / 600 s 限制。状态中的 `last_processed_gps_source_ns` 用于核对样本是否真的更新；[自测记录](videos/localization_runtime/20261016_nonfixed/summary.md)。
+源时间保护对 Fixed、粗位置启动和运行中校正统一生效：检查 GPS fix、投影、GGA、LIO 的新鲜度、顺序与时间配对；使用 GNSS 航向时另查航向及解状态源时间。同一 GPS 源样本只处理一次，重复转发不能累计启动/恢复窗口、重复纠偏或恢复预算。Fixed 失效时先进入续推并启动预算，再等待配对；短暂配对等待保留已有窗口，但不新增样本或发放预算，持续失配仍受全系统200 m / 600 s限制。状态中的 `last_processed_gps_source_ns` 用于核对样本是否真的更新；[自测记录](videos/localization_runtime/20261016_nonfixed/summary.md)。
 
 2026-10-17 补充安全信号断流保护：室外默认定位分支下，`control_mode_mux` 用单调接收时钟检查 `/localization_safe`，默认 1 秒未更新就令自动速度归零（再加正常调度下最多一个 20 Hz 发布周期，不是实测制动距离）。全系统参数 `localization_safety_timeout:=1.0` 可调；未收到、超时、明确不安全分别记为 `localization_safety_missing`、`localization_safety_timeout`、`localization_unsafe`，状态变化时终端黄色 WARN。重新收到新鲜 true 且自动指令未过期后恢复放行；手动接管、室内及原 `use_global_ekf` 分支行为不变，不新增 Fixed 要求。`/vehicle/control_mode/status` 每 0.5 秒更新有效安全状态、收到的原值、心跳年龄和时限；原 JSONL/录包已包含该话题，无需增加录包配置。这只检查安全消息是否持续到达，不等于修复 LIO 数据本身延迟或 ECOS 异常。
 

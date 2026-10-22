@@ -162,6 +162,26 @@ class RuntimePositionTests(unittest.TestCase):
                 self.assertFalse(b.localization_is_safe(self.now))
                 self.assertEqual(b.dead_reckoning_budget.limit_reason, 'dead_reckoning_distance_limit')
 
+    def test_outdoor_200m_override_keeps_distance_and_600s_limits(self):
+        self.params['~dead_reckoning_max_distance_m'] = 200.
+        b = self.bridge()
+        budget = b.dead_reckoning_budget
+        budget.observe((150., 0.))
+        self.assertIsNone(budget.check(300.))
+        budget.observe((200., 0.))
+        self.assertEqual(budget.check(350.), 'dead_reckoning_distance_limit')
+        self.assertEqual(budget.max_duration_sec, 600.)
+        b = self.bridge()
+        self.assertEqual(b.dead_reckoning_budget.check(700.), 'dead_reckoning_time_limit')
+
+    def test_full_system_200m_override_does_not_change_standalone_default(self):
+        root = Path(__file__).resolve().parents[3]
+        full = ET.parse(root/'src/neupan_ros/example/lxw_car/launch/full_system_run.launch').getroot()
+        core = ET.parse(root/'src/robot_base_driver/launch/navigation_core.launch').getroot()
+        name = 'gps_guard_dead_reckoning_max_distance_m'
+        self.assertEqual(float(full.find("arg[@name='%s']" % name).get('default')), 200.)
+        self.assertEqual(float(core.find("arg[@name='%s']" % name).get('default')), 100.)
+
     def test_dropout_after_nonfixed_credit_preserves_distance_and_time_limits(self):
         for distance in (True, False):
             b = self.bridge()
