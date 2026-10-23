@@ -79,6 +79,7 @@ topics:
   - /vehicle/command_audit
   - /neupan/runtime
   - /hybridnets/timing_diagnostics
+  - /hybridnets/observations_json
   - /neupan/failure
   - /neupan/camera_path_guard
   - /neupan/route_connection

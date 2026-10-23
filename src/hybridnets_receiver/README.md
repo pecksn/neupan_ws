@@ -9,6 +9,14 @@ roslaunch hybridnets_receiver receiver.launch
 The package receives H.264/RTP on UDP 5000 and validated JSON on UDP 6000.
 By default, it publishes the original video to `/camera/remote_image_raw` and
 `/dev/video0`, and validated inference JSON to `/hybridnets/result_json`.
+`/hybridnets/observations_json` independently carries admitted fresh observations,
+including no-road, low-confidence and control-confirmation frames, with their
+per-frame receiver diagnostics. The overlay and matched debug MP4/JSONL use this
+observation stream; only the control JSON is withheld until visual confirmation.
+Frequency/confidence metrics continue updating during visual failures. Packets
+with rejected credentials, bad schema, stale timestamps or invalid ordering are
+not observations and remain rejection diagnostics only. All three bag profiles
+record observations as an optional topic.
 The debug overlay is only generated when requested:
 
 ```bash
@@ -23,16 +31,34 @@ provides a refined reference path to NeuPAN when camera-right control is
 explicitly enabled. See the workspace-level
 `REALTIME_HYBRIDNETS_GUIDE.md` for network setup and acceptance checks.
 
+The 2026-10-23 binding protocol supersedes data-driven session takeover:
+GPU owns a process lock and exclusive management UDP 6001. NUC generates a fresh
+`receiver_instance_id`, challenges that fixed endpoint with a random nonce, and
+confirms a `binding_ticket` (lease ID) tied to producer/camera identity. Replies
+expire after one monotonic second; leases last 5 seconds with conservative local
+expiry and periodic renewal. Only authorized post-bind captures receive a ticket.
+Expired or mismatched tickets and unseen producer IDs cannot nominate a session.
+An explicitly changed/not-ready authority reply revokes the old binding; mere
+foreign data or a lost query cannot replace a still-valid one. A NUC restart may
+wait up to the old lease's 5-second expiry before binding again.
+Allow UDP 6001 between 192.168.10.21 and 192.168.10.20; video 5000 and result 6000
+remain unchanged. Single-direction legacy senders cannot automatically take over.
+`stream_streak` tracks data health separately from `valid_streak`; candidate frames
+are diagnostic only until three valid fresh frames share one binding. Only then
+is the JSON submitted to the path node. No-road results still diagnose the link.
+The packet/health diagnostics expose binding state and `submitted_to_path`.
+Existing map-cache TTL, localization, historical capture TF and OSM fallback stay unchanged.
+
 Control-mode confirmation requires three consecutive valid frames in the same
 session. Sessions combine the sender, `camera_time_epoch`, and preferably a
 per-process `producer_session_id` (or `session_id`). GPU now generates a UUID at
 each inference-node startup and includes it in every JSON result. Camera reconnects
-independently change `camera_time_epoch`. Legacy GPU packets without
-a producer ID use the UDP source endpoint as a compatibility fallback; a restart
-reusing both endpoint and epoch cannot be distinguished reliably. New sessions
+independently change `camera_time_epoch`. Both identities and the new lease plus
+receiver instance identify the accepted stream; UDP source ports are not an authority. New sessions
 reset confirmation; retired sessions, duplicate/out-of-order frames and expired
-packets cannot refresh the active heartbeat. Retired identities are retained
-up to 1024 entries; exhaustion fails closed until the receiver is restarted.
+packets cannot refresh the active heartbeat. Retired identities are diagnostic
+history bounded to 1024 entries; history exhaustion cannot veto a currently
+challenged valid lease or permanently lock out the authoritative stream.
 The path node also checks confirmation for the JSON frame itself, rather than
 trusting an independently delivered Boolean alone. Inspect
 `/hybridnets/timing_diagnostics` for session, forwarding and rejection details;
@@ -48,8 +74,8 @@ Duplicate/out-of-order datagrams also leave an unexpired confirmation streak
 and valid state unchanged, without extending the heartbeat. A timeout still
 invalidates the state, and a new invalid observation still resets confirmation.
 UUIDs distinguish processes but do not authenticate senders; retain the sender
-IP restriction and isolated network. Retired-session protection applies to
-sessions already observed by this receiver, not arbitrary unseen senders.
+IP restriction and isolated network. Retired-session history is diagnostic only;
+eligibility is now decided by the active challenged lease, not first data arrival.
 
 After this source update, restart the existing ROS1 receiver and camera path
 refinement nodes in their normal runtime. Do not launch a duplicate receiver

@@ -1,6 +1,7 @@
 # GPU board -> NUC network receiver settings.
 video_port: 5000
 result_port: 6000
+management_port: 6001       # NUC actively challenges and leases the GPU identity; no data-driven takeover.
 bind_ip: "0.0.0.0"          # NUC USB NIC is 192.168.10.21; this also permits startup while unplugged.
 allowed_sender_ip: "192.168.10.20"
 
@@ -12,6 +13,7 @@ image_width: 1920
 image_height: 1080
 
 result_json_topic: "/hybridnets/result_json"
+observations_json_topic: "/hybridnets/observations_json"
 valid_topic: "/hybridnets/valid"
 inference_hz_topic: "/hybridnets/inference_hz"
 network_age_topic: "/hybridnets/network_age_ms"

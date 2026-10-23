@@ -351,7 +351,7 @@ class LoggingRecordsTests(unittest.TestCase):
         required = {'/vehicle/control_mode', '/vehicle/control_mode/status',
                     '/vehicle/command_audit', '/cmd_vel_remote', '/gnss/solution_status', '/gnss/serial_diagnostics',
                     '/gps_goal_ll', '/move_base_simple/goal', '/goal_arrived', '/osm_global_path_ll',
-                    '/hybridnets/timing_diagnostics'}
+                    '/hybridnets/timing_diagnostics', '/hybridnets/observations_json'}
         for name in ('vehicle_data', 'hybridnets_data', 'camera_right_test'):
             with self.subTest(profile=name):
                 config = yaml.safe_load((WORKSPACE / ('src/vehicle_bag_recorder/config/' + name + '.yaml')).read_text())
@@ -361,6 +361,7 @@ class LoggingRecordsTests(unittest.TestCase):
                 self.assertTrue(set(config['required_topics']) <= set(topics))
                 self.assertNotIn('/gnss/serial_diagnostics',config['required_topics'])
                 self.assertNotIn('/hybridnets/timing_diagnostics', config['required_topics'])
+                self.assertNotIn('/hybridnets/observations_json', config['required_topics'])
 
 
 if __name__ == '__main__':

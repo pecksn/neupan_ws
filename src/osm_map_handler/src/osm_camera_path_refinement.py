@@ -383,16 +383,49 @@ class CameraRightPath:
                     raise ValueError('invalid receiver session identity')
                 if session is None:
                     session = json.dumps([p.get('producer_session_id', p.get('session_id')), epoch], separators=(',', ':'))
+                diagnostic = p.get('receiver_diagnostics', {})
+                binding = diagnostic.get('binding') if isinstance(diagnostic, dict) else None
+                authorized = False
+                if binding is not None:
+                    expected = [p.get('receiver_diagnostics', {}).get('sender', '').rsplit(':', 1)[0],
+                                'producer:'+str(p.get('producer_session_id')), epoch,
+                                p.get('binding_ticket'), p.get('receiver_instance_id')]
+                    stamp = diagnostic.get('receive_timestamp_ns')
+                    authorized = (isinstance(binding, dict) and binding.get('confirmed') is True
+                        and diagnostic.get('receiver_valid') is True
+                        and diagnostic.get('submitted_to_path') is True
+                        and diagnostic.get('frame_seq') == seq
+                        and diagnostic.get('receiver_session_id') == session
+                        and json.loads(session) == expected
+                        and isinstance(p.get('binding_ticket'), str) and bool(p['binding_ticket'])
+                        and binding.get('receiver_instance_id') == p.get('receiver_instance_id')
+                        and binding.get('producer_session_id') == p.get('producer_session_id')
+                        and binding.get('camera_time_epoch') == epoch
+                        and isinstance(stamp, int) and not isinstance(stamp, bool)
+                        and -.05 <= (rospy.Time.now().to_nsec()-stamp)/1e9 <= self.timeout
+                        and isinstance(binding.get('lease_remaining_ms'), (int, float))
+                        and binding['lease_remaining_ms'] > max(0., (rospy.Time.now().to_nsec()-stamp)/1e6)
+                        and stamp > getattr(self, 'last_authorized_receive_ns', 0))
+                    if not authorized:
+                        self.last_json_rejection = 'receiver binding/frame confirmation invalid or stale'
+                        return  # Candidates/replays cannot clear pending or current observations.
+                elif getattr(self, 'last_authorized_receive_ns', 0):
+                    self.last_json_rejection = 'receiver binding confirmation missing'
+                    return
                 previous = getattr(self, 'last_receiver_session', None)
                 retired = getattr(self, 'retired_receiver_sessions', set())
-                if session in retired:
+                if session in retired and not authorized:
+                    self.last_json_rejection = 'retired receiver session'
                     return  # A delayed old session cannot replace current observations.
                 if session != previous:
                     # Never combine confirmation frames from different camera clocks.
                     # Keep already confirmed map corrections only: cache_pose still
                     # validates localization, map alignment, route and TTL on use.
                     if len(retired) >= 1024:
-                        raise ValueError('receiver session history full; restart node')
+                        if not authorized:
+                            self.last_json_rejection = 'legacy receiver session history full'
+                            return
+                        retired.pop()  # Diagnostic history cannot veto a confirmed lease.
                     if previous is not None:
                         retired.add(previous)
                     self.retired_receiver_sessions = retired
@@ -405,6 +438,9 @@ class CameraRightPath:
                 if self.last_seq is not None and seq <= self.last_seq:
                     return  # Do not refresh receipt age or roll the baseline back.
                 self.last_seq = seq
+                if authorized:
+                    self.last_authorized_receive_ns = stamp
+                self.last_json_rejection = None
                 self.packet = p
                 self.received = time.monotonic()
             except (ValueError, TypeError, KeyError):
@@ -628,6 +664,7 @@ class CameraRightPath:
         capture_age = ((rospy.Time.now().to_nsec()-capture)/1.e6
                        if isinstance(capture, int) and capture > 0 else None)
         inference_diagnostics = {
+            'last_json_rejection': getattr(self, 'last_json_rejection', None),
             'frame_seq': packet.get('frame_seq'), 'result_seq': packet.get('result_seq'),
             'capture_age_ms_clock_dependent': capture_age,
             'source_age_ms': packet.get('source_age_ms'),
@@ -636,6 +673,8 @@ class CameraRightPath:
             'max_capture_age_ms': getattr(self, 'max_capture_age_ms', 500.), 'future_tolerance_ms': 50,
             'camera_time_epoch': packet.get('camera_time_epoch'),
             'producer_session_id': packet.get('producer_session_id', packet.get('session_id')),
+            'receiver_instance_id': packet.get('receiver_instance_id'),
+            'binding': (packet.get('receiver_diagnostics') or {}).get('binding'),
             'receiver_session_id': packet.get('receiver_session_id'),
             'json_timeout_sec': self.timeout,
             'json_age_ms': (now-self.received)*1000 if self.received else None,

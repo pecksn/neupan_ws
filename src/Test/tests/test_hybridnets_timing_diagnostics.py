@@ -10,6 +10,9 @@ import threading
 from types import SimpleNamespace as NS
 import unittest
 import numpy as np
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'hybridnets_receiver/scripts'))
+from hybridnets_binding import ReceiverBinding
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = 1_000_000_000_000
@@ -49,6 +52,143 @@ class Publisher:
 
 
 class TimingTests(unittest.TestCase):
+    def test_invalid_observations_keep_debug_and_metrics_but_not_control(self):
+        node = self.bound_receiver()
+        for seq in range(1, 6):
+            self.receive(node, self.bound_packet(node, seq, valid=False, confidence=.49))
+        self.assertEqual(len(node.observations_pub.messages), 5)
+        self.assertEqual(len(node.hz_pub.messages), 5)
+        self.assertEqual(len(node.confidence_pub.messages), 5)
+        self.assertEqual(node.json_pub.messages, [])
+        for raw in node.observations_pub.messages:
+            p = json.loads(raw)
+            self.assertFalse(p['receiver_diagnostics']['receiver_valid'])
+            self.assertFalse(p['receiver_diagnostics']['submitted_to_path'])
+        # Exercise the actual image/result pairing used by the overlay.
+        cls = load(ROOT/'hybridnets_receiver/scripts/hybridnets_overlay.py')['HybridNetsOverlay']
+        overlay = cls.__new__(cls)
+        overlay.lock = threading.Lock(); overlay.video_delay = .1
+        overlay.sync_tolerance = .25; overlay.max_age = .8; overlay.buffer_sec = 2.
+        overlay.pending = deque(); overlay.images = deque()
+        pairs = []; overlay.draw_and_publish = lambda *args: pairs.append(args)
+        overlay.image_callback(NS(header=NS(stamp=Stamp(NOW))))
+        for raw in node.observations_pub.messages:
+            overlay.result_callback(NS(data=raw))
+        self.assertEqual(len(pairs), 5)
+        before = len(node.observations_pub.messages)
+        self.receive(node, self.bound_packet(node, 6, producer_session_id='old'))
+        self.assertEqual(len(node.observations_pub.messages), before)
+
+    def test_candidate_observations_are_separate_from_control(self):
+        node = self.bound_receiver()
+        for seq in (1, 2, 3):
+            self.receive(node, self.bound_packet(node, seq))
+            self.assertEqual(len(node.observations_pub.messages), seq)
+            self.assertEqual(len(node.json_pub.messages), int(seq == 3))
+
+    def test_path_full_history_accepts_confirmed_lease_not_replays_or_candidates(self):
+        node = self.bound_receiver()
+        for seq in (1, 2, 3): self.receive(node, self.bound_packet(node, seq))
+        p = json.loads(node.json_pub.messages[-1])
+        cls = load(ROOT/'osm_map_handler/src/osm_camera_path_refinement.py')['CameraRightPath']
+        path = cls.__new__(cls); path.lock = threading.RLock(); path.timeout = .8
+        path.retired_receiver_sessions = set('old-%d' % i for i in range(1024))
+        path.last_receiver_session = 'previous'; path.last_seq = 100
+        path.confirmations = 2; path.cache = NS(pending={1: 'pending'}, committed={2:'map'})
+        path.packet = {'original': True}
+        candidate = json.loads(node.observations_pub.messages[0])
+        path.json_cb(NS(data=json.dumps(candidate)))
+        self.assertEqual(path.cache.pending, {1:'pending'})
+        self.assertEqual(path.last_receiver_session, 'previous')
+        path.json_cb(NS(data=json.dumps(p)))
+        self.assertEqual(path.packet, p)
+        self.assertLessEqual(len(path.retired_receiver_sessions), 1024)
+        self.assertEqual(path.cache.committed, {2:'map'})
+        # An old confirmed frame must not regain ownership or refresh receipt.
+        before = path.received
+        old = json.loads(json.dumps(p)); old['receiver_diagnostics']['receive_timestamp_ns'] -= 1
+        old['frame_seq'] += 1; old['receiver_diagnostics']['frame_seq'] += 1
+        path.json_cb(NS(data=json.dumps(old)))
+        self.assertEqual(path.packet, p); self.assertEqual(path.received, before)
+        # A newly started receiver may authorize a fresh identity without history veto.
+        new = json.loads(json.dumps(p)); new['receiver_instance_id'] = 'new-receiver'
+        identity = json.loads(new['receiver_session_id']); identity[-1] = 'new-receiver'
+        new['receiver_session_id'] = json.dumps(identity, separators=(',', ':'))
+        d = new['receiver_diagnostics']; d['receiver_session_id'] = new['receiver_session_id']
+        d['binding']['receiver_instance_id'] = 'new-receiver'
+        d['receive_timestamp_ns'] += 1
+        path.json_cb(NS(data=json.dumps(new)))
+        self.assertEqual(path.packet, new)
+
+    def bound_receiver(self):
+        node=self.receiver();node.confirm_valid_frames=3
+        node.binding_client=ReceiverBinding()
+        node.binding_client.bound=dict(identity=('producer-b','clock-b'),ticket='b'*64,deadline=time.monotonic()+5.)
+        return node
+
+    def bound_packet(self,node,seq,**updates):
+        values=dict(frame_seq=seq,result_seq=seq,producer_session_id='producer-b',camera_time_epoch='clock-b',
+                    binding_ticket=node.binding_client.bound['ticket'],receiver_instance_id=node.binding_client.instance_id)
+        values.update(updates)
+        return self.packet(**values)
+
+    def test_unseen_old_A_cannot_permanently_retire_healthy_B(self):
+        node=self.bound_receiver()
+        for seq in (1,2,3):self.receive(node,self.bound_packet(node,seq))
+        before=(node.active_session,set(node.retired_sessions),node.valid_streak,node.last_active_mono,
+                len(node.json_pub.messages),len(node.valid_pub.messages))
+        for seq in (98,99,100):
+            d=self.receive(node,self.bound_packet(node,seq,producer_session_id='unseen-old-a',
+                capture_timestamp_ns=NOW-200000000,source_age_ms=100.))
+            self.assertEqual(d['receiver_reason'],'binding_identity_mismatch')
+            self.assertEqual(before,(node.active_session,set(node.retired_sessions),node.valid_streak,
+                node.last_active_mono,len(node.json_pub.messages),len(node.valid_pub.messages)))
+        d=self.receive(node,self.bound_packet(node,4))
+        self.assertTrue(d['receiver_valid']);self.assertNotEqual(d['receiver_reason'],'retired_session')
+
+    def test_binding_candidates_do_not_reach_path_until_three(self):
+        node=self.bound_receiver()
+        for seq in (1,2):
+            d=self.receive(node,self.bound_packet(node,seq))
+            self.assertEqual(node.json_pub.messages,[])
+            self.assertFalse(d['submitted_to_path'])
+            self.assertEqual(d['stream_streak'],seq)
+        d=self.receive(node,self.bound_packet(node,3))
+        self.assertTrue(d['submitted_to_path']);self.assertEqual(len(node.json_pub.messages),1)
+        node.binding_client.bound['ticket']='c'*64
+        d=self.receive(node,self.bound_packet(node,1))
+        self.assertFalse(d['submitted_to_path']);self.assertEqual(len(node.json_pub.messages),1)
+        self.assertEqual(node.valid_streak,1)
+
+    def test_no_road_does_not_prevent_identity_or_link_diagnosis(self):
+        node=self.bound_receiver()
+        for seq in (1,2,3):
+            d=self.receive(node,self.bound_packet(node,seq,valid=False))
+        self.assertTrue(d['binding']['confirmed'])
+        self.assertEqual(d['stream_streak'],3)
+        self.assertEqual(node.valid_streak,0)
+        self.assertEqual(node.json_pub.messages,[])
+        self.assertFalse(d['receiver_valid'])
+
+    def test_expired_binding_and_historical_receiver_ticket_cannot_nominate_identity(self):
+        node=self.bound_receiver()
+        p=self.bound_packet(node,1)
+        p['receiver_instance_id']='historical-receiver'
+        self.assertEqual(self.receive(node,p)['receiver_reason'],'binding_receiver_mismatch')
+        node.binding_client.bound['deadline']=time.monotonic()-1.
+        d=self.receive(node,self.bound_packet(node,2))
+        self.assertEqual(d['receiver_reason'],'binding_expired')
+        self.assertIsNone(node.active_session)
+        self.assertEqual(node.json_pub.messages,[])
+
+    def test_diagnostic_retired_history_cannot_veto_authorized_binding(self):
+        node=self.bound_receiver()
+        node.retired_sessions={('historical',str(i),None) for i in range(1024)}
+        for seq in (1,2,3):
+            d=self.receive(node,self.bound_packet(node,seq))
+        self.assertTrue(d['receiver_valid'])
+        self.assertLessEqual(len(node.retired_sessions),1024)
+
     def receiver(self):
         ns = load(ROOT/'hybridnets_receiver/scripts/hybridnets_json_receiver.py')
         cls = ns['HybridNetsJsonReceiver']
@@ -68,7 +208,7 @@ class TimingTests(unittest.TestCase):
         node.retired_sessions = set()
         node.identity_seen = node.producer_identity_seen = False
         node.last_active_mono = node.last_capture_ns = None
-        for key in ('json_pub','valid_pub','hz_pub','age_pub','confidence_pub',
+        for key in ('observations_pub','json_pub','valid_pub','hz_pub','age_pub','confidence_pub',
                     'left_valid_pub','right_valid_pub','intersection_pub','frame_seq_pub',
                     'header_pub','diag_json_pub','diag_pub'): setattr(node,key,Publisher())
         return node

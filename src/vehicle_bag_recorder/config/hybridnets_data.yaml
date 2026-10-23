@@ -66,6 +66,7 @@ topics:
   - /cmd_vel_remote
   - /neupan/runtime
   - /hybridnets/timing_diagnostics
+  - /hybridnets/observations_json
   - /neupan/failure
   - /neupan/camera_path_guard
   - /neupan/route_connection

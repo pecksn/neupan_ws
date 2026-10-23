@@ -31,7 +31,7 @@ class HybridNetsOverlay:
         self.publisher = rospy.Publisher(
             rospy.get_param("~debug_image_topic", "/hybridnets/debug_image"),
             Image, queue_size=1)
-        rospy.Subscriber(rospy.get_param("~result_json_topic", "/hybridnets/result_json"),
+        rospy.Subscriber(rospy.get_param("~observations_json_topic", "/hybridnets/observations_json"),
                          String, self.result_callback, queue_size=1)
         rospy.Subscriber(rospy.get_param("~image_topic", "/camera/remote_image_raw"),
                          Image, self.image_callback, queue_size=1,
@@ -155,6 +155,11 @@ class HybridNetsOverlay:
         color = (0, 255, 0) if result.get("valid", False) else (0, 0, 255)
         cv2.putText(image, text, (25, 45), cv2.FONT_HERSHEY_SIMPLEX,
                     1.0, color, 2, cv2.LINE_AA)
+        diagnostic = result.get('receiver_diagnostics') or {}
+        control_text = 'control=%s reason=%s' % (
+            diagnostic.get('receiver_valid', False), diagnostic.get('receiver_reason', 'unknown'))
+        cv2.putText(image, control_text, (25, 125), cv2.FONT_HERSHEY_SIMPLEX,
+                    .8, (0, 255, 255), 2, cv2.LINE_AA)
         now = time.monotonic()
         with self.lock:
             self.overlay_frame_count += 1

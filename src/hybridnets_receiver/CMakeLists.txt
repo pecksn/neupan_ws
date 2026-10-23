@@ -21,3 +21,7 @@ catkin_install_python(PROGRAMS
 install(DIRECTORY config launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
+
+install(FILES scripts/hybridnets_binding.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)

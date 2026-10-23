@@ -3,10 +3,15 @@
 
 import json
 import math
+import os
 import socket
+import sys
 import threading
 import time
 from collections import deque
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from hybridnets_binding import ReceiverBinding
 
 import rospy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
@@ -31,6 +36,12 @@ class HybridNetsJsonReceiver:
         bind_ip = rospy.get_param("~bind_ip", "0.0.0.0")
         port = int(rospy.get_param("~result_port", 6000))
         self.allowed_sender = rospy.get_param("~allowed_sender_ip", "").strip()
+        self.binding_client = ReceiverBinding()
+        if not self.allowed_sender:
+            raise ValueError('allowed_sender_ip is required for active GPU identity confirmation')
+        self.binding_address = (self.allowed_sender, int(rospy.get_param('~management_port', 6001)))
+        self.binding_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.binding_socket.setblocking(False)
         self.timeout = float(rospy.get_param("~result_timeout_sec", 0.8))
         self.max_source_age_ms = float(rospy.get_param("~max_source_age_ms", 800.0))
         self.max_points = int(rospy.get_param("~max_polygon_points", 20000))
@@ -53,6 +64,7 @@ class HybridNetsJsonReceiver:
         self.last_receive = None
         self.last_frame_seq = None
         self.valid_streak = 0
+        self.stream_streak = 0
         self.last_sender = ""
         self.last_reason = "waiting_for_packet"
         self.receive_times = deque(maxlen=120)
@@ -72,6 +84,9 @@ class HybridNetsJsonReceiver:
         self.diag_json_pub = rospy.Publisher(
             "/hybridnets/timing_diagnostics", String, queue_size=100)
 
+        self.observations_pub = rospy.Publisher(
+            rospy.get_param("~observations_json_topic", "/hybridnets/observations_json"),
+            String, queue_size=10)
         self.json_pub = rospy.Publisher(
             rospy.get_param("~result_json_topic", "/hybridnets/result_json"),
             String, queue_size=1)
@@ -102,11 +117,11 @@ class HybridNetsJsonReceiver:
         self.diag_pub = rospy.Publisher("/diagnostics", DiagnosticArray, queue_size=2)
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((bind_ip, port))
         self.sock.settimeout(0.1)
         rospy.Timer(rospy.Duration(0.1), self.health_timer)
         rospy.on_shutdown(self.sock.close)
+        rospy.on_shutdown(self.binding_socket.close)
         self.valid_pub.publish(False)
         rospy.loginfo("Listening for HybridNets JSON on UDP %s:%d", bind_ip, port)
 
@@ -127,7 +142,7 @@ class HybridNetsJsonReceiver:
     def validate_control_fields(self, result):
         missing = [name for name in CONTROL_FIELDS if name not in result]
         if missing:
-            if self.require_control_fields:
+            if self.require_control_fields or getattr(self, 'binding_client', None):
                 raise ValueError("control fields are missing: %s" % ",".join(missing))
             return (None, 0.0, "normal", bool(result["road_polygon_px"]),
                     bool(result["left_boundary_px"]), bool(result["right_boundary_px"]))
@@ -249,9 +264,19 @@ class HybridNetsJsonReceiver:
         return (sender[0], 'producer:'+producer if producer is not None else 'udp:%d' % sender[1], epoch), basis
 
     def select_session(self, identity, fresh):
-        if identity in self.retired_sessions:
+        # In production only the management handshake selects identity. Data
+        # packets, including previously unseen UUIDs, cannot select a session.
+        binding = getattr(self, 'binding_client', None)
+        if binding:
+            packet = dict(producer_session_id=identity[1][9:] if identity[1].startswith('producer:') else None,
+                          camera_time_epoch=identity[2], binding_ticket=identity[3] if len(identity)>3 else None,
+                          receiver_instance_id=identity[4] if len(identity)>4 else None)
+            allowed, reason = binding.accepts(packet, time.monotonic())
+            if not allowed:
+                return False, False, reason
+        if not binding and identity in self.retired_sessions:
             return False, False, 'retired_session'
-        if self.identity_seen and identity[2] is None:
+        if not binding and self.identity_seen and identity[2] is None:
             return False, False, 'session_identity_missing'
         if self.producer_identity_seen and identity[1].startswith('udp:'):
             return False, False, 'producer_session_identity_missing'
@@ -260,7 +285,12 @@ class HybridNetsJsonReceiver:
         if not fresh:
             return False, False, 'session_time_invalid'
         if len(self.retired_sessions) >= 1024:
-            return False, False, 'session_history_full_restart_receiver'
+            if not binding:
+                return False, False, 'session_history_full_restart_receiver'
+            # Challenged leases, not a UUID blacklist, decide ownership.
+            # Bound diagnostic history without permanently blocking a healthy lease.
+            if self.active_session is not None:
+                self.retired_sessions.pop()
         if self.active_session is not None:
             self.retired_sessions.add(self.active_session)
         self.active_session = identity
@@ -268,6 +298,7 @@ class HybridNetsJsonReceiver:
         self.producer_identity_seen = self.producer_identity_seen or not identity[1].startswith('udp:')
         self.last_frame_seq = self.last_result_seq = self.last_capture_ns = None
         self.valid_streak = 0
+        self.stream_streak = 0
         self.last_active_mono = None
         self.last_receive = None
         self.receive_times.clear()
@@ -308,6 +339,23 @@ class HybridNetsJsonReceiver:
             return
         try:
             result = json.loads(raw.decode("utf-8"))
+            binding = getattr(self, 'binding_client', None)
+            if binding and isinstance(result, dict):
+                eligible, binding_reason = binding.accepts(result, receive_mono)
+                if not eligible:
+                    # Even an UNSEEN old producer cannot retire the active one.
+                    # Reject before geometry parsing; data cannot nominate identity.
+                    if (binding.pending is None and
+                            receive_mono-getattr(self, 'last_binding_query_trigger', 0.) >= 1.):
+                        self.last_binding_query_trigger = receive_mono
+                        binding.next_probe = min(binding.next_probe, receive_mono)
+                    self.diag_json_pub.publish(json.dumps(dict(event='binding_rejected',
+                        receive_timestamp_ns=receive_ns, receiver_valid=False,
+                        receiver_reason=binding_reason, forwarded=False,
+                        producer_session_id=result.get('producer_session_id'),
+                        receiver_instance_id=result.get('receiver_instance_id'),
+                        binding=binding.status(receive_mono))))
+                    return
             if not isinstance(result, dict) or not all(key in result for key in REQUIRED):
                 raise ValueError("required fields are missing")
             if not isinstance(result["valid"], bool):
@@ -352,6 +400,9 @@ class HybridNetsJsonReceiver:
             effective_age = max(source_age, age_ms)
             fresh = (effective_age <= self.max_source_age_ms and age_ms >= -50.)
             identity, session_basis = self.session_identity(result, sender)
+            if getattr(self, 'binding_client', None):
+                identity = identity+(result.get('binding_ticket'), result.get('receiver_instance_id'))
+                session_basis = 'challenge_lease'
             session_ok, session_changed, session_reason = self.select_session(identity, fresh)
             result_seq = result.get('result_seq')
             if not isinstance(result_seq, int) or isinstance(result_seq, bool) or result_seq < 1:
@@ -360,7 +411,7 @@ class HybridNetsJsonReceiver:
                            (frame_seq is None or self.last_frame_seq is None or frame_seq > self.last_frame_seq) and
                            (result_seq is None or self.last_result_seq is None or result_seq > self.last_result_seq))
             capture_ok = self.last_capture_ns is None or capture > self.last_capture_ns
-            confidence_ok = (not self.require_control_fields or
+            confidence_ok = ((not self.require_control_fields and not getattr(self, 'binding_client', None)) or
                              confidence >= self.min_control_confidence)
             forward = session_ok and sequence_ok and capture_ok and fresh
             candidate_valid = result['valid'] and forward and confidence_ok
@@ -371,12 +422,14 @@ class HybridNetsJsonReceiver:
             if session_ok:
                 if active_timed_out:
                     self.valid_streak = 0
+                    self.stream_streak = 0
                 # Duplicated/out-of-order datagrams are not new observations.
                 # Ignore them without extending the heartbeat or breaking a
                 # still-fresh confirmation streak. New invalid frames still reset it.
                 if sequence_ok and capture_ok:
                     self.valid_streak = self.valid_streak + 1 if candidate_valid else 0
-            confirmed = (not self.require_control_fields or
+                    self.stream_streak = getattr(self, 'stream_streak', 0)+1 if forward else 0
+            confirmed = ((not self.require_control_fields and not getattr(self, 'binding_client', None)) or
                          self.valid_streak >= self.confirm_valid_frames)
             packet_valid = candidate_valid and confirmed
 
@@ -437,6 +490,8 @@ class HybridNetsJsonReceiver:
                 "active_session": self.active_session, "packet_session": identity,
                 "retired_session_count": len(self.retired_sessions),
                 "valid_streak": self.valid_streak, "forwarded": bool(forward),
+                "stream_streak": getattr(self, 'stream_streak', 0),
+                "submitted_to_path": bool(forward and (not getattr(self, 'binding_client', None) or packet_valid)),
                 "confidence": confidence, "source_age_ms": source_age,
                 "capture_age_at_receive_ms_clock_dependent": (receive_ns-capture)/1.e6,
                 "send_to_receive_ms_clock_dependent": raw_send_age,
@@ -451,6 +506,7 @@ class HybridNetsJsonReceiver:
                 "camera_time_epoch": result.get("camera_time_epoch"),
                 "producer_session_id": result.get("producer_session_id", result.get("session_id")),
                 "receiver_session_id": json.dumps(identity, separators=(',', ':')),
+                "binding": self.binding_client.status(receive_mono) if getattr(self, 'binding_client', None) else None,
                 "timing_ms": gpu_timing, "datagram_bytes": len(raw),
                 "receiver_validation_wall_ms": (time.monotonic()-receive_mono)*1000,
             }
@@ -463,7 +519,11 @@ class HybridNetsJsonReceiver:
                 return
             result['receiver_session_id'] = json.dumps(identity, separators=(',', ':'))
             normalized = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
-            self.json_pub.publish(normalized)
+            # Observations retain failed geometry/quality and confirmation frames.
+            # Only the control topic is gated by visual confirmation.
+            self.observations_pub.publish(normalized)
+            if diagnostic['submitted_to_path']:
+                self.json_pub.publish(normalized)
             self.valid_pub.publish(packet_valid)
             self.hz_pub.publish(float(result.get("inference_hz", 0.0)))
             self.age_pub.publish(float(effective_age))
@@ -490,15 +550,57 @@ class HybridNetsJsonReceiver:
 
     def health_timer(self, _event):
         with self.state_lock:
+            self.binding_tick()
             self.health_timer_locked(_event)
+
+    def binding_tick(self):
+        client = getattr(self, 'binding_client', None)
+        if not client:
+            return
+        try:
+            for _ in range(16):
+                try:
+                    raw, sender = self.binding_socket.recvfrom(4096)
+                except BlockingIOError:
+                    break
+                if sender != self.binding_address:
+                    continue
+                try:
+                    response = json.loads(raw.decode('utf8'))
+                except (ValueError, UnicodeError):
+                    continue
+                before = (client.bound['identity'], client.bound['ticket']) if client.bound else None
+                message = client.reply(response, time.monotonic())
+                if message:
+                    self.binding_socket.sendto(json.dumps(message).encode('utf8'), self.binding_address)
+                after = (client.bound['identity'], client.bound['ticket']) if client.bound else None
+                if after != before:
+                    self.valid_streak = 0
+                    self.stream_streak = 0
+                    self.last_active_mono = self.last_receive = None
+                    self.valid_pub.publish(False)
+                    self.diag_json_pub.publish(json.dumps(dict(event='binding_confirmed' if after else 'binding_invalidated',
+                        receive_timestamp_ns=rospy.Time.now().to_nsec(), receiver_valid=False,
+                        receiver_reason='binding_changed_reconfirm_three_frames' if after else client.reason,
+                        binding=client.status(time.monotonic()))))
+            message = client.request(time.monotonic())
+            if message:
+                self.binding_socket.sendto(json.dumps(message).encode('utf8'), self.binding_address)
+        except OSError as error:
+            rospy.logwarn_throttle(2., 'GPU binding management unavailable: %s', error)
 
     def health_timer_locked(self, _event):
         now = rospy.Time.now()
-        timed_out = self.last_active_mono is None or time.monotonic()-self.last_active_mono > self.timeout
+        binding = getattr(self, 'binding_client', None)
+        binding_invalid = binding is not None and not binding.alive(time.monotonic())
+        timed_out = binding_invalid or self.last_active_mono is None or time.monotonic()-self.last_active_mono > self.timeout
         if timed_out:
             self.valid_streak = 0
+            self.stream_streak = 0
             self.valid_pub.publish(False)
             self.last_reason = "network_timeout" if self.last_receive else "waiting_for_packet"
+            if binding_invalid:
+                self.last_reason = binding.status(time.monotonic())['reason']
             mono = time.monotonic()
             if self.last_timeout_diagnostic is None or mono-self.last_timeout_diagnostic >= 1.0:
                 self.last_timeout_diagnostic = mono
@@ -509,6 +611,7 @@ class HybridNetsJsonReceiver:
                     "last_receive_age_ms": (mono-self.last_active_mono)*1000 if self.last_active_mono is not None else None,
                     "receiver_timeout_sec": self.timeout,
                     "active_session": self.active_session,
+                    "binding": binding.status(mono) if binding else None,
                     "retired_session_count": len(self.retired_sessions),
                     "last_active_age_ms": None if self.last_active_mono is None
                     else (mono-self.last_active_mono)*1000.,
