@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'neupan_ros/example/lxw_car_simulation/scripts'))
-from outdoor_road_simulation import body_clearance,corners,resolve_features,scenario_actors,actor_position
+from outdoor_road_simulation import body_clearance,corners,resolve_features,scenario_actors,actor_position,scenario_geometry,make_inputs
 from outdoor_osm_world import triangles
 
 class RoadGeometry(unittest.TestCase):
@@ -68,6 +68,68 @@ class FeatureSwitches(unittest.TestCase):
         for param in node.findall('param'):
             if param.get('name') not in ('map_origin_lat','map_origin_lon'):
                 self.assertEqual(param.get('unless'),"$(eval arg('control_parameters') != '')",param.get('name'))
+
+    def test_dense_campus_retains_base_traffic_and_adds_three(self):
+        base=scenario_actors('campus');dense=scenario_actors('campus_dense')
+        self.assertEqual(dense[:5],base)
+        self.assertEqual(len(dense),8)
+        self.assertEqual(len({a['name'] for a in dense}),8)
+        # Actors must not collide with each other or the parked vehicle.
+        for tick in range(3751):
+            points=[actor_position(a,tick*.02) for a in dense]
+            for i,a in enumerate(dense):
+                x,y=points[i]
+                dx=max(18.25-x,0,x-21.75);dy=max(-3.45-y,0,y+1.95)
+                self.assertGreaterEqual(math.hypot(dx,dy),a['radius'])
+                for j in range(i):self.assertGreaterEqual(math.dist(points[i],points[j]),a['radius']+dense[j]['radius']-.001)
+
+    def test_generated_long_scene_goal_road_camera_and_optimizer_limits_agree(self):
+        import tempfile,hashlib,yaml
+        import xml.etree.ElementTree as ET
+        with tempfile.TemporaryDirectory() as folder:
+            inputs=Path(folder)/'inputs'
+            manifest=make_inputs(inputs,'campus_long','sim_campus_long',False,False)
+            config=yaml.safe_load((inputs/'neupan_config.yaml').read_text())
+            control=yaml.safe_load((inputs/'control.yaml').read_text())
+            self.assertEqual(config['ref_speed'],.6)
+            self.assertEqual(config['robot']['max_speed'],[.6,.35])
+            self.assertEqual(control['simulation_road_bounds'],list(manifest['road_bounds']))
+            self.assertFalse(control['simulation_motion_estimation'])
+            self.assertFalse(control['simulation_predictive_yield'])
+            world=ET.parse(inputs/'road.world').getroot().find('world')
+            self.assertEqual(float(world.find("model[@name='goal_marker']/pose").text.split()[0]),manifest['goal'][0])
+            self.assertEqual(float(world.find("model[@name='asphalt']/link/visual/geometry/box/size").text.split()[0]),76.)
+            self.assertEqual(world.find('gui/camera/track_visual/name').text,'outdoor_lxwcar')
+            osm=ET.parse(inputs/'road.osm').getroot()
+            nodes={n.get('id'):n for n in osm.findall('node')}
+            xs=[(float(nodes[nd.get('ref')].get('lon'))-113.39002)*6378137*math.pi/180*math.cos(math.radians(23.0398))
+                for nd in osm.find("way[@id='101']").findall('nd')]
+            self.assertLess(min(xs),0)
+            self.assertGreater(max(xs),manifest['goal'][0])
+            self.assertEqual(sum(m.get('name','').startswith('pedestrian_') for m in world.findall('model')),10)
+            # Cloning/tuning must leave every source, including production, intact.
+            for path,digest in manifest['source_sha256'].items():
+                self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(),digest)
+
+    def test_long_campus_traffic_over_full_timeout(self):
+        actors=scenario_actors('campus_long');scene=scenario_geometry('campus_long')
+        self.assertEqual(len(actors),10)
+        self.assertEqual(len({a['name'] for a in actors}),10)
+        self.assertEqual(scene['goal'],(60.,0.))
+        self.assertGreater(scene['simulation_timeout_s'],60/.8)
+        self.assertGreater(max(a['start_s'] for a in actors),60)
+        parked=scene['parked_center_x']
+        for tick in range(int(scene['simulation_timeout_s']/.02)+1):
+            points=[actor_position(a,tick*.02) for a in actors]
+            for i,a in enumerate(actors):
+                x,y=points[i]
+                self.assertGreater(a['speed'],0)
+                self.assertGreaterEqual(math.hypot(max(parked-1.75-x,0,x-parked-1.75),
+                                                  max(-3.45-y,0,y+1.95)),a['radius'])
+                self.assertTrue(scene['road_bounds'][0]+a['radius']<=x<=scene['road_bounds'][2]-a['radius'])
+                self.assertTrue(-4+a['radius']<=y<=4-a['radius'])
+                for j in range(i):
+                    self.assertGreaterEqual(math.dist(points[i],points[j]),a['radius']+actors[j]['radius'])
 
     def test_campus_has_five_moving_actors_with_bounded_fixed_routes(self):
         actors=scenario_actors('campus')

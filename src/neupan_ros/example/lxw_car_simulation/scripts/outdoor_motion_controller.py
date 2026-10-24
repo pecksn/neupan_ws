@@ -12,6 +12,8 @@ import time
 
 import numpy as np
 import yaml
+from diffcp.cone_program import SolverError as DiffcpSolverError
+from cvxpy.error import SolverError as CvxpySolverError
 import rospy
 import tf
 
@@ -22,7 +24,46 @@ from neupan_diagnostics import report_failure
 from scan_motion_estimator import ScanMotionEstimator,PredictiveYieldGuard
 
 
-def trajectory_score(planner,info,points,velocities=None):
+class SimulationRoadGuard:
+    """Synthetic straight-road envelope; reference deviation is diagnostic only."""
+    def __init__(self,bounds,vertices,margin=.15):
+        self.bounds=np.asarray(bounds,float)
+        self.vertices=np.asarray(vertices,float)
+        self.margin=float(margin)
+        if (self.bounds.shape!=(4,) or not np.isfinite(self.bounds).all()
+            or self.bounds[0]>=self.bounds[2] or self.bounds[1]>=self.bounds[3]
+            or self.vertices.shape!=(2,4) or not np.isfinite(self.vertices).all()
+            or not np.isfinite(self.margin) or self.margin<0):
+            raise ValueError('Invalid simulation road envelope')
+        self.reset()
+    def reset(self):self.latched=False
+    def clearances(self,states):
+        states=np.asarray(states,float).reshape(-1,3)
+        c=np.cos(states[:,2,None]);s=np.sin(states[:,2,None])
+        x=states[:,0,None]+c*self.vertices[0]-s*self.vertices[1]
+        y=states[:,1,None]+s*self.vertices[0]+c*self.vertices[1]
+        lo_x,lo_y,hi_x,hi_y=self.bounds
+        return np.minimum.reduce((x-lo_x,hi_x-x,y-lo_y,hi_y-y)).min(axis=1)
+    def check(self,points,state,index,now):
+        state=np.asarray(state,float).reshape(-1)
+        route=np.asarray(points,float).reshape(-1,4)
+        status={'mode':'road_bounds','latched':self.latched,'reason':'ok',
+                'road_bounds_m':self.bounds.tolist(),'road_margin_m':self.margin}
+        if len(state)<3 or not np.isfinite(state[:3]).all() or len(route)<2 or not np.isfinite(route).all():
+            self.latched=True
+            return dict(status,latched=True,reason='invalid_tracking_reference')
+        clearance=float(self.clearances(state[:3])[0])
+        delta=route[1:,:2]-route[:-1,:2];norm=(delta*delta).sum(axis=1)
+        fractions=np.clip(((state[:2]-route[:-1,:2])*delta).sum(axis=1)/np.maximum(norm,1e-12),0,1)
+        gaps=np.linalg.norm(route[:-1,:2]+fractions[:,None]*delta-state[:2],axis=1)
+        nearest=int(np.argmin(gaps));heading=np.arctan2(delta[nearest,1],delta[nearest,0])-state[2]
+        self.latched=self.latched or clearance<self.margin
+        return dict(status,latched=self.latched,reason='road_boundary_margin' if self.latched else 'ok',
+                    road_clearance_m=clearance,cross_track_m=float(gaps[nearest]),
+                    heading_error_deg=float(abs(np.degrees(np.arctan2(np.sin(heading),np.cos(heading))))))
+
+
+def trajectory_score(planner,info,points,velocities=None,road_guard=None):
     """Compare solver candidates with the same reference and observed geometry.
 
     No simulator truth, actor prediction or command override. Prefer candidates
@@ -50,26 +91,36 @@ def trajectory_score(planner,info,points,velocities=None):
         gaps=np.array(gaps)
         penetrating=bool(gaps.min()<0)
         cost+=400*np.sum(np.maximum(dmin-gaps,0)**2)-eta*np.sum(np.clip(gaps,dmin,dmax))
+    if road_guard is not None:
+        edge=road_guard.clearances(states.T)
+        penetrating=penetrating or bool(np.min(edge)<road_guard.margin)
+        cost+=400*np.sum(np.maximum(road_guard.margin-edge,0)**2)
     return (bool(info['stop']) or penetrating,float(cost))
 
 
-def solve_with_restarts(planner,state,points,velocities=None):
+def solve_with_restarts(planner,state,points,velocities=None,road_guard=None):
     """Keep path progress; compare warm and neutral seeds, restore winner state."""
     start_index=planner.ipath.point_index;start_curve=planner.ipath.curve_index
     warm=planner.cur_vel_array.copy()
     neutral=np.zeros_like(warm);neutral[0]=planner.ref_speed
-    candidates=[]
+    candidates=[];failures=[];last_error=None
     for name,seed in (('warm',warm),('neutral',neutral)):
         planner.ipath.point_index=start_index;planner.ipath.curve_index=start_curve
         planner.cur_vel_array=seed.copy();planner.pan.current_nom_values=[None,None,None,None]
-        action,raw=planner(state,points,velocities);info=dict(raw)
+        try:action,raw=planner(state,points,velocities)
+        except (DiffcpSolverError,CvxpySolverError) as error:
+            last_error=error;failures.append({'seed':name,'exception_type':type(error).__name__,'message':str(error)})
+            continue
+        info=dict(raw)
         dune=planner.pan.dune_layer
-        candidates.append(dict(name=name,score=trajectory_score(planner,info,points,velocities),
+        candidates.append(dict(name=name,score=trajectory_score(planner,info,points,velocities,road_guard),
             action=action.copy(),info=info,controls=planner.cur_vel_array.copy(),
             index=planner.ipath.point_index,curve=planner.ipath.curve_index,
             nominal=planner.pan.current_nom_values,
             distance=None if dune is None else dune.min_distance,
-            points=None if dune is None else dune.obstacle_points))
+            points=None if dune is None else dune.obstacle_points,
+            nrmp_points=getattr(getattr(planner.pan,'nrmp_layer',None),'obstacle_points',None)))
+    if not candidates:raise last_error
     selected=min(candidates,key=lambda candidate:candidate['score'])
     planner.cur_vel_array=selected['controls'];planner.info=selected['info']
     planner.ipath.point_index=selected['index'];planner.ipath.curve_index=selected['curve']
@@ -77,7 +128,8 @@ def solve_with_restarts(planner,state,points,velocities=None):
     if planner.pan.dune_layer is not None:
         planner.pan.dune_layer.min_distance=selected['distance']
         planner.pan.dune_layer.obstacle_points=selected['points']
-    audit={'selected':selected['name'],'candidates':[{'seed':x['name'],'unsafe':x['score'][0],'score':x['score'][1]} for x in candidates]}
+    if getattr(planner.pan,'nrmp_layer',None) is not None:planner.pan.nrmp_layer.obstacle_points=selected['nrmp_points']
+    audit={'candidate_failures':failures,'selected':selected['name'],'candidates':[{'seed':x['name'],'unsafe':x['score'][0],'score':x['score'][1]} for x in candidates]}
     return selected['action'],selected['info'],audit
 
 
@@ -96,7 +148,7 @@ class MotionPlanner:
             else:raise RuntimeError('Simulation motion adapter scan is stale')
         restart_audit=None
         if getattr(self.owner,'solver_restarts',False):
-            action,info,restart_audit=solve_with_restarts(self.planner,state,points,velocities)
+            action,info,restart_audit=solve_with_restarts(self.planner,state,points,velocities,getattr(self.owner,'road_guard',None))
         else:action,info=self.planner(state,points,velocities)
         native_stop=bool(info['stop'])
         guard_status=None
@@ -115,11 +167,17 @@ class MotionPlanner:
 class OutdoorMotionController(neupan_core):
     def __init__(self):
         self.motion_lock=threading.RLock();self.motion_snapshot=None;self.motion_pending=None
-        self.motion_enabled=True
+        self.motion_enabled=True;self.road_guard=None
         self.estimator=ScanMotionEstimator();self.motion_log=None;self.yield_guard=None
         super().__init__()
         self.motion_enabled=rospy.get_param('~simulation_motion_estimation',True)
         self.solver_restarts=bool(rospy.get_param('~simulation_solver_restarts',False))
+        guard_mode=rospy.get_param('~simulation_tracking_guard_mode','reference')
+        if guard_mode not in ('reference','road_bounds'):raise ValueError('Unknown simulation tracking guard mode')
+        if guard_mode=='road_bounds':
+            self.road_guard=SimulationRoadGuard(rospy.get_param('~simulation_road_bounds'),
+                self.neupan_planner.robot.vertices,rospy.get_param('~simulation_road_margin',.15))
+            self.outdoor_tracking_guard=self.road_guard
         # neupan_core supplies pan={checkpoint}, replacing the entire YAML pan
         # section. Restore supported simulation settings explicitly and audit
         # their effective values instead of merely recording the input file.
@@ -132,7 +190,9 @@ class OutdoorMotionController(neupan_core):
             'pan':{'iter_num':self.neupan_planner.pan.iter_num,'iter_threshold':self.neupan_planner.pan.iter_threshold,
                    'dune_max_num':self.neupan_planner.pan.dune_max_num,'nrmp_max_num':self.neupan_planner.pan.nrmp_max_num},
             'adjust':{key:float(getattr(nrmp,key).detach()) for key in ('q_s','p_u','eta','d_max','d_min')},
+            'tracking_guard':{'mode':guard_mode,'road_bounds_m':None if self.road_guard is None else self.road_guard.bounds.tolist(),'road_margin_m':None if self.road_guard is None else self.road_guard.margin},
             'solver_restarts':self.solver_restarts,'motion_estimation':self.motion_enabled,'predictive_yield':bool(rospy.get_param('~simulation_predictive_yield',False)),
+            'robot_max_speed':self.neupan_planner.robot.max_speed[:,0].tolist(),
             'ref_speed':self.neupan_planner.ref_speed,'step_time':self.neupan_planner.ipath.dt,'receding':self.neupan_planner.ipath.T,
             'model_path':self.dune_checkpoint,'config_file':self.planner_config_file},indent=2)+'\n')
         self.motion_log=(folder/'motion_estimates.jsonl').open('w',buffering=1)

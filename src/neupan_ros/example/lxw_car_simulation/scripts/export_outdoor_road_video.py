@@ -44,7 +44,7 @@ class Clip:
         runtime=folder/'runtime.jsonl'
         self.runtime=[json.loads(line) for line in runtime.read_text().splitlines()] if runtime.exists() else []
         self.runtime_times=[r['stamp']-self.result.get('episode_start_sim_s',0) for r in self.runtime]
-        repeat=2 if any(part in ('yield_run2','verified_run2') for part in folder.parts) else 1
+        repeat=next((int(match[1]) for part in folder.parts for match in [re.fullmatch(r'(?:[a-z]+_)?run(\d+)',part)] if match),1)
         self.repeat=repeat
         if self.times!=sorted(self.times):raise ValueError('Clock moved backwards')
         match=re.search(r'demuxer -> .*?pkt_pts:(\d+) ',(folder/'recorder.log').read_text())
@@ -61,12 +61,13 @@ class Clip:
         if 'features' in self.manifest:
             flags=self.manifest['features']
             self.profile='速度估计：{}  |  预测让行：{}'.format('开' if flags['motion_estimation'] else '关','开' if flags['predictive_yield'] else '关')
-        self.title={'static':'静态绕障','crossing':'固定时序动态横穿','campus':'园区五动态障碍物'}.get(self.manifest['scenario'],self.manifest['scenario'])+' · 第{}轮'.format(self.repeat)
+        self.title={'static':'静态绕障','crossing':'固定时序动态横穿','campus':'园区五动态障碍物','campus_dense':'园区八动态障碍物','campus_long':'园区十动态障碍物 · 60米'}.get(self.manifest['scenario'],self.manifest['scenario'])+' · 第{}轮'.format(self.repeat)
         self.base=np.full((1080,1920,3),BG,np.uint8)
         restart=self.manifest.get('features',{}).get('solver_initialization_restarts',self.manifest.get('simulation_overrides',{}).get('simulation_solver_restarts',False))
+        tuning=' / 仿真专用参数' if self.manifest.get('planner_overrides') else ''
         self.base=labels(self.base,[(36,20,'NeuPAN 室外道路仿真 · '+self.title,40,(240,240,240)),
-            (38,82,self.profile+'  |  参考速度 0.8 m/s  |  目标 (18, 0)',26,(190,210,220)),
-            (38,124,'仿真求解初值修复：'+('开（室外权重与模型不变）' if restart else '关'),21,(190,210,220)),
+            (38,82,self.profile+'  |  参考速度 {:g} m/s  |  目标 ({:g}, {:g})'.format(self.manifest.get('planner_overrides',{}).get('ref_speed',.8),*self.manifest['goal']),26,(190,210,220)),
+            (38,124,'仿真双初值扩展：'+('开（道路边界保护）'+tuning if self.manifest.get('features',{}).get('tracking_guard_mode')=='road_bounds' else '开（室外权重与模型不变）') if restart else '仿真双初值扩展：关',21,(190,210,220)),
             (1450,490,'实际 Gazebo 轨迹',25,(210,220,230)),
             (35,1020,'真实 Gazebo 窗口；按仿真时间播放，渲染有延迟。定位为真值，校园场景为生成几何。',25,(180,190,195))])
 
@@ -106,18 +107,20 @@ class Clip:
             ri=max(0,bisect_right(self.runtime_times,t)-1)
             state=self.runtime[ri];tracking=state.get('tracking_guard') or {}
             if state.get('command_source')=='outdoor_tracking_guard':
-                text='原生路径保护：触发'
-                detail='横向偏离：{:.2f} m'.format(tracking.get('cross_track_m',0))
+                text='道路边界保护：触发' if tracking.get('mode')=='road_bounds' else '原生路径保护：触发'
+                detail=('路界净距：{:.2f} m'.format(tracking.get('road_clearance_m',0)) if tracking.get('mode')=='road_bounds' else '横向偏离：{:.2f} m'.format(tracking.get('cross_track_m',0)))
                 frame=labels(frame,[(1450,752,text,24,(255,155,100)),(1450,787,detail,22,(255,185,130))])
             elif state.get('planner_stop'):
                 frame=labels(frame,[(1450,765,'NeuPAN 原生停止',24,(255,155,100))])
-        def px(x,y):return (int(1460+(x+1)*19),int(675-y*19))
-        cv2.rectangle(frame,px(-1,4),px(22,-4),(90,100,105),1)
-        cv2.line(frame,px(0,0),px(18,0),(210,150,65),2)
+        bounds=self.manifest['road_bounds'];goal=self.manifest['goal']
+        map_scale=min(430/(bounds[2]-bounds[0]),150/(bounds[3]-bounds[1]))
+        def px(x,y):return (int(1460+(x-bounds[0])*map_scale),int(675-y*map_scale))
+        cv2.rectangle(frame,px(bounds[0],bounds[3]),px(bounds[2],bounds[1]),(90,100,105),1)
+        cv2.line(frame,px(0,0),px(*goal),(210,150,65),2)
         pts=np.array([px(*r['pose'][:2]) for r in self.rows[:i+1]],np.int32)
         if len(pts)>1:cv2.polylines(frame,[pts],False,(60,225,245),2)
-        for obstacle in row.get('obstacles',[row['obstacle']]):cv2.circle(frame,px(*obstacle[:2]),round(obstacle[2]*19),(40,100,250),-1)
-        cv2.circle(frame,px(18,0),7,(255,230,0),2)
+        for obstacle in row.get('obstacles',[row['obstacle']]):cv2.circle(frame,px(*obstacle[:2]),max(2,round(obstacle[2]*map_scale)),(40,100,250),-1)
+        cv2.circle(frame,px(*goal),7,(255,230,0),2)
         x,y,yaw=row['pose'];cv2.arrowedLine(frame,px(x,y),px(x+math.cos(yaw),y+math.sin(yaw)),(230,230,230),2)
         # Signed speed over the episode shows reverse/stop intervals honestly.
         left,top,width,height=1460,870,430,85

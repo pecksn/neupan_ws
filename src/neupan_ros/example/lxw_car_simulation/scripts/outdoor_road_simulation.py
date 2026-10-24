@@ -44,12 +44,39 @@ def corners(pose, length=.95, width=.85, centre=.335):
             for v in (-width/2, width/2)]
 
 
+def scenario_geometry(scenario):
+    """Scene-specific test extent; legacy scenarios retain their original gates."""
+    if scenario == 'campus_long':
+        return dict(goal=(60., 0.), road_bounds=(-8., -4., 68., 4.),
+                    parked_center_x=62., simulation_timeout_s=180., wall_timeout_s=540., runner_timeout_s=570.)
+    return dict(goal=GOAL, road_bounds=BOUNDS, parked_center_x=20., simulation_timeout_s=75.,
+                wall_timeout_s=240., runner_timeout_s=250.)
+
+
 def scenario_actors(scenario):
     """Fixed trajectories independent of ego pose, planner and feature switches."""
+    if scenario == 'campus_long':
+        # Eight crossings distributed over 60 m, plus two longitudinal walkers.
+        # Schedule uses a fixed nominal 0.8 m/s journey, never measured ego pose.
+        actors = [dict(name='pedestrian_'+str(i+1),
+                       start=[float(x), 3.3 if i % 2 == 0 else -3.3],
+                       end=[float(x), -3.3 if i % 2 == 0 else 3.3],
+                       start_s=round(x/.8-3.3/speed-1., 3), speed=speed, radius=.3)
+                  for i, (x, speed) in enumerate(zip(
+                      (5,12,19,26,33,40,47,54), (.9,.85,1.,.9,.85,1.,.9,.85)))]
+        return actors + [
+            dict(name='pedestrian_9',start=[-2.,2.6],end=[64.,2.6],start_s=0.,speed=.7,radius=.3),
+            dict(name='pedestrian_10',start=[64.,-1.25],end=[-3.,-1.25],start_s=0.,speed=.9,radius=.3)]
     if scenario == 'static':
         return [dict(name='road_obstacle',start=[8.,0.],end=[8.,0.],start_s=0.,speed=0.,radius=.4)]
     if scenario == 'crossing':
         return [dict(name='road_obstacle',start=[13.,3.3],end=[13.,-3.3],start_s=9.,speed=.55,radius=.4)]
+    if scenario == 'campus_dense':
+        return scenario_actors('campus')+[
+            dict(name='pedestrian_6',start=[8.,3.3],end=[8.,-3.3],start_s=1.,speed=1.,radius=.3),
+            dict(name='pedestrian_7',start=[17.,-3.3],end=[17.,3.3],start_s=16.,speed=.8,radius=.3),
+            dict(name='pedestrian_8',start=[-4.,-2.1],end=[16.,-2.1],start_s=0.,speed=.9,radius=.3),
+        ]
     if scenario == 'campus':
         return [
             dict(name='pedestrian_1',start=[5.,3.3],end=[5.,-3.3],start_s=0.,speed=.9,radius=.3),
@@ -82,12 +109,16 @@ def make_inputs(folder, scenario, profile="outdoor", motion_estimation=None, pre
     """All generated inputs live alongside results; production files are read only."""
     import yaml
     folder.mkdir(parents=True, exist_ok=True)
+    geometry = scenario_geometry(scenario)
+    goal = geometry['goal']; bounds = geometry['road_bounds']
+    road_center = (bounds[0]+bounds[2])/2; road_length = bounds[2]-bounds[0]
     production = production_planner_settings()
     params = production['parameters'].copy()
     profiles_file=SIMULATION/'config/outdoor_road_profiles.yaml'
     profiles=yaml.safe_load(profiles_file.read_text())
     if profile not in profiles:raise ValueError('Unknown simulation profile: '+profile)
     overrides,controller=resolve_features(profiles[profile],motion_estimation,predictive_yield)
+    if overrides.get('simulation_tracking_guard_mode')=='road_bounds':overrides['simulation_road_bounds']=list(bounds)
     params.update(overrides)
     config = Path(params['config_file'])
     settings = yaml.safe_load(config.read_text())
@@ -101,7 +132,9 @@ def make_inputs(folder, scenario, profile="outdoor", motion_estimation=None, pre
                SIMULATION.parents[3]/'devel/lib/liblxw_sim_pose.so']
     hashes = {str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
     planner_overrides=profiles[profile].get('planner_overrides',{})
-    for section,values in planner_overrides.items():settings[section].update(values)
+    for section,values in planner_overrides.items():
+        if isinstance(values,dict): settings[section].update(values)
+        else: settings[section]=values
     (folder/'neupan_config.yaml').write_text(yaml.safe_dump(settings,sort_keys=False) if planner_overrides else config.read_text())
     params.update(config_file=str(folder/'neupan_config.yaml'), diagnostic_log_dir=str(folder.parent),
                   osm_file=str(folder/'road.osm'))
@@ -114,6 +147,13 @@ def make_inputs(folder, scenario, profile="outdoor", motion_estimation=None, pre
             for tag in way.findall('tag'):
                 if tag.get('k') == 'width': tag.set('v', '8')
                 if tag.get('k') == 'name': tag.set('v', 'Synthetic campus service road')
+    if scenario == 'campus_long':
+        way=osm.getroot().find("way[@id='101']")
+        for nd in list(way.findall('nd')): way.remove(nd)
+        for index,x in enumerate(range(-8,69,4),1000):
+            ET.SubElement(osm.getroot(),'node',id=str(index),lat='23.0398000000',
+                          lon=str(113.39002+x/(6378137*math.pi/180*math.cos(math.radians(23.0398)))))
+            ET.SubElement(way,'nd',ref=str(index))
     osm.write(str(folder/'road.osm'), encoding='utf-8', xml_declaration=True)
     world = ET.Element('world', name='outdoor_road_avoidance')
     ET.SubElement(world, 'plugin', name='lxw_pose_transport', filename='liblxw_sim_pose.so')
@@ -128,7 +168,12 @@ def make_inputs(folder, scenario, profile="outdoor", motion_estimation=None, pre
     ET.SubElement(light,'direction').text='-.5 -.4 -1'
     ET.SubElement(light,'diffuse').text='.8 .8 .8 1'
     gui=ET.SubElement(world,'gui'); camera=ET.SubElement(gui,'camera',name='road_camera')
-    ET.SubElement(camera,'pose').text='8 -20 21 0 .78 1.57'
+    ET.SubElement(camera,'pose').text='0 -14 16 0 .85 1.57' if scenario=='campus_long' else '8 -20 21 0 .78 1.57'
+    if scenario=='campus_long':
+        tracking=ET.SubElement(camera,'track_visual')
+        for key,value in dict(name='outdoor_lxwcar',static='true',use_model_frame='true',
+                              xyz='0 -14 16',inherit_yaw='false').items():
+            ET.SubElement(tracking,key).text=value
     def box(name, xyz, size, color, collision=True):
         model=ET.SubElement(world,'model',name=name)
         ET.SubElement(model,'static').text='true'
@@ -141,26 +186,26 @@ def make_inputs(folder, scenario, profile="outdoor", motion_estimation=None, pre
                 mat=ET.SubElement(item,'material')
                 ET.SubElement(mat,'ambient').text=color
                 ET.SubElement(mat,'diffuse').text=color
-    box('ground',(8,0,-.06),(90,60,.1),'.23 .36 .20 1')
-    box('asphalt',(9,0,-.005),(34,8,.01),'.13 .15 .17 1',False)
+    box('ground',(road_center,0,-.06),(max(90,road_length+20),60,.1),'.23 .36 .20 1')
+    box('asphalt',(road_center,0,-.005),(road_length,8,.01),'.13 .15 .17 1',False)
     for side in (-1,1):
-        box('sidewalk_'+str(side),(9,side*4.9,.09),(34,1.8,.18),'.62 .61 .57 1')
-        box('curb_'+str(side),(9,side*4.08,.13),(34,.16,.26),'.8 .8 .76 1')
-        box('edge_line_'+str(side),(9,side*3.65,.004),(34,.1,.008),'.95 .95 .9 1',False)
-        for index,x in enumerate((-4,7,20)):
+        box('sidewalk_'+str(side),(road_center,side*4.9,.09),(road_length,1.8,.18),'.62 .61 .57 1')
+        box('curb_'+str(side),(road_center,side*4.08,.13),(road_length,.16,.26),'.8 .8 .76 1')
+        box('edge_line_'+str(side),(road_center,side*3.65,.004),(road_length,.1,.008),'.95 .95 .9 1',False)
+        for index,x in enumerate(range(-4,65,12) if scenario=='campus_long' else (-4,7,20)):
             box('building_{}_{}'.format(side,index),(x,side*11,2.5),(7,6,5),'.6 .58 .5 1')
             for window in range(3):
                 box('window_{}_{}_{}'.format(side,index,window),(x-2+window*2,side*7.98,2.8),(1.1,.03,1.1),'.15 .35 .48 1',False)
-        for index,x in enumerate((-5,2,10,23)):
+        for index,x in enumerate(range(-5,67,8) if scenario=='campus_long' else (-5,2,10,23)):
             box('tree_trunk_{}_{}'.format(side,index),(x,side*6.4,.8),(.24,.24,1.6),'.35 .22 .12 1')
             box('tree_crown_{}_{}'.format(side,index),(x,side*6.4,2.2),(1.6,1.6,1.8),'.17 .4 .15 1')
-    for x in range(-6,26,3):box('lane_dash_'+str(x),(x,0,.004),(1.5,.08,.008),'.95 .85 .2 1',False)
+    for x in range(-6,int(bounds[2]),3):box('lane_dash_'+str(x),(x,0,.004),(1.5,.08,.008),'.95 .85 .2 1',False)
     for i in range(8):box('crosswalk_'+str(i),(13,-3.15+i*.9,.006),(1.8,.45,.01),'.9 .9 .9 1',False)
-    box('parked_car',(20,-2.7,.7),(3.5,1.5,1.4),'.15 .3 .65 1')
-    box('parked_car_cabin',(20,-2.7,1.5),(1.8,1.4,.5),'.15 .25 .3 1',False)
-    box('goal_marker',(18,0,.02),(.8,.8,.04),'.1 .8 1 1',False)
-    box('goal_pole',(18,0,.65),(.06,.06,1.3),'.1 .8 1 1',False)
-    box('goal_flag',(18,.25,1.2),(.06,.5,.25),'.1 .8 1 1',False)
+    box('parked_car',(geometry['parked_center_x'],-2.7,.7),(3.5,1.5,1.4),'.15 .3 .65 1')
+    box('parked_car_cabin',(geometry['parked_center_x'],-2.7,1.5),(1.8,1.4,.5),'.15 .25 .3 1',False)
+    box('goal_marker',(*goal,.02),(.8,.8,.04),'.1 .8 1 1',False)
+    box('goal_pole',(*goal,.65),(.06,.06,1.3),'.1 .8 1 1',False)
+    box('goal_flag',(goal[0],goal[1]+.25,1.2),(.06,.5,.25),'.1 .8 1 1',False)
     actors=scenario_actors(scenario)
     for index,spec in enumerate(actors):
         actor = ET.SubElement(world,'model',name=spec['name'])
@@ -182,14 +227,14 @@ def make_inputs(folder, scenario, profile="outdoor", motion_estimation=None, pre
                 mat=ET.SubElement(item,'material');ET.SubElement(mat,'ambient').text=color;ET.SubElement(mat,'diffuse').text=color
     sdf=ET.Element('sdf',version='1.6');sdf.append(world)
     ET.ElementTree(sdf).write(str(folder/'road.world'),encoding='utf-8',xml_declaration=True)
-    manifest={'scenario':scenario,'profile':profile,'controller_type':controller,'features':{'motion_estimation':overrides['simulation_motion_estimation'],'predictive_yield':overrides['simulation_predictive_yield'],'capture_time_scan_alignment':controller=='outdoor_motion_controller.py','solver_initialization_restarts':bool(overrides.get('simulation_solver_restarts',False))},'simulation_overrides':overrides,'planner_overrides':planner_overrides,'production':production,'source_sha256':hashes,'goal':GOAL,
-        'road_bounds':BOUNDS,'sensor':production_sensor_settings(),'requested_real_time_factor':.5,
+    manifest={'scenario':scenario,'profile':profile,'controller_type':controller,'features':{'motion_estimation':overrides['simulation_motion_estimation'],'predictive_yield':overrides['simulation_predictive_yield'],'capture_time_scan_alignment':controller=='outdoor_motion_controller.py','solver_initialization_restarts':bool(overrides.get('simulation_solver_restarts',False)),'tracking_guard_mode':overrides.get('simulation_tracking_guard_mode','reference')},'simulation_overrides':overrides,'planner_overrides':planner_overrides,'production':production,'source_sha256':hashes,'goal':goal,
+        'road_bounds':bounds,'test_limits':geometry,'sensor':production_sensor_settings(),'requested_real_time_factor':.5,
         'environment':'Synthetic campus service road, not reconstructed GDUT geometry',
         'localisation':'Gazebo ground truth, not GNSS/LIO estimation',
         'geometric_overlap_tolerance_m':.02,
         'sensor_limit':'Horizontal ray slice -> IMU cloud -> production pointcloud_to_laserscan; not MID360 sampling or full 3D occlusion',
         'actors':actors,'actor_policy':'fixed world trajectories; no ego feedback or yielding',
-        'hardware_started':False,'camera_steering':False}
+        'hardware_started':False,'camera_steering':scenario=='campus_long','camera_policy':'visualisation-only ego follow' if scenario=='campus_long' else 'fixed camera'}
     save_json(folder.parent/'manifest.json',manifest)
     return manifest
 
@@ -206,6 +251,8 @@ def episode():
     rospy.init_node('outdoor_road_episode')
     recording_required=rospy.get_param('~recording_required',False)
     folder=Path(rospy.get_param('~output_dir')); manifest=json.loads((folder/'manifest.json').read_text())
+    goal_xy=manifest['goal']; bounds=manifest['road_bounds']
+    limits=manifest.get('test_limits',scenario_geometry(manifest['scenario']))
     lock=threading.RLock(); data={'pose':None,'actual':None,'models':None,'scan':None,'cmd':None,'cmd_stamp':None,
         'arrived':False,'path':[],'failure':None}
     def store(key,value):
@@ -249,7 +296,7 @@ def episode():
                 and now-d['scan']<.3 and goal_pub.get_num_connections()>=2
                 and (not recording_required or (folder/'recording_ready').exists())):
                 goal=PoseStamped();goal.header.frame_id='map';goal.header.stamp=rospy.Time.now()
-                goal.pose.position.x,goal.pose.position.y=GOAL;goal.pose.orientation.w=1
+                goal.pose.position.x,goal.pose.position.y=goal_xy;goal.pose.orientation.w=1
                 goal_pub.publish(goal);start=now
             elif time.monotonic()-wall>40:reason='startup_timeout';break
         else:
@@ -270,9 +317,10 @@ def episode():
                 # Include curb/end boundaries and exact circle footprint. Parked
                 # vehicle is additionally checked as an axis-aligned rectangle.
                 pts=corners(pose)
-                curb=min(min(x-BOUNDS[0],BOUNDS[2]-x,y-BOUNDS[1],BOUNDS[3]-y) for x,y in pts)
+                curb=min(min(x-bounds[0],bounds[2]-x,y-bounds[1],bounds[3]-y) for x,y in pts)
                 # Separating-axis overlap with the parked car, not a point test.
-                parked=[(18.25,-3.45),(21.75,-3.45),(18.25,-1.95),(21.75,-1.95)]
+                parked_x=limits['parked_center_x']
+                parked=[(parked_x-1.75,-3.45),(parked_x+1.75,-3.45),(parked_x-1.75,-1.95),(parked_x+1.75,-1.95)]
                 axes=[(1,0),(0,1),(math.cos(pose[2]),math.sin(pose[2])),(-math.sin(pose[2]),math.cos(pose[2]))]
                 overlap=True
                 for ax,ay in axes:
@@ -280,41 +328,41 @@ def episode():
                     if max(a)<min(b) or max(b)<min(a):overlap=False;break
                 minimum=min(minimum,clearance,curb)
                 error=math.dist(pose[:2],d['pose'][:2]);max_error=max(max_error,error)
-                err=math.dist(pose[:2],GOAL)
+                err=math.dist(pose[:2],goal_xy)
                 speed=d['pose'][3]
                 row={'t':round(elapsed,4),'pose':pose,'odom':d['pose'],'obstacle':circle,'obstacles':circles,'speed':speed,
                      'command':[cmd.linear.x,cmd.angular.z],'wall_time_unix_s':time.time(),'body_clearance':clearance,'road_clearance':curb,
                      'goal_error':err,'scan_age':now-d['scan'],'telemetry_gap':gap,'native_arrived':d['arrived']}
                 log.write(json.dumps(row)+'\n')
                 frame=np.full((1080,1920,3),(38,46,39),np.uint8)
-                def pixel(x,y):return (int(100+(x+8)*50),int(580-y*70))
-                cv2.rectangle(frame,pixel(-8,4),pixel(26,-4),(65,65,65),-1)
-                cv2.rectangle(frame,pixel(-8,4),pixel(26,-4),(210,210,210),3)
-                for x in range(-7,26,3):cv2.line(frame,pixel(x,0),pixel(x+1.5,0),(60,190,220),2)
+                def pixel(x,y):return (int(100+(x-bounds[0])*1700/(bounds[2]-bounds[0])),int(580-y*70))
+                cv2.rectangle(frame,pixel(bounds[0],bounds[3]),pixel(bounds[2],bounds[1]),(65,65,65),-1)
+                cv2.rectangle(frame,pixel(bounds[0],bounds[3]),pixel(bounds[2],bounds[1]),(210,210,210),3)
+                for x in range(-7,int(bounds[2]),3):cv2.line(frame,pixel(x,0),pixel(x+1.5,0),(60,190,220),2)
                 for i in range(8):cv2.line(frame,pixel(12.1,-3.15+i*.9),pixel(13.9,-3.15+i*.9),(180,180,180),8)
-                cv2.rectangle(frame,pixel(18.25,-1.95),pixel(21.75,-3.45),(200,100,45),-1)
+                cv2.rectangle(frame,pixel(parked_x-1.75,-1.95),pixel(parked_x+1.75,-3.45),(200,100,45),-1)
                 if len(d['path'])>1:cv2.polylines(frame,[np.array([pixel(*p) for p in d['path']],np.int32)],False,(240,170,80),2)
                 if len(trail)>1:cv2.polylines(frame,[np.array([pixel(*p) for p in trail],np.int32)],False,(40,230,250),3)
                 ordered=[pts[i] for i in (0,1,3,2)]
                 cv2.fillPoly(frame,[np.array([pixel(*p) for p in ordered],np.int32)],(230,210,100))
                 for obstacle in circles:cv2.circle(frame,pixel(*obstacle[:2]),round(obstacle[2]*70),(40,95,245),-1)
-                cv2.circle(frame,pixel(*GOAL),14,(255,220,0),3)
+                cv2.circle(frame,pixel(*goal_xy),14,(255,220,0),3)
                 for y,text in [(55,'NeuPAN OUTDOOR | '+manifest['scenario']+' | profile='+manifest.get('profile','outdoor')),
                     (100,'Synthetic campus road | GT localisation | trajectory replay (not camera video)'),
                     (155,'t={:.1f}s   v={:.2f}m/s   goal error={:.2f}m   obstacle gap={:.3f}m'.format(elapsed,speed,err,clearance)),
-                    (975,'Blue: OSM reference | Yellow: actual Gazebo track | Orange: obstacle | Cyan: goal (18,0)'),
+                    (975,'Blue: OSM reference | Yellow: actual Gazebo track | Orange: obstacle | Cyan: goal '+str(tuple(goal_xy))),
                     (1030,'0.5x requested wall-time rate; playback in simulation seconds; not real-car performance proof')]:
                     cv2.putText(frame,text,(60,y),cv2.FONT_HERSHEY_SIMPLEX,.85,(235,235,235),2,cv2.LINE_AA)
                 video.write(frame)
                 if minimum<-.02 or overlap:reason='body_overlap_or_road_boundary';break
                 if error>.25:reason='gazebo_odometry_mismatch';break
                 if d['failure']:reason='neupan_exception';break
-                if elapsed>75:reason='simulation_timeout';break
+                if elapsed>limits['simulation_timeout_s']:reason='simulation_timeout';break
                 if d['arrived'] and err<=.5 and abs(pose[2])<=.35 and abs(speed)<=.1:
                     if settled is None:settled=now
                     elif now-settled>=.5:passed=True;reason='arrived';break
                 else:settled=None
-        if time.monotonic()-wall>240:reason='wall_timeout';break
+        if time.monotonic()-wall>limits['wall_timeout_s']:reason='wall_timeout';break
         try:
             rate.sleep()
         except rospy.ROSInterruptException:
@@ -323,7 +371,7 @@ def episode():
     log.close();video.release()
     # Persist result before transcoding so runner knows the episode is complete.
     result={'scenario':manifest['scenario'],'passed':passed,'reason':reason,'final_pose':d['actual'],
-        'goal_error_m':math.dist(d['actual'][:2],GOAL) if d['actual'] else None,
+        'goal_error_m':math.dist(d['actual'][:2],goal_xy) if d['actual'] else None,
         'episode_start_sim_s':start,'episode_end_sim_s':now,'native_arrived':d['arrived'],
         'minimum_clearance_m':minimum if math.isfinite(minimum) else None,'maximum_gazebo_odom_error_m':max_error,
         'maximum_telemetry_gap_s':max_gap,'sim_elapsed_s':now-start if start else None,
@@ -335,7 +383,8 @@ def episode():
 def audit_transport(folder, result):
     """Independent C++ bag evidence. Failures remain failures; no threshold relaxation."""
     import rosbag
-    actors=json.loads((folder/'manifest.json').read_text())['actors']
+    manifest=json.loads((folder/'manifest.json').read_text())
+    actors=manifest['actors']; goal_xy=manifest['goal']
     stamps={t:[] for t in ['/clock',PREFIX+'scan',PREFIX+'odom',PREFIX+'model_states']}
     last_pose=last_speed=None; minimum=math.inf
     begin,end=result['episode_start_sim_s'],result['episode_end_sim_s']
@@ -355,7 +404,7 @@ def audit_transport(folder, result):
     gaps={t:max([b-a for a,b in zip(ts,ts[1:])] or [math.inf]) for t,ts in stamps.items()}
     limits={'/clock':.05,PREFIX+'scan':.2,PREFIX+'odom':.1,PREFIX+'model_states':.1}
     continuous=all(gaps[t]<=limits[t]+1e-8 for t in gaps)
-    terminal=last_pose is not None and math.dist(last_pose[:2],GOAL)<=.5 and abs(last_pose[2])<=.35 and last_speed is not None and abs(last_speed)<=.1
+    terminal=last_pose is not None and math.dist(last_pose[:2],goal_xy)<=.5 and abs(last_pose[2])<=.35 and last_speed is not None and abs(last_speed)<=.1
     audit={'maximum_message_gaps_s':gaps,'gap_limits_s':limits,'continuous_transport':continuous,
         'terminal_gazebo_pose':last_pose,'terminal_speed_mps':last_speed,'terminal_geometry_verified':terminal,
         'minimum_sampled_circle_clearance_m':minimum if math.isfinite(minimum) else None,
@@ -411,7 +460,7 @@ def run(args):
                 time.sleep(.8)
                 if bag.poll() is not None:raise RuntimeError('Telemetry recorder exited early')
                 (folder/'recording_ready').touch()
-                deadline=time.monotonic()+250
+                deadline=time.monotonic()+manifest['test_limits']['runner_timeout_s']
                 while process.poll() is None and time.monotonic()<deadline and not (folder/'episode_result.json').exists():time.sleep(.25)
         finally:
             stop_process(recorder);stop_process(bag);stop_process(process);cleanup_simulation_processes(folder/'ros_logs');stop_process(display)
@@ -443,8 +492,8 @@ def run(args):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode',choices=['run','episode'])
-    parser.add_argument('--scenario',choices=['all','static','crossing','campus'],default='all')
-    parser.add_argument('--profile',choices=['outdoor','sim_adaptive','sim_motion','sim_motion_yield','sim_aligned','sim_campus'],default='outdoor')
+    parser.add_argument('--scenario',choices=['all','static','crossing','campus','campus_dense','campus_long'],default='all')
+    parser.add_argument('--profile',choices=['outdoor','sim_adaptive','sim_motion','sim_motion_yield','sim_aligned','sim_campus','sim_campus_safe','sim_campus_long'],default='outdoor')
     parser.add_argument('--motion-estimation',choices=['on','off'],default=None,help='Obstacle velocity input to NeuPAN; overrides profile')
     parser.add_argument('--predictive-yield',choices=['on','off'],default=None,help='Extra stop/yield supervisor; overrides profile')
     parser.add_argument('--record-gazebo',action='store_true');parser.add_argument('--output-dir');parser.add_argument('--gui',action='store_true');parser.add_argument('--rviz',action='store_true')

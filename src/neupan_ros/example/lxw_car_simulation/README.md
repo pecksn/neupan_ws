@@ -1,5 +1,15 @@
 # LXW 车辆仿真（ROS1 / Gazebo）
 
+
+## 当前推荐：8障碍物与道路边界保护
+
+```bash
+rosrun neupan_ros outdoor_road_simulation.py run --scenario campus_dense --profile sim_campus_safe --motion-estimation off --predictive-yield off --record-gazebo
+```
+
+此入口允许道路内偏离参考线，采用仿真专用参数与双初值扩展；实车不变。最终同版本两轮到达，最小采样净距0.652、0.521米。视频和参数差异见 `videos/outdoor_simulation/20261024_road_boundary_guard/README.md`。下方保留历史入口说明，勿混淆各配置。
+
+
 这是车辆 Gazebo 仿真的统一目录，包含 NeuPAN、TEB 和室外 OSM 场景。`neupan_ros` 是所属 ROS 包名，不表示此目录只能运行 NeuPAN。原先新增的 `src/lxw_planner_sim` 已合并到这里。
 
 文件按资源类型归类：`comparison_` / `planner_comparison` 表示两种规划器共用的对比功能，`outdoor_` 表示室外仿真。测试结果分类放在工作空间的 `videos/` 下。

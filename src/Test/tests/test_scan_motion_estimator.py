@@ -142,7 +142,7 @@ class CaptureTimingTest(unittest.TestCase):
                 node.planner_config_file=str(Path(folder)/'config.yaml')
                 Path(node.planner_config_file).write_text('pan: {iter_num: 5, iter_threshold: 0.01}')
                 scalar=Mock();scalar.detach.return_value=1.
-                node.neupan_planner=SimpleNamespace(ref_speed=.8,ipath=SimpleNamespace(dt=.1,T=50),pan=SimpleNamespace(iter_num=2,iter_threshold=.1,dune_max_num=100,nrmp_max_num=10,nrmp_layer=SimpleNamespace(**{k:scalar for k in ('q_s','p_u','eta','d_max','d_min')})))
+                node.neupan_planner=SimpleNamespace(ref_speed=.8,robot=SimpleNamespace(max_speed=np.array([[.8],[.35]])),ipath=SimpleNamespace(dt=.1,T=50),pan=SimpleNamespace(iter_num=2,iter_threshold=.1,dune_max_num=100,nrmp_max_num=10,nrmp_layer=SimpleNamespace(**{k:scalar for k in ('q_s','p_u','eta','d_max','d_min')})))
             def parameter(name,default=None):
                 self.assertTrue(initialized,'ROS private parameters require node initialization')
                 return {'~diagnostic_log_dir':folder,'~simulation_motion_estimation':False,'~simulation_predictive_yield':True}.get(name,default)
@@ -220,6 +220,51 @@ class CaptureTimingTest(unittest.TestCase):
         safe=self.module.trajectory_score(planner,info(1.5),points)
         self.assertTrue(unsafe[0]);self.assertFalse(safe[0])
         self.assertLess(safe,unsafe)
+
+    def test_single_numerical_candidate_failure_uses_other_completed_solution(self):
+        class Planner:
+            def __init__(self,fail_all=False):
+                self.ipath=SimpleNamespace(point_index=12,curve_index=0);self.ref_speed=.8
+                self.cur_vel_array=np.zeros((2,3));self.calls=0;self.fail_all=fail_all
+                self.pan=SimpleNamespace(current_nom_values=[],dune_layer=SimpleNamespace(min_distance=1,obstacle_points=None))
+            def __call__(obj,*args):
+                obj.calls+=1
+                if obj.calls==1 or obj.fail_all:raise self.module.DiffcpSolverError('numerical failure')
+                obj.ipath.point_index+=1;obj.cur_vel_array[:]=2;obj.info={'stop':False}
+                return np.ones((2,1))*2,obj.info
+        planner=Planner()
+        with patch.object(self.module,'trajectory_score',return_value=(False,10)):
+            action,info,audit=self.module.solve_with_restarts(planner,np.zeros((3,1)),None)
+        self.assertEqual(audit['selected'],'neutral')
+        self.assertEqual(len(audit['candidate_failures']),1)
+        self.assertEqual(planner.ipath.point_index,13)
+        np.testing.assert_array_equal(action,2)
+        with self.assertRaises(self.module.DiffcpSolverError):
+            self.module.solve_with_restarts(Planner(fail_all=True),np.zeros((3,1)),None)
+
+    def test_road_guard_allows_normal_avoidance_and_large_heading_inside_road(self):
+        guard=self.module.SimulationRoadGuard([-8,-4,26,4],np.array([[-.14,-.14,.81,.81],[-.425,.425,-.425,.425]]))
+        route=np.array([[0,0,0,1],[18,0,0,1]])
+        for state in ([10,1.55,.1],[10,2.,1.4],[10,-2.,-1.4]):
+            status=guard.check(route,state,0,0)
+            self.assertFalse(status['latched'])
+            self.assertGreater(status['cross_track_m'],1.5)
+        self.assertEqual(status['mode'],'road_bounds')
+
+    def test_road_guard_checks_rotated_body_not_just_vehicle_center(self):
+        vertices=np.array([[-.14,-.14,.81,.81],[-.425,.425,-.425,.425]])
+        guard=self.module.SimulationRoadGuard([-8,-4,26,4],vertices)
+        route=np.array([[0,0,0,1],[18,0,0,1]])
+        status=guard.check(route,[10,3.1,np.pi/2],0,0)
+        self.assertTrue(status['latched'])
+        self.assertAlmostEqual(status['road_clearance_m'],.09)
+        self.assertTrue(guard.check(route,[10,0,0],0,1)['latched'])
+        guard.reset()
+        self.assertFalse(guard.check(route,[10,0,0],0,2)['latched'])
+
+    def test_road_guard_rejects_invalid_state(self):
+        guard=self.module.SimulationRoadGuard([-8,-4,26,4],np.array([[-.14,-.14,.81,.81],[-.425,.425,-.425,.425]]))
+        self.assertTrue(guard.check(np.array([[0,0,0,1],[18,0,0,1]]),[10,float('nan'),0],0,0)['latched'])
 
     def test_stale_velocity_snapshot_is_not_fed_to_solver(self):
         owner=SimpleNamespace(motion_enabled=True,motion_lock=threading.RLock(),motion_log=None,yield_guard=None,
