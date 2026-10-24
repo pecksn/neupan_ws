@@ -639,7 +639,7 @@ def cleanup(log_dir):
             pass
 
 
-def recorder_start(folder, env):
+def recorder_start(folder, env, screen_size=(1600, 900), output_size=(1280, 720)):
     import ctypes
     import re
     deadline = time.monotonic()+35
@@ -659,7 +659,7 @@ def recorder_start(folder, env):
     # Qt can restore its saved geometry after its first window appears. Keep
     # applying the recording geometry through that startup period.
     for _ in range(8):
-        x.XMoveResizeWindow(display, int(match.group(1), 16), 0, 0, 1600, 900)
+        x.XMoveResizeWindow(display, int(match.group(1), 16), 0, 0, *screen_size)
         x.XFlush(display)
         time.sleep(.4)
     x.XCloseDisplay(display)
@@ -667,7 +667,8 @@ def recorder_start(folder, env):
         # X11 input PTS are Unix microseconds. Retain the first timestamp in the
         # log so an exported GUI pair can follow the measured simulation clock.
         return subprocess.Popen(['ffmpeg', '-v', 'info', '-debug_ts', '-y', '-f', 'x11grab', '-framerate', '15',
-            '-video_size', '1600x900', '-i', env['DISPLAY'], '-vf', 'scale=1280:720,setsar=1',
+            '-video_size', '{}x{}'.format(*screen_size), '-i', env['DISPLAY'],
+            '-vf', 'scale={}:{},setsar=1'.format(*output_size),
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
             '-movflags', '+faststart', str(folder/'gazebo.mp4')], env=env,
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)

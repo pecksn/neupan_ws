@@ -1,5 +1,14 @@
 # This directory is part of neupan_ros, not a second ROS package.
 # Missing navigation dependencies must not prevent the normal NeuPAN build.
+catkin_install_python(PROGRAMS
+  scripts/outdoor_road_simulation.py
+  scripts/outdoor_osm_world.py
+  scripts/outdoor_motion_controller.py
+  scripts/export_outdoor_road_video.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(FILES scripts/scan_motion_estimator.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+
 find_package(gazebo QUIET)
 find_package(roscpp QUIET)
 find_package(gazebo_msgs QUIET)

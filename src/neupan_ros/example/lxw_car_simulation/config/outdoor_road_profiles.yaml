@@ -1,0 +1,39 @@
+# Simulation-only alternatives. The outdoor baseline reads production verbatim.
+outdoor:
+  description: production outdoor parameters, unchanged
+  node_parameters: {}
+sim_adaptive:
+  description: simulation-only earlier adaptive avoidance and larger distance margin
+  node_parameters:
+    enable_adaptive_adjust: true
+    adaptive_far_distance: 3.0
+    adaptive_near_distance: 1.5
+    adaptive_front_half_angle_deg: 90.0
+    clear_adjust_profile: '1.2 21.0 0.3 0.8 0.35'
+    avoid_adjust_profile: '2.8 18.0 2.0 1.5 0.4'
+sim_motion:
+  description: simulation scan-motion adapter; production outdoor tuning retained
+  node_parameters: {}
+  controller_type: outdoor_motion_controller.py
+sim_motion_yield:
+  description: simulation scan-motion adapter plus predictive yield supervisor; outdoor tuning unchanged
+  node_parameters:
+    simulation_predictive_yield: true
+  controller_type: outdoor_motion_controller.py
+
+sim_aligned:
+  description: capture-time scan TF, no obstacle velocity or predictive yield; outdoor tuning unchanged
+  controller_type: outdoor_motion_controller.py
+  node_parameters:
+    simulation_scan_alignment: true
+    simulation_motion_estimation: false
+    simulation_predictive_yield: false
+
+sim_campus:
+  description: simulation capture-time scans and two solver initializations; production planner parameters unchanged
+  controller_type: outdoor_motion_controller.py
+  node_parameters:
+    simulation_scan_alignment: true
+    simulation_motion_estimation: false
+    simulation_predictive_yield: false
+    simulation_solver_restarts: true

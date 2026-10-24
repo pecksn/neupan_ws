@@ -58,6 +58,36 @@ def production_sensor_settings():
             'lidar_to_imu_rotation': lio['mapping']['extrinsic_R']}
 
 
+def production_planner_settings():
+    """Resolve the current default outdoor OSM branch, without editing it."""
+    import re
+    import yaml
+    source = SIMULATION.parent/'lxw_car/launch/full_system_run.launch'
+    root = ET.parse(source).getroot()
+    defaults = {a.get('name'): a.get('default', a.get('value')) for a in root.findall('arg')}
+    candidates = [n for n in root.iter('node') if n.get('type') == 'neupan_node.py'
+                  and any(p.get('name') == 'outdoor_reference_spacing_m' for p in n.findall('param'))]
+    if len(candidates) != 1:
+        raise ValueError('Cannot uniquely resolve default outdoor OSM NeuPAN branch')
+    def resolve(value):
+        for _ in range(8):
+            previous = value
+            value = value.replace('$(find neupan_ros)', str(SIMULATION.parents[1]))
+            value = re.sub(r'\$\(arg ([^)]+)\)', lambda m: defaults[m[1]], value)
+            if previous == value: break
+        if '$(' in value: raise ValueError('Unsupported production substitution: '+value)
+        return yaml.safe_load(value)
+    params = {}
+    for p in candidates[0].findall('param'):
+        if p.get('name') == 'outdoor_start_connector_enabled':
+            params[p.get('name')] = True  # This simulation uses the OSM input branch.
+        elif p.get('name') not in ('osm_file', 'map_origin_lat', 'map_origin_lon',
+                                    'camera_right_guard_enabled', 'camera_right_fallback_topic'):
+            params[p.get('name')] = resolve(p.get('value'))
+    params['camera_right_guard_enabled'] = False  # No synthetic camera steering input.
+    return {'launch': str(source), 'parameters': params}
+
+
 def save_json(path, data):
     temporary = path.with_suffix('.json.tmp')
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2))
@@ -115,6 +145,7 @@ def run_cases(args):
     results = []
     print('Results: '+str(root), flush=True)
     sensors = production_sensor_settings()
+    planner = production_planner_settings()
     for scenario in scenarios:
         folder = root/scenario
         folder.mkdir(parents=True, exist_ok=True)
@@ -136,7 +167,7 @@ def run_cases(args):
             'ros_master_uri': env['ROS_MASTER_URI'], 'gazebo_master_uri': env['GAZEBO_MASTER_URI'],
             'world': world, 'osm': osm, 'road_width_m': width,
             'turn_only': args.turn_only, 'initial_pose': [10. if args.turn_only else 0., 0. if scenario != 'narrow' else 25., 0.],
-            'model': 'acker_robot_default_6/model_5000.pth', 'production_config': 'neupan_config_outdoor.yaml',
+            'model': planner['parameters']['dune_checkpoint'], 'production_config': planner['parameters']['config_file'],
             'ground_truth_localization': True, 'record_bag': args.record_bag,
             'sensor_parameters': sensors, 'sensor_model': 'horizontal_ray_to_imu_cloud_to_production_scan',
             'real_hardware_started': False, 'connection_planner': args.connection_planner})
@@ -145,6 +176,7 @@ def run_cases(args):
         save_json(folder/'scan_parameters.json', sensors['scan'])
         launch = ['roslaunch', '-p', str(port), 'neupan_ros', 'outdoor_simulation.launch',
                   'scenario:='+scenario, 'output_dir:='+str(folder),
+                  'dune_checkpoint:='+planner['parameters']['dune_checkpoint'],
                   'connection_planner:='+args.connection_planner,
                   'road_width:='+str(width), 'turn_only:='+str(args.turn_only).lower(),
                   'world_file:='+world, 'osm_file:='+osm,
@@ -197,7 +229,7 @@ def run_cases(args):
              '| 场景 | 结果 | 说明 |', '|---|---|---|']
     for result in results:
         lines.append('| {} | {} | {} |'.format(result['scenario'], 'PASS' if result['passed'] else 'FAIL', result['reason']))
-    lines += ['', '使用生产 OSM A*、室外配置、模型 6 与 NeuPAN 求解器；定位为仿真真值，不代表实车 RTK/FAST-LIO 验收。',
+    lines += ['', '使用生产 OSM A*、室外配置、当前室外模型与 NeuPAN 求解器；定位为仿真真值，不代表实车 RTK/FAST-LIO 验收。',
               '雷达安装与过滤参数取自实车配置；0.5 m 近距预处理 → IMU 点云 → 生产扫描节点（base_link、range_min=0.4 m）。',
               '仅额外缓冲区内的近场未知采样点可保持未验证；车身进入未知区或碰到已知障碍仍拒绝，不宣称完整 12 cm 余量已观测。',
               '每个场景目录保存 overview.mp4（俯视轨迹，不是相机视频）、navigation.jsonl、console.log 和 result.json；可选 simulation.bag。']

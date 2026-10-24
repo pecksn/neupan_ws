@@ -1,0 +1,28 @@
+<launch>
+  <!-- Run through outdoor_road_simulation.py for a private master and generated inputs. -->
+  <arg name="output_dir"/>
+  <arg name="controller_type" default="neupan_node.py"/>
+  <arg name="recording_required" default="false"/>
+  <arg name="gui" default="false"/>
+  <arg name="rviz" default="false"/>
+  <param name="/gazebo/pub_clock_frequency" value="100"/>
+  <include file="$(find neupan_ros)/example/lxw_car_simulation/launch/outdoor_simulation.launch">
+    <arg name="controller_type" value="$(arg controller_type)"/>
+    <arg name="scenario" value="wide"/><arg name="automated" value="false"/>
+    <arg name="gui" value="$(arg gui)"/><arg name="rviz" value="$(arg rviz)"/>
+    <arg name="output_dir" value="$(arg output_dir)"/>
+    <arg name="world_file" value="$(arg output_dir)/inputs/road.world"/>
+    <arg name="osm_file" value="$(arg output_dir)/inputs/road.osm"/>
+    <arg name="scan_parameters" value="$(arg output_dir)/inputs/scan.json"/>
+    <arg name="control_parameters" value="$(arg output_dir)/inputs/control.yaml"/>
+    <arg name="raw_command_topic" value="/outdoor_sim/raw_cmd"/>
+    <arg name="pose_command_topic" value="/planner_sim/model_state"/>
+    <arg name="model_states_topic" value="/outdoor_sim/model_states"/>
+  </include>
+  <node pkg="topic_tools" type="throttle" name="outdoor_model_relay"
+        args="messages /gazebo/model_states 30 /outdoor_sim/model_states" required="true"/>
+  <node pkg="neupan_ros" type="outdoor_road_simulation.py" name="outdoor_road_episode" args="episode" required="true" output="screen">
+    <param name="output_dir" value="$(arg output_dir)"/>
+    <param name="recording_required" value="$(arg recording_required)"/>
+  </node>
+</launch>

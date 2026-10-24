@@ -185,3 +185,27 @@ roslaunch neupan_ros lxw_car_simulation.launch \
 - 仿真通过不代表实车验收。局部仿真的后轴参考与限速修正见上；室外配置、实车参数与共享 Hybrid A* 本轮未修改。
 
 最新完整对比与视频入口：[2026-10-19 自适应 NeuPAN / TEB](../../../../videos/planner_comparison/20261019_adaptive_full_comparison/presentation/README.md)。旧失败结果已清理，本轮失败及审计异常完整保留。
+
+## 室外道路避障与真实 OSM 场景
+
+新增 [室外道路仿真说明](docs/outdoor_road_simulation.md)：读取当前室外参数与模型 `_7`，独立运行校园道路静态绕障/横穿挑战，支持真实 Gazebo 1080p 录屏。静态测试通过，横穿仍有包络重叠，尚未验收。还可从实车现有 `map.osm` 生成保留路网/建筑轮廓的校区场景；楼高、路宽缺失处明确标为假设，真实路网闭环导航尚未验证。
+
+2026-10-24 [最新室外效果视频与报告](../../../../videos/outdoor_simulation/20261024_adaptive_road_recording/README.md)：NeuPAN＋扫描运动估计＋预测让行保护（仅仿真），静态1/1、横穿2/2到达。原生接入与纯速度接入仍有失败，不能将结果归为原生规划器单独通过；实车及求解器未改。
+
+
+园区5动态障碍物、原生室外参数录像（关闭速度输入和额外让行保护）：
+
+```bash
+rosrun neupan_ros outdoor_road_simulation.py run --scenario campus --profile outdoor --motion-estimation off --predictive-yield off --record-gazebo
+```
+
+开关说明见 [室外道路仿真](docs/outdoor_road_simulation.md#园区多动态障碍物与显式开关2026-10-24)。
+
+
+园区回线修复（速度估计与预测让行关闭，启用扫描时间对齐和求解双初值）：
+
+```bash
+rosrun neupan_ros outdoor_road_simulation.py run --scenario campus --profile sim_campus --motion-estimation off --predictive-yield off --record-gazebo
+```
+
+实际参数见每次输出的 `effective_planner.json`，仿真不修改实车文件。
