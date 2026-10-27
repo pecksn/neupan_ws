@@ -3,6 +3,7 @@ import ast
 from pathlib import Path
 import unittest
 import copy
+from collections import deque
 import hashlib
 import json
 import math
@@ -19,7 +20,7 @@ tree = ast.parse(source.read_text())
 functions = ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef)], type_ignores=[])
 namespace = {'np':np, 'cv2':cv2}
 exec(compile(functions, str(source), 'exec'), namespace)
-namespace.update({'copy':copy,'hashlib':hashlib,'json':json,'math':math,'time':time,'threading':threading,
+namespace.update({'copy':copy,'deque':deque,'hashlib':hashlib,'json':json,'math':math,'time':time,'threading':threading,
                   'String':lambda **kw:NS(**kw),
                   'tf':NS(Exception=RuntimeError,transformations=NS(quaternion_from_euler=lambda *a:(0,0,0,1)))})
 classes=ast.Module(body=[n for n in tree.body if isinstance(n,ast.ClassDef)],type_ignores=[])
@@ -27,6 +28,36 @@ exec(compile(classes,str(source),'exec'),namespace)
 
 
 class GeometryTests(unittest.TestCase):
+    def test_observation_only_input_does_not_change_control_state(self):
+        cls=namespace['CameraRightPath'];node=cls.__new__(cls)
+        node.lock=threading.RLock();node.packet={'control':True};node.received=123.
+        node.confirmations=2;node.last_seq=100
+        node.cache=namespace['SegmentCache']();node.cache.pending={1:(.3,2,123.,100)}
+        node.observation_cb(NS(data=json.dumps({'frame_seq':101,'valid':False,'confidence':.49})))
+        self.assertEqual(node.packet,{'control':True});self.assertEqual(node.received,123.)
+        self.assertEqual(node.confirmations,2);self.assertEqual(node.last_seq,100)
+        self.assertEqual(len(node.cache.pending),1)
+
+    def test_fixed_odom_cache_reprojects_small_alignment_without_stale_offsets(self):
+        cache=namespace['SegmentCache']()
+        cache.committed={10:(.5,1.)};cache.pending={11:(.5,2,1.,2)}
+        route=np.column_stack((np.arange(30)*.1,np.zeros(30)))
+        geometry={i:dict(points_odom=np.array([[i*.1,.5],[i*.1,2.],[i*.1,-1.5]]),capture_timestamp_ns=1)
+                  for i in (10,11)}
+        namespace['remap_cache_geometry'](cache,geometry,route,([0.,.05],0.),1.5)
+        self.assertAlmostEqual(cache.committed[10][0],.55)
+        self.assertAlmostEqual(cache.pending[11][0],.55)
+        self.assertEqual(cache.pending[11][1],2)
+        self.assertEqual(cache.committed[10][1],1.) # Projection does not renew TTL.
+        namespace['remap_cache_geometry'](cache,geometry,route,([0.,5.],0.),1.5)
+        self.assertFalse(cache.committed);self.assertFalse(cache.pending)
+
+    def test_fixed_coordinate_round_trip(self):
+        points=np.array([[1.,2.],[3.,4.]])
+        anchor=([100.,200.],.3)
+        odom=namespace['planar_transform'](points,anchor,True)
+        np.testing.assert_allclose(namespace['planar_transform'](odom,anchor),points)
+
     def capture_namespace(self):
         return patch.dict(namespace, {
             'rospy': NS(Time=lambda sec, nsec: (sec, nsec)),
@@ -231,16 +262,20 @@ class GeometryTests(unittest.TestCase):
         node.lock=threading.RLock();node.last_tick=time.monotonic();node.packet=None
         node.shift=.3;node.confirmations=4;node.received=0;node.timeout=.5
         node.previous=None;node.control=True
+        node.execution_contract={'stale':True}
         output=[];status=[]
         node.preview=NS(publish=lambda p:None);node.output=NS(publish=output.append);node.status=NS(publish=status.append)
-        node.tick(None)
+        with patch.dict(namespace,rospy=NS(Time=NS(now=lambda:NS(to_nsec=lambda:200)))):
+            node.tick(None)
         self.assertEqual([p.pose.position.x for p in output[0].poses],[0,3,6])
         self.assertEqual([p.pose.position.y for p in output[0].poses],[0,0,0])
         self.assertEqual(output[0].header.seq,7)
         self.assertEqual(output[0].header.stamp.to_nsec(),123)
         self.assertFalse(json.loads(status[0].data)['active'])
+        self.assertIsNone(json.loads(status[0].data)['inference_diagnostics']['execution_contract'])
         self.assertEqual(node.shift,0)
-        node.tick(None)
+        with patch.dict(namespace,rospy=NS(Time=NS(now=lambda:NS(to_nsec=lambda:200)))):
+            node.tick(None)
         self.assertEqual(len(output),1)
 
 

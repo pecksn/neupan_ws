@@ -1,0 +1,13 @@
+<launch>
+  <arg name="config" default="$(find hybridnets_receiver)/config/receiver.yaml" />
+  <arg name="virtual_video_device" default="/dev/video0" />
+  <arg name="virtual_video_fps" default="30" />
+  <!-- No JSON, overlay, recording, planner or vehicle driver. -->
+  <node pkg="hybridnets_receiver" type="rtp_camera_receiver.py"
+        name="rtp_camera_receiver" launch-prefix="/usr/bin/python3"
+        output="screen" required="true">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="virtual_video_device" value="$(arg virtual_video_device)" type="str" />
+    <param name="virtual_video_fps" value="$(arg virtual_video_fps)" type="int" />
+  </node>
+</launch>

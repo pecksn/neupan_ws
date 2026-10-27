@@ -1,0 +1,19 @@
+[Unit]
+Description=GPU raw video to ROS1 and /dev/video0 (no inference or vehicle)
+Requires=neupan-ros-master.service
+After=neupan-ros-master.service systemd-modules-load.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=/usr/sbin/modprobe v4l2loopback
+ExecStart=/usr/bin/docker exec Neupan /bin/bash --noprofile --norc /home/nuc/lxw/neupan_ws/src/hybridnets_receiver/scripts/remote_video_service.sh video
+ExecStop=/usr/bin/docker exec Neupan /bin/bash --noprofile --norc /home/nuc/lxw/neupan_ws/src/hybridnets_receiver/scripts/remote_video_service.sh stop-video
+Restart=always
+RestartSec=5
+TimeoutStopSec=40
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

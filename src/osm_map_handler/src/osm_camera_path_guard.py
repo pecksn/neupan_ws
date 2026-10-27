@@ -4,9 +4,11 @@ Owned by the map/path package; importing this module does not start a ROS node.
 The consumer must keep checking the producer's heartbeat in its own process.
 """
 import hashlib
+import copy
 import json
 import math
 import threading
+import numpy as np
 
 
 def path_digest(path):
@@ -27,6 +29,19 @@ def route_key(path):
     return (path.header.frame_id, path.header.stamp.to_nsec(), round(end.x, 3), round(end.y, 3))
 
 
+def authorization_identity(status):
+    """Semantic authorization; heartbeat lease extensions are not replacements."""
+    detail=status.get('inference_diagnostics') or {}
+    contract=detail.get('execution_contract') or {}
+    if not isinstance(contract,dict):contract={'invalid_contract':str(contract)}
+    fields={key:status.get(key) for key in ('route_stamp_ns','route_frame_id','control_enabled',
+        'active','control_path_digest','corridor_stop_required','corridor_verified')}
+    fields['contract']={key:value for key,value in contract.items() if key!='expires_ns'}
+    fields['hazards']=status.get('hazard_regions') or detail.get('hazard_regions') or {}
+    try:return hashlib.sha256(json.dumps(fields,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+    except (TypeError,ValueError):return None
+
+
 class CameraPathGuard:
     def __init__(self, timeout=3.0):
         if not math.isfinite(timeout) or timeout <= 0:
@@ -38,31 +53,111 @@ class CameraPathGuard:
         self.original_digest = self.candidate_digest = None
         self.status = None
         self.received = None
+        self.corridor_hold_key = None
+        self.hazard_regions={}
+        self.released_hazard_ids=[]
+        self.safety_generation=0
+        self.authorization_generation=0
+        self.authorization_id=None
+        self.pending_recovery=None
 
     def original_cb(self, path):
         with self.lock:
+            old=(self.original_key,self.original_digest)
+            # A new route ID/manual relocation is not spatial revalidation.
             self.original_key = route_key(path)
             self.original = path if self.original_key else None
             self.original_digest = path_digest(path) if self.original_key else None
+            if old!=(self.original_key,self.original_digest):self.authorization_generation+=1
 
     def candidate_cb(self, path):
         with self.lock:
+            old=(self.candidate_key,self.candidate_digest)
             self.candidate_key = route_key(path)
             self.candidate = path if self.candidate_key else None
             self.candidate_digest = path_digest(path) if self.candidate_key else None
+            if old!=(self.candidate_key,self.candidate_digest):self.authorization_generation+=1
 
     def status_cb(self, data, now):
         with self.lock:
-            self.status = data if isinstance(data, dict) else None
+            old_contract=((self.status or {}).get('inference_diagnostics') or {}).get('execution_contract') or {}
+            if not isinstance(old_contract,dict):old_contract={}
+            self.status = copy.deepcopy(data) if isinstance(data, dict) else None
             self.received = now
+            # Record revocation in the callback, not only when the solver next
+            # polls. A STOP followed by a valid release must still invalidate
+            # commands computed before that hazard generation.
+            status=self.status or {};detail=status.get('inference_diagnostics') or {}
+            identity=authorization_identity(status)
+            new_contract=detail.get('execution_contract') or {}
+            if not isinstance(new_contract,dict):new_contract={}
+            expiry,old_expiry=new_contract.get('expires_ns',0),old_contract.get('expires_ns',0)
+            shorter=(not isinstance(expiry,int) or not isinstance(old_expiry,int) or expiry<old_expiry)
+            if identity!=self.authorization_id or shorter:
+                self.authorization_generation+=1
+                self.pending_recovery=None
+            self.authorization_id=identity
+            if (self.original_key is not None and status.get('control_enabled') is True
+                    and status.get('route_stamp_ns')==self.original_key[1]
+                    and status.get('route_frame_id')==self.original_key[0]
+                    and status.get('corridor_stop_required') is True):
+                incoming=status.get('hazard_regions') or detail.get('hazard_regions') or {}
+                if self.corridor_hold_key is None or not set(incoming).issubset(self.hazard_regions):self.safety_generation+=1
+                self.corridor_hold_key=self.original_key
+                self.hazard_regions.update(incoming);self.released_hazard_ids=[]
 
-    def select(self, now):
+    def select(self, now, now_ns=None):
         with self.lock:
+            self.pending_recovery=None
             age = None if self.received is None else now-self.received
             status = self.status or {}
+            detail=status.get('inference_diagnostics') or {}
+            matches=(self.original_key is not None and status.get('control_enabled') is True
+                and status.get('route_stamp_ns')==self.original_key[1]
+                and status.get('route_frame_id')==self.original_key[0])
+            fresh=age is not None and 0<=age<=self.timeout
+            if fresh and matches and status.get('corridor_stop_required') is True:
+                incoming=status.get('hazard_regions') or detail.get('hazard_regions') or {}
+                if self.corridor_hold_key is None or not set(incoming).issubset(self.hazard_regions):self.safety_generation+=1
+                self.released_hazard_ids=[]
+                self.corridor_hold_key=self.original_key
+                self.hazard_regions.update(status.get('hazard_regions') or detail.get('hazard_regions') or {})
+            elif (fresh and matches and status.get('corridor_verified') is True
+                  and status.get('corridor_stop_required') is False
+                  and self.candidate_key==self.original_key
+                  and status.get('control_path_digest')==self.candidate_digest):
+                proof=detail.get('hazard_proof',{})
+                verification=detail.get('hazard_verification') or {}
+                cleared=(now_ns is not None and verification.get('path_digest')==self.candidate_digest
+                    and verification.get('coordinate_frame')=='odom'
+                    and 0<=now_ns-verification.get('verified_at_ns',0)<=800000000
+                    and now_ns<=verification.get('valid_until_ns',0))
+                for identity,region in self.hazard_regions.items():
+                    sample=proof.get(identity,{})
+                    try:
+                        if 'region_odom' in region:
+                            normal=np.asarray(region['normal_odom'],float)
+                            other=np.asarray(sample['normal_odom'],float)
+                            delta=np.asarray(sample['region_odom'])-region['region_odom']
+                            forward=np.array([normal[1],-normal[0]])
+                            spatial=(abs(np.linalg.norm(normal)-1)<1.e-3 and abs(np.linalg.norm(other)-1)<1.e-3
+                                and abs(delta@forward)<=.35 and abs(delta@normal)<=1.5
+                                and abs(normal@other)>=math.cos(math.radians(15)))
+                        else:spatial=np.linalg.norm(np.asarray(sample['right_odom'])-region['right_odom'])<=.35
+                        valid=sample['capture_timestamp_ns']>region['capture_timestamp_ns'] and spatial
+                    except (KeyError,TypeError,ValueError):valid=False
+                    cleared=cleared and valid
+                # Unlocated legacy holds cannot be cleared by a lone boolean.
+                if cleared and self.hazard_regions:
+                    self.pending_recovery=dict(generation=self.authorization_generation,safety_generation=self.safety_generation,
+                        path_digest=self.candidate_digest,valid_until_ns=verification['valid_until_ns'])
             source, reason = 'osm', 'camera_heartbeat_missing'
             if self.original is None:
                 source, reason = 'stop', 'original_route_missing_or_invalid'
+            elif self.corridor_hold_key is not None and self.pending_recovery is None:
+                source, reason = 'stop', ('camera_recovery_scope_unknown_manual_check' if detail.get('recovery_unlocated_required')
+                                          else 'camera_hazard_capacity_exceeded' if detail.get('hazard_capacity_exceeded')
+                                          else 'camera_corridor_or_transition_unsafe')
             elif age is None or not 0 <= age <= self.timeout:
                 reason = 'camera_heartbeat_stale'
             elif status.get('control_enabled') is not True:
@@ -74,9 +169,91 @@ class CameraPathGuard:
             elif status.get('control_path_digest') != self.candidate_digest:
                 reason = 'camera_path_not_confirmed_by_heartbeat'
             else:
-                source, reason = 'camera', 'ok'
-            path = self.candidate if source == 'camera' else self.original
+                source, reason = 'camera', ('camera_recovery_pending_execution' if self.pending_recovery else 'ok')
+            needs_contract=bool(status.get('active') or self.pending_recovery)
+            contract=detail.get('execution_contract') if source=='camera' and needs_contract else None
+            if source=='camera' and needs_contract and not valid_contract(contract,status.get('control_path_digest')):
+                source,reason='stop','camera_execution_contract_missing_or_invalid'
+                self.pending_recovery=None
+            path = None if source=='stop' else self.candidate if source == 'camera' else self.original
             digest = self.candidate_digest if source == 'camera' else self.original_digest
             state = {'source': source, 'reason': reason, 'heartbeat_age_sec': age,
-                     'timeout_sec': self.timeout}
+                     'authorization_generation':self.authorization_generation,
+                     'authorization_id':self.authorization_id,
+                     'original_path_digest':self.original_digest,
+                     'timeout_sec': self.timeout,
+                     'execution_contract':contract,
+                     'hazard_regions':dict(self.hazard_regions),
+                     'released_hazard_ids':list(self.released_hazard_ids),
+                     'recovery_pending':self.pending_recovery is not None,
+                     'safety_generation':self.safety_generation,
+                     'camera_channel_accepted': source == 'camera',
+                     'corridor_stop_latched': self.corridor_hold_key is not None,
+                     'producer_active': status.get('active') if source == 'camera' else False,
+                     'guidance_source': status.get('guidance_source') if source == 'camera' else 'osm',
+                     'matched_path_digest': digest, 'matched_route_identity': self.original_key,
+                     'near_field_visual_modified': bool(source == 'camera' and status.get('near_field_modified_points',0)>0),
+                     'near_field_max_offset_m': status.get('near_field_max_offset_m',0.) if source == 'camera' else 0.}
             return path, (source, self.original_key, digest), state
+
+    def commit_recovery(self,generation,safety_generation,now_ns):
+        """Called under publication lock AFTER actual prediction/age checks."""
+        with self.lock:
+            if self.corridor_hold_key is None:return True
+            pending=self.pending_recovery
+            if (not pending or generation!=self.authorization_generation or safety_generation!=self.safety_generation
+                    or pending['generation']!=generation or pending['safety_generation']!=safety_generation
+                    or now_ns>pending['valid_until_ns']):return False
+            self.released_hazard_ids=list(self.hazard_regions)
+            self.hazard_regions.clear();self.corridor_hold_key=None;self.pending_recovery=None
+            return True
+
+
+def valid_contract(contract,digest):
+    if not isinstance(contract,dict):return False
+    try:
+        return (contract['version']==1 and contract['path_digest']==digest
+            and contract['coordinate_frame']=='odom' and 0<contract['speed_cap_mps']<=1.5
+            and isinstance(contract['expires_ns'],int) and 0<len(contract['sections'])<=256
+            and np.isfinite(np.r_[contract['end_odom'],contract['direction_odom']]).all())
+    except (KeyError,TypeError,ValueError):return False
+
+
+def check_execution_contract(contract, states_odom, now_ns, speed, footprint):
+    """Hard speed, age, endpoint and swept-road-region gate at publication."""
+    if not valid_contract(contract,contract.get('path_digest')):raise ValueError('invalid execution contract')
+    if now_ns>contract['expires_ns'] or contract['expires_ns']-now_ns>1000000000:
+        raise ValueError('execution contract expired or future clock')
+    if abs(speed)>contract['speed_cap_mps']+1.e-4:raise ValueError('camera hard speed cap exceeded')
+    states=np.asarray(states_odom,float)
+    if not np.isfinite(states).all():raise ValueError('nonfinite execution poses')
+    end=np.asarray(contract['end_odom']);direction=np.asarray(contract['direction_odom'])
+    if abs(np.linalg.norm(direction)-1)>1.e-3:raise ValueError('invalid execution endpoint normal')
+    body=np.asarray(footprint,float).T
+    sections=contract['sections'];origins=np.array([v['route_point'] for v in sections])
+    # Interpolate at <=5cm swept displacement, including the actual footprint.
+    samples=[]
+    for a,b in zip(states[:-1],states[1:]):
+        dyaw=math.atan2(math.sin(b[2]-a[2]),math.cos(b[2]-a[2]))
+        count=max(1,int(math.ceil((np.linalg.norm(b[:2]-a[:2])+np.max(np.linalg.norm(body,axis=1))*abs(dyaw))/.05)))
+        if count>200:raise ValueError('execution sweep budget exceeded')
+        for t in np.linspace(0,1,count+1):
+            pose=(1-t)*a+t*b;pose[2]=a[2]+t*dyaw;samples.append(pose)
+    for pose in samples:
+        c,s=math.cos(pose[2]),math.sin(pose[2]);corners=body@np.array([[c,s],[-s,c]])+pose[:2]
+        if np.max((corners-end)@direction)>-.2:raise ValueError('prediction exceeds verified road endpoint')
+        idx=int(np.argmin(np.linalg.norm(origins-pose[:2],axis=1)))
+        item=sections[idx];normal=np.asarray(item['normal'],float)
+        if abs(np.linalg.norm(normal)-1)>1.e-3:raise ValueError('invalid road normal')
+        # Before the measured region only the unchanged original approach is
+        # authorized; do not reinterpret it as a single-side visual correction.
+        if (pose[:2]-origins[0])@direction<0:continue
+        if np.min((corners-np.asarray(item['right']))@normal)<.05:raise ValueError('actual swept body outside right corridor')
+        if item.get('left') is not None and np.min((np.asarray(item['left'])-corners)@normal)<.05:
+            raise ValueError('actual swept body outside left corridor')
+        if item.get('left') is None:
+            from osm_camera_path_refinement import observed_area_contains
+            evidence=dict(area=item.get('area'))
+            tangent=np.array([c,s]);path=np.array([pose[:2]-tangent,pose[:2],pose[:2]+tangent])
+            if not observed_area_contains(pose[:2],path,1,evidence,([0.,0.],0.)):
+                raise ValueError('actual swept body outside measured drivable pixels')

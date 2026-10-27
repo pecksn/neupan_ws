@@ -2,10 +2,12 @@
 """Receive H.264/RTP with GStreamer and publish ROS1 Image + CameraInfo."""
 
 import os
+import math
 import queue
 import shutil
 import subprocess
 import threading
+import time
 
 import gi
 gi.require_version("Gst", "1.0")
@@ -39,6 +41,33 @@ def load_camera_info(path, frame_id):
     return message
 
 
+class VideoReceptionHealth:
+    """Wall-clock health from accepted image frames, not sockets or node PIDs."""
+    def __init__(self, now, timeout=3.0):
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError('stream_timeout_sec must be finite and positive')
+        self.timeout = timeout
+        self.last_frame = None
+        self.frames = self.previous_frames = 0
+        self.previous_sample = now
+        self.lock = threading.Lock()
+
+    def accept(self, now):
+        with self.lock:
+            self.frames += 1
+            self.last_frame = now
+
+    def report(self, now):
+        with self.lock:
+            elapsed = now - self.previous_sample
+            fps = (self.frames-self.previous_frames)/elapsed if elapsed > 0 else 0.
+            age = None if self.last_frame is None else max(0., now-self.last_frame)
+            state = 'waiting' if age is None else 'disconnected' if age >= self.timeout else 'receiving'
+            self.previous_sample, self.previous_frames = now, self.frames
+            return dict(state=state, fps=fps if state == 'receiving' else 0.,
+                        total_frames=self.frames, last_frame_age_sec=age)
+
+
 class RtpCameraReceiver:
     def __init__(self):
         Gst.init(None)
@@ -56,6 +85,9 @@ class RtpCameraReceiver:
         self.virtual_queue = queue.Queue(maxsize=1)
         self.virtual_stop = threading.Event()
         self.virtual_thread = None
+        self.reception_health = VideoReceptionHealth(time.monotonic(),
+            float(rospy.get_param('~stream_timeout_sec', 3.0)))
+        self.health_stop = threading.Event()
 
         self.image_pub = rospy.Publisher(image_topic, Image, queue_size=1)
         self.info_pub = rospy.Publisher(info_topic, CameraInfo, queue_size=1)
@@ -81,9 +113,30 @@ class RtpCameraReceiver:
         self.pipeline.set_state(Gst.State.PLAYING)
         rospy.Timer(rospy.Duration(0.2), self.check_bus)
         rospy.on_shutdown(self.shutdown)
+        self.health_thread = threading.Thread(target=self.health_loop, daemon=True)
+        self.health_thread.start()
         rospy.loginfo("Receiving H.264/RTP camera on UDP %d -> %s%s", port,
                       image_topic,
                       " and " + self.virtual_device if self.virtual_device else "")
+
+    def health_loop(self):
+        previous_state, emitted = None, -math.inf
+        while not self.health_stop.is_set():
+            now = time.monotonic()
+            status = self.reception_health.report(now)
+            state = status['state']
+            interval = 1. if state == 'receiving' else 5.
+            if state != previous_state or now-emitted >= interval:
+                if state == 'receiving':
+                    rospy.loginfo('视频接收成功 | 接收帧率=%.1f FPS | 累计=%d帧 | 距上一帧=%.2fs',
+                        status['fps'], status['total_frames'], status['last_frame_age_sec'])
+                elif state == 'waiting':
+                    rospy.loginfo('等待推流 | 尚未收到有效视频帧 | 接收帧率=0.0 FPS | 正在监听UDP视频端口')
+                else:
+                    rospy.logwarn('视频断流 | 已%.1fs没有有效视频帧 | 接收帧率=0.0 FPS | 继续监听，恢复来帧后自动更新',
+                        status['last_frame_age_sec'])
+                previous_state, emitted = state, now
+            self.health_stop.wait(1.)
 
     def start_virtual_video(self):
         if not os.path.exists(self.virtual_device):
@@ -115,6 +168,7 @@ class RtpCameraReceiver:
             except (BrokenPipeError, OSError, ValueError) as error:
                 if not self.virtual_stop.is_set():
                     rospy.logerr("Writing %s failed: %s", self.virtual_device, error)
+                    rospy.signal_shutdown("virtual camera writer failed")
                 return
 
     def queue_virtual_frame(self, frame):
@@ -168,6 +222,7 @@ class RtpCameraReceiver:
             info.header.stamp = stamp
             self.image_pub.publish(image)
             self.info_pub.publish(info)
+            self.reception_health.accept(time.monotonic())
             self.queue_virtual_frame(frame)
         finally:
             buffer.unmap(mapped)
@@ -181,8 +236,11 @@ class RtpCameraReceiver:
             else message.parse_warning()
         log = rospy.logerr if message.type == Gst.MessageType.ERROR else rospy.logwarn
         log("GStreamer: %s (%s)", error, debug)
+        if message.type == Gst.MessageType.ERROR:
+            rospy.signal_shutdown("GStreamer receiver failed")
 
     def shutdown(self):
+        self.health_stop.set()
         self.pipeline.set_state(Gst.State.NULL)
         self.virtual_stop.set()
         if self.virtual_process is not None:

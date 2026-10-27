@@ -1,117 +1,39 @@
-# hybridnets_receiver
+# 视频独立自启，JSON随NeuPAN启动
 
-ROS1 NUC-side receiver for the GPU-board HybridNets stream.
+- `neupan-ros-master.service`：只维持共享ROS1 Master，不启动雷达、底盘或规划。
+- `neupan-remote-video.service`：只接收GPU的H.264/RTP UDP 5000，发布`/camera/remote_image_raw`、`/camera/remote_camera_info`，写入`/dev/video0`；无JSON、绘图、录像或弹窗。
+- `full_system_run.launch`：默认`enable_hybridnets_video:=false`，仍启动原JSON接收及按配置启用的靠右逻辑。GPU命令与5000/6000端口不变。
+- `receiver.launch`同样默认`start_video:=false`，避免人工测试重复抢占自启节点。没有启用自启服务时，可显式`start_video:=true`。
 
-```bash
-roslaunch hybridnets_receiver receiver.launch
-```
+本机2026-10-27已安装并启用两项服务，收到1920×1080 BGR原图；单独重启视频服务后画面恢复，Master PID不变且没有重复接收进程，未启动JSON或车辆节点。构建通过，全量538项中530通过、8项可选跳过；尚未重启整机验证开机流程。
 
-The package receives H.264/RTP on UDP 5000 and validated JSON on UDP 6000.
-By default, it publishes the original video to `/camera/remote_image_raw` and
-`/dev/video0`, and validated inference JSON to `/hybridnets/result_json`.
-`/hybridnets/observations_json` independently carries admitted fresh observations,
-including no-road, low-confidence and control-confirmation frames, with their
-per-frame receiver diagnostics. The overlay and matched debug MP4/JSONL use this
-observation stream; only the control JSON is withheld until visual confirmation.
-Frequency/confidence metrics continue updating during visual failures. Packets
-with rejected credentials, bad schema, stale timestamps or invalid ordering are
-not observations and remain rejection diagnostics only. All three bag profiles
-record observations as an optional topic.
-The debug overlay is only generated when requested:
+登录NUC图形桌面后自动打开“原视频接收服务”终端，不再用对话框：最多等待60秒确认服务、容器和节点，然后显示检查结果、服务状态、实时日志及停止/启动命令。按Ctrl+C退出日志跟随后进入宿主机命令行；关窗口不停止服务。终端不显示摄像头画面，不启动控制，检查通过不等于GPU已推流。纯SSH不登录图形桌面时不会弹终端，后台服务照常运行；配置在`~/.config/autostart/neupan-video-status.desktop`。可在“启动应用程序”禁用“原视频接收服务终端”，只取消弹终端，不取消视频服务。
 
-```bash
-roslaunch hybridnets_receiver receiver.launch show_overlay:=true
-```
+实际收流状态由接收节点按有效解码、尺寸正确且已发布的原图计数，使用单调时钟，不订阅/拷贝第二份大图：
 
-For a debug topic without an automatic display window, use
-`start_overlay:=true show_overlay:=false`. Neither the receiver nor its debug
-overlay publishes vehicle control commands. The separate `camera_right_path`
-node in `osm_map_handler` projects valid boundaries into map coordinates and
-provides a refined reference path to NeuPAN when camera-right control is
-explicitly enabled. See the workspace-level
-`REALTIME_HYBRIDNETS_GUIDE.md` for network setup and acceptance checks.
+- `视频接收成功 | 接收帧率=xx.x FPS`：每秒更新接收/ROS发布帧率，不是GPU推理帧率或虚拟摄像头配置的30 FPS。
+- `等待推流`：本次接收节点启动后尚无有效帧，每5秒提示；端口已打开不算接收成功。
+- `视频断流`：收到过有效帧后，连续3秒无有效帧（`receiver.yaml`的`stream_timeout_sec`）；状态变化立即提示，持续断流每5秒提醒。
 
-The 2026-10-23 binding protocol supersedes data-driven session takeover:
-GPU owns a process lock and exclusive management UDP 6001. NUC generates a fresh
-`receiver_instance_id`, challenges that fixed endpoint with a random nonce, and
-confirms a `binding_ticket` (lease ID) tied to producer/camera identity. Replies
-expire after one monotonic second; leases last 5 seconds with conservative local
-expiry and periodic renewal. Only authorized post-bind captures receive a ticket.
-Expired or mismatched tickets and unseen producer IDs cannot nominate a session.
-An explicitly changed/not-ready authority reply revokes the old binding; mere
-foreign data or a lost query cannot replace a still-valid one. A NUC restart may
-wait up to the old lease's 5-second expiry before binding again.
-Allow UDP 6001 between 192.168.10.21 and 192.168.10.20; video 5000 and result 6000
-remain unchanged. Single-direction legacy senders cannot automatically take over.
-`stream_streak` tracks data health separately from `valid_streak`; candidate frames
-are diagnostic only until three valid fresh frames share one binding. Only then
-is the JSON submitted to the path node. No-road results still diagnose the link.
-The packet/health diagnostics expose binding state and `submitted_to_path`.
-Existing map-cache TTL, localization, historical capture TF and OSM fallback stay unchanged.
+恢复有效帧后自动切回成功；网络断流仍继续监听，不额外增加“无帧强制重建”策略。原有进程/解码器/虚拟摄像头写入错误的自动恢复保留。
 
-Control-mode confirmation requires three consecutive valid frames in the same
-session. Sessions combine the sender, `camera_time_epoch`, and preferably a
-per-process `producer_session_id` (or `session_id`). GPU now generates a UUID at
-each inference-node startup and includes it in every JSON result. Camera reconnects
-independently change `camera_time_epoch`. Both identities and the new lease plus
-receiver instance identify the accepted stream; UDP source ports are not an authority. New sessions
-reset confirmation; retired sessions, duplicate/out-of-order frames and expired
-packets cannot refresh the active heartbeat. Retired identities are diagnostic
-history bounded to 1024 entries; history exhaustion cannot veto a currently
-challenged valid lease or permanently lock out the authoritative stream.
-The path node also checks confirmation for the JSON frame itself, rather than
-trusting an independently delivered Boolean alone. Inspect
-`/hybridnets/timing_diagnostics` for session, forwarding and rejection details;
-the three vehicle bag profiles record this optional topic.
-
-The receiver and path diagnostics expose `producer_session_id` and
-`receiver_session_id` explicitly. Once an explicit producer identity has been
-seen, identity-less packets cannot downgrade that session protection. The
-receiver fails closed on capture ages beyond its age limit, even when the
-GPU-reported source age is small; a clock difference over 60 seconds must not
-bypass the capture-age check. Keep both boards time-synchronized.
-Duplicate/out-of-order datagrams also leave an unexpired confirmation streak
-and valid state unchanged, without extending the heartbeat. A timeout still
-invalidates the state, and a new invalid observation still resets confirmation.
-UUIDs distinguish processes but do not authenticate senders; retain the sender
-IP restriction and isolated network. Retired-session history is diagnostic only;
-eligibility is now decided by the active challenged lease, not first data arrival.
-
-After this source update, restart the existing ROS1 receiver and camera path
-refinement nodes in their normal runtime. Do not launch a duplicate receiver
-on UDP 6000. Validate GPU restart, camera unplug/replug, and network disconnect
-while stationary before enabling motion; automated tests are not field acceptance.
-
-The overlay keeps a short image buffer and matches each result by
-`capture_timestamp_ns`, `source_age_ms`, and the configured RTP delay. The
-displayed `sync=...ms` is the distance to the selected buffered frame, not a
-measurement of the true network delay. Tune `overlay_video_delay_sec` with a
-visible motion/flash test. This is still an estimate because the H.264 stream carries no application frame ID; exact
-matching requires the GPU to generate the overlay from the inference input
-frame or to transport a common frame ID with both video and JSON.
-
-New GPU results distinguish all measured `*_boundary_segments_px` from the
-quality-approved `*_valid_segments_px`. The debug overlay draws measured
-segments as dim thin lines and valid segments as bright thick lines. Control
-code must check the side's `*_boundary_valid` flag and fit only its valid
-segments.
-
-To save one GPU-side video replay as a matched MP4/JSONL pair without opening
-a window:
+## 服务安装与查看（NUC宿主机，不在容器内）
 
 ```bash
-roslaunch hybridnets_receiver receiver.launch \
-  start_overlay:=true show_overlay:=false record_debug_mp4:=true
+cd /home/nuc/lxw/neupan_ws
+sudo install -m 0644 src/hybridnets_receiver/systemd/neupan-ros-master.service /etc/systemd/system/neupan-ros-master.service
+sudo install -m 0644 src/hybridnets_receiver/systemd/neupan-remote-video.service /etc/systemd/system/neupan-remote-video.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now neupan-ros-master.service neupan-remote-video.service
+systemctl status neupan-remote-video.service --no-pager
 ```
 
-The first `/hybridnets/debug_image` frame starts same-stem `.mp4` and `.jsonl`
-files under `/home/nuc/lxw/neupan_ws/videos/hybridnets_debug/`. Each JSONL row
-contains the result matched to a recorded debug frame plus `mp4_frame_index`
-and `mp4_time_sec`. The pair closes after three seconds without frames;
-another replay starts a new pair. Sparse matched frames are held according to
-their ROS timestamps so the MP4 keeps wall-clock duration without duplicating
-JSON rows. Set
-`debug_mp4_output_dir`, `debug_mp4_fps`, or `debug_mp4_idle_timeout_sec` as
-launch arguments if needed. When the receiver is already running, start only
-the recorder with `rosrun hybridnets_receiver debug_mp4_recorder.py` instead
-of opening a second UDP receiver.
+```bash
+journalctl -u neupan-remote-video.service -n 30 --no-pager
+```
+
+服务会自动启动现有`Neupan`容器并加载Noetic/devel环境，不需要菜单按键或激活conda。复用现有`v4l2loopback`开机配置，不覆盖其他虚拟摄像头。无GPU推流时等待，不代表已有画面；端口/同名节点已有使用者时只等待，不杀原进程。Master丢失/更换后重新连接，子进程退出自动重试。
+
+关闭NeuPAN不会关闭服务拥有的Master和视频。若服务启动时已有外部Master，只借用、不接管；外部Master退出时服务才创建自己的Master，因此首次交接可能短暂断流。不要在行驶中停止/重启共享Master，也不要用`rosnode kill -a`关闭整车。
+
+如需停用视频自启，先停稳再在宿主机执行`sudo systemctl disable --now neupan-remote-video.service`；Master仍可保留。之后整车可显式增加`enable_hybridnets_video:=true`，或人工`roslaunch hybridnets_receiver video_only.launch`，二者只选一个视频接收者。

@@ -1,5 +1,29 @@
 # test_motion_tools
 
+2026-10-27发布/恢复协议整改：新增`tests/test_camera_publication_protocol.py`共16项，完整565项：557通过、8项可选跳过。覆盖同路线降速/区域收缩、兼容更新、心跳、检查中撤销、最终时效/锁等待、缓存TTL/TF清理与两阶段恢复。报告在`videos/neupan_publication_fix_20261027/`，真实生产方法配假时钟，不是实车闭环。以下较早条目的数量是各自当时结果。
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests --output-dir videos/neupan_publication_fix_20261027
+python3 src/Test/scripts/verify_neupan_changes.py --publication-regression --output-dir videos/neupan_publication_fix_20261027
+```
+
+2026-10-27视频接收状态：新增`tests/test_video_reception_health.py`的9项测试，覆盖有效帧计数、实际FPS、首次等待、3秒断流、恢复和无效图像拒绝；服务另增2项重启锁交接测试。全量549项：541通过、8项可选跳过，报告在`videos/remote_video_health_20261027/unit_regression.json`。实机已看到等待与成功/FPS日志，断流恢复使用假时钟验证，未断开GPU网络进行实测。
+
+2026-10-27原视频独立服务：新增`tests/test_remote_video_service.py`的8项回归，覆盖仅视频启动、JSON保留在NeuPAN、外部Master/端口不抢占、Master变化重连及停止进程身份检查。当时全量538项：530通过、8项可选跳过，报告在`videos/remote_video_service_20261027/unit_regression.json`；真实开机重启尚未测试，不能把enabled/active当作已重启验收。
+
+2026-10-27：新增`tests/test_camera_right_policy.py`，并扩展发布边界回归；当前完整530项，522通过、8项可选跳过。覆盖同历元TF、原危险区域复查/确认、刹停近处重观测、1–2 m及滞回、单右边界真实区域、短/不交叠左边界及单双侧切换、长段/单向过渡、多周期收敛、平顺退出、执行区域隔离、容量锁停、实际硬限速和真实NeuPAN保存输入。新结果统一在`videos/neupan_policy_20261027/`，不替代实车验收。实际靠右控制使用segment_cache；旧realtime仅作影子对照，不具备本轮完整授权链。
+
+可重复生成带跳过原因和源码指纹的完整回归报告（ROS1 lxw）：
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests \
+  --output-dir videos/neupan_policy_20261027
+```
+
+2026-10-26跟进：`tests/test_followup_safety.py`新增17项，覆盖空异常/写盘失败故障保持、同一扫描发布时效、odom原点不变性、形状/转向变化、实际走廊、停车释放及拒绝参考基准。完整回归493项：485通过、8项可选跳过。两份快照及三组完整bag对照见`videos/neupan_followup_20261026/`，与之前结果分开保留。回放基线为本轮修改前已部署模块，5 Hz对5 Hz，源码指纹随报告保存。
+
+2026-10-26：参考生成与预测轨迹安全回归加入`tests/test_reference_and_trajectory_safety.py`，缓存重投影及观测隔离加入既有几何测试；完整回归476项，468通过、8项可选跳过。失败快照/录包只读对照统一使用`scripts/verify_neupan_changes.py`，报告目录`videos/neupan_update_20261026/`。脚本不发布车辆话题，录包使用原位姿/TF，不代表修改后的真实行驶结果。
+
 2026-10-23 NUC观测/控制分离与路径历史整改：会话专项40项通过；Neupan/lxw完整回归422项，414通过、8项可选跳过。覆盖无道路连续观测及图像匹配、候选不进控制、满历史合法租约切换与接收实例恢复；未进行物理相机、网络恢复或实车驾驶验收。
 
 `scripts/` 放人工运动测试和采集工具，`tests/` 放自动回归；两者不要混用。目录约定见 [功能包分类](../README.md)。

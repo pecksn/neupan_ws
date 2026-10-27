@@ -2,7 +2,8 @@
   <arg name="config"
        default="$(find hybridnets_receiver)/config/receiver.yaml" />
 
-  <arg name="start_video" default="true" />
+  <!-- Raw video is owned by neupan-remote-video.service by default. -->
+  <arg name="start_video" default="false" />
   <arg name="show_overlay" default="false" />
   <arg name="start_overlay" default="$(arg show_overlay)" />
   <arg name="record_debug_mp4" default="false" />

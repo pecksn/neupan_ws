@@ -30,5 +30,6 @@ min_road_polygon_points: 3
 min_control_confidence: 0.60
 confirm_valid_frames: 3
 rtp_latency_ms: 100
+stream_timeout_sec: 3.0    # 曾收过有效帧后，连续3秒无帧标记断流；只诊断，不强制重启。
 virtual_video_device: "/dev/video0"
 virtual_video_fps: 30

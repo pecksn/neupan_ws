@@ -179,6 +179,7 @@ catkin_install_python(PROGRAMS
 install(FILES
   src/neupan_core.py
   src/neupan_diagnostics.py
+  src/neupan_safety.py
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/src
 )
 

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=原视频接收服务终端
+Comment=登录桌面后显示原视频服务状态、日志及关闭命令，不显示摄像头画面
+Exec=/usr/bin/gnome-terminal --window --title=原视频接收服务 -- /bin/bash /home/nuc/lxw/neupan_ws/src/hybridnets_receiver/scripts/video_startup_notice.sh --terminal
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5
+Icon=utilities-terminal

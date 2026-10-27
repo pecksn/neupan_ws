@@ -1,5 +1,7 @@
 """Write one-off planner failure evidence outside the planning hot path."""
 import json
+import hashlib
+import inspect
 import os
 import sys
 import tempfile
@@ -19,6 +21,15 @@ def save_failure(node, exc_info, log_dir):
         'local_time': datetime.fromtimestamp(stamp, timezone(timedelta(hours=8))).isoformat(),
         'pid': os.getpid(),
         'stage': getattr(node, 'diagnostic_stage', 'initialization'),
+        'shutdown_requested': bool(getattr(node,'shutdown_requested',False) or __import__('rospy').is_shutdown()),
+        'phase': 'shutdown' if getattr(node,'shutdown_requested',False) or __import__('rospy').is_shutdown() else 'runtime',
+        'planner_session_id': getattr(node,'planner_session_id',None),
+        'shutdown_source': 'rospy_on_shutdown' if getattr(node,'shutdown_requested',False) else None,
+        'planner_fault': getattr(node, 'planner_fault', None),
+        'publish_input_ages': getattr(node,'publish_input_ages',None),
+        'safety_check_ms': getattr(node,'safety_check_ms',None),
+        'stop_reasons':getattr(node,'stop_registry',None).snapshot() if getattr(node,'stop_registry',None) else {},
+        'camera_execution_contract':getattr(node,'camera_execution_contract',None),
         'exception_type': type(error).__module__ + '.' + type(error).__name__,
         'message': str(error),
         'traceback': ''.join(traceback.format_exception(*exc_info)),
@@ -36,6 +47,8 @@ def save_failure(node, exc_info, log_dir):
             value = np.asarray(value)
             if value.dtype.kind not in 'biufc':
                 raise ValueError('non-numeric snapshot')
+            if value.size > 2000000 or sum(v.size for v in arrays.values())+value.size > 10000000:
+                raise ValueError('numeric snapshot exceeds bounded diagnostic budget')
             value = value.copy()
             arrays[name] = value
             record['arrays'][name] = {
@@ -62,6 +75,26 @@ def save_failure(node, exc_info, log_dir):
     planner = getattr(node, 'neupan_planner', None)
     add('cur_vel_array', getattr(planner, 'cur_vel_array', None))
     ipath = getattr(planner, 'ipath', None)
+    record['implementation_files'] = {}
+    for name, implementation in (('planner', planner), ('reference', ipath)):
+        if implementation is None:
+            continue
+        try:
+            path = inspect.getfile(type(implementation))
+            with open(path, 'rb') as source:
+                digest = hashlib.sha256(source.read()).hexdigest()
+            record['implementation_files'][name] = {'path': path, 'sha256': digest}
+        except (TypeError, OSError) as source_error:
+            record['diagnostic_errors'].append('implementation: %s' % source_error)
+    add('generated_reference', getattr(ipath, 'last_reference', None))
+    add('checked_action',getattr(node,'diagnostic_command_action',None))
+    add('checked_trajectory',getattr(node,'diagnostic_checked_trajectory',None))
+    add('checked_controls',getattr(node,'diagnostic_checked_controls',None))
+    add('reference_progress', getattr(ipath, 'last_reference_progress', None))
+    snapshot = getattr(node, 'diagnostic_safety_scan', getattr(node, 'safety_scan', None))
+    if snapshot is not None:
+        add('full_safety_scan', snapshot[0])
+        record['full_safety_scan_stamp_ns'] = int(snapshot[1])
     try:
         route = getattr(ipath, 'initial_path', None)
         if route is not None and len(route):
@@ -122,6 +155,13 @@ def save_failure(node, exc_info, log_dir):
 def report_failure(node, exc_info):
     """Best effort diagnostics must never replace the original exception."""
     import rospy
+    # Also cover failures outside the solver boundary. This must precede disk IO.
+    if node is not None:
+        try:
+            from geometry_msgs.msg import Twist
+            node.vel_pub.publish(Twist())
+        except Exception:
+            pass
     try:
         folder = rospy.get_param('~diagnostic_log_dir', '/home/nuc/lxw/neupan_ws/tracker_logs')
         record = save_failure(node, exc_info, folder)

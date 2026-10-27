@@ -23,11 +23,19 @@
     <arg name="camera_right_wheel_offset_m" default="-1" doc="中心至右轮外沿覆盖值；-1按轮距及胎宽换算" />
     <arg name="camera_right_wheel_geometry_verified" default="false" />
     <arg name="camera_right_strategy" default="segment_cache" doc="segment_cache: 道路段确认后缓存；realtime: 第一种实时修正" />
+    <arg name="camera_right_processing_rate_hz" default="5.0" />
+    <arg name="camera_right_min_confidence" default="0.60" />
+    <arg name="camera_right_timeout_sec" default="-1" />
+    <arg name="camera_right_max_source_age_ms" default="-1" />
+    <arg name="camera_right_max_capture_age_ms" default="-1" />
     <arg name="camera_right_distance_reference" default="camera_center" doc="默认按相机光学中心的道路横向间距" />
     <arg name="camera_right_camera_clearance_m" default="2.0" doc="相机光学中心到右边界的平面横向目标间距" />
+    <arg name="camera_right_clearance_min_m" default="1.0" />
+    <arg name="camera_right_clearance_max_m" default="2.0" />
     <arg name="camera_right_base_link_height_m" default="0.20" doc="用户确认base_link离地约20cm；不改变传感器安装TF" />
     <arg name="enable_lidar_curb_log" default="true" doc="路缘启用时持续写入独立JSONL日志"/>
-    <arg name="enable_hybridnets_receiver" default="true" doc="随全系统启动GPU板HybridNets视频与JSON接收"/>
+    <arg name="enable_hybridnets_receiver" default="true" doc="随全系统启动GPU推理JSON接收；原视频由独立服务接收"/>
+    <arg name="enable_hybridnets_video" default="false" doc="仅未使用独立原视频服务时设true，避免重复占用UDP5000"/>
     <arg name="enable_hybridnets_overlay" default="true" doc="是否计算HybridNets调试叠加图；关闭后仍接收原视频与JSON"/>
     <arg name="show_hybridnets_overlay" default="false" doc="是否弹出HybridNets结果叠加窗口"/>
     <arg name="hybridnets_receiver_config" default="$(find hybridnets_receiver)/config/receiver.yaml" />
@@ -554,8 +562,16 @@
         <arg name="right_wheel_lateral_offset_m" value="$(arg camera_right_wheel_offset_m)" />
         <arg name="wheel_geometry_verified" value="$(arg camera_right_wheel_geometry_verified)" />
         <arg name="strategy" value="$(arg camera_right_strategy)" />
+        <arg name="processing_rate_hz" value="$(arg camera_right_processing_rate_hz)" />
+        <arg name="vehicle_config_file" value="$(arg neupan_config_outdoor)" />
+        <arg name="min_confidence" value="$(arg camera_right_min_confidence)" />
+        <arg name="timeout_sec" value="$(arg camera_right_timeout_sec)" />
+        <arg name="max_source_age_ms" value="$(arg camera_right_max_source_age_ms)" />
+        <arg name="max_capture_age_ms" value="$(arg camera_right_max_capture_age_ms)" />
         <arg name="distance_reference" value="$(arg camera_right_distance_reference)" />
         <arg name="camera_clearance_m" value="$(arg camera_right_camera_clearance_m)" />
+        <arg name="camera_clearance_min_m" value="$(arg camera_right_clearance_min_m)" />
+        <arg name="camera_clearance_max_m" value="$(arg camera_right_clearance_max_m)" />
         <arg name="base_link_height_m" value="$(arg camera_right_base_link_height_m)" />
         <arg name="osm_file" value="$(arg osm_map_file)" />
         <arg name="map_origin_lat" value="$(arg map_origin_lat)" />
@@ -576,7 +592,7 @@
     <include if="$(arg enable_hybridnets_receiver)"
              file="$(find hybridnets_receiver)/launch/receiver.launch">
         <arg name="config" value="$(arg hybridnets_receiver_config)" />
-        <arg name="start_video" value="true" />
+        <arg name="start_video" value="$(arg enable_hybridnets_video)" />
         <arg name="start_overlay" value="$(arg enable_hybridnets_overlay)" />
         <arg name="show_overlay" value="$(arg show_hybridnets_overlay)" />
         <arg name="require_control_fields" value="$(arg hybridnets_require_control_fields)" />

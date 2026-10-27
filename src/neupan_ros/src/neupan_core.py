@@ -21,7 +21,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
 from neupan import neupan
-from osm_camera_path_guard import CameraPathGuard
+from neupan_safety import (validate_solution, trajectory_clearance, reference_offsets,
+                           checked_input_ages, pose_snapshot, InputUnavailable, AuthorizationChanged, StopRegistry, cap_solution_speed)
+from osm_camera_path_guard import CameraPathGuard, check_execution_contract
 from osm_outdoor_start_connection import RoadCorridor, ScanEnvelope, StartRouteConnector, resample_forward_reference, OutdoorTrackingGuard
 import copy
 from collections import deque
@@ -200,6 +202,10 @@ class neupan_core:
 
         # publisher
         self.vel_pub = rospy.Publisher("/neupan_cmd_vel", Twist, queue_size=10)
+        self.shutdown_requested = False
+        self.planner_fault = None
+        self.planner_session_id = '%s-%s' % (__import__('os').getpid(), time.time_ns())
+        rospy.on_shutdown(self.shutdown_stop)
         self.runtime_pub = rospy.Publisher("/neupan/runtime", String, queue_size=10)
         self.camera_guard_pub = rospy.Publisher('/neupan/camera_path_guard', String, queue_size=2, latch=True)
         self.connection_status_pub = rospy.Publisher('/neupan/route_connection', String, queue_size=2, latch=True)
@@ -252,35 +258,64 @@ class neupan_core:
         )
         
 
+    def shutdown_stop(self):
+        self.shutdown_requested = True
+        self.shutdown_requested_monotonic = time.monotonic()
+        try:
+            self.vel_pub.publish(Twist())
+        except Exception:
+            pass
+
     def run(self):
 
         r = rospy.Rate(50)
+        self.stop_registry=StopRegistry()
+        self.input_good_since=None
 
         while not rospy.is_shutdown():
 
+            if getattr(self, 'planner_fault', None) is not None:
+                self.stop_registry.set('planner_fault',time.monotonic(),'inspect evidence and restart planner',True)
+                self.publish_stop_snapshot('planner_fault')
+                self.vel_pub.publish(Twist())
+                rospy.logerr_throttle(2., 'NeuPAN fault held STOP; verify input and restart: %s', self.planner_fault)
+                r.sleep()
+                continue
+
             self.diagnostic_stage = "goal_update"
             self.diagnostic_solver_input = None
+            self.diagnostic_command_action=None
+            self.diagnostic_checked_trajectory=None
+            self.diagnostic_checked_controls=None
+            self.camera_publication_contract=None
+            self.camera_checked_authorization_id=None
+            self.camera_publication_generation=None
             self.apply_pending_goal_request()
             if not self.apply_camera_path_guard():
+                self.publish_stop_snapshot('camera_guard')
                 self.vel_pub.publish(Twist())
                 r.sleep()
                 continue
             with self.route_update_lock:
                 route_pending = self.pending_route_update is not None
+            self.stop_registry.clear('authorization')
             if self.waiting_for_new_goal and not route_pending:
+                self.stop_registry.set('goal',time.monotonic(),'new explicit goal/path')
+                self.publish_stop_snapshot('waiting_for_goal')
                 self.vel_pub.publish(Twist())
                 message = ("Goal reached; waiting for a new goal/path" if self.goal_arrived_state
                            else "Waiting for planned path for the new goal")
                 rospy.loginfo_throttle(2.0, yellow_terminal_text(message))
                 r.sleep()
                 continue
+            self.stop_registry.clear('goal')
 
             self.diagnostic_stage = "vehicle_tf"
             try:
                 t0 = rospy.Time.now()
-                (trans, rot) = self.listener.lookupTransform(
-                    self.map_frame, self.base_frame, rospy.Time(0)
-                )
+                frame_started_mono = time.monotonic()
+                trans,rot,self.diagnostic_state_stamp_ns=pose_snapshot(
+                    self.listener,self.map_frame,self.base_frame)
                 t1 = rospy.Time.now()
 
                 yaw = self.quat_to_yaw_list(rot)
@@ -291,6 +326,7 @@ class neupan_core:
                 tf.LookupException,
                 tf.ConnectivityException,
                 tf.ExtrapolationException,
+                InputUnavailable,
             ):
                 rospy.loginfo_throttle(
                     1,
@@ -301,6 +337,7 @@ class neupan_core:
                     ),
                 )
                 self.vel_pub.publish(Twist())
+                self.temporary_input_stop('vehicle TF unavailable')
                 self.publish_scan_health(rospy.Time.now())
                 r.sleep()
                 continue
@@ -348,8 +385,20 @@ class neupan_core:
             if self.stop_on_scan_fault and not scan_healthy:
                 rospy.logerr_throttle(1.0, "NeuPAN scan safety stop: %s", scan_reason)
                 self.vel_pub.publish(Twist())
+                self.temporary_input_stop(scan_reason)
                 r.sleep()
                 continue
+
+            if 'input' in self.stop_registry.reasons:
+                try:
+                    checked_input_ages(getattr(self,'safety_scan',None),rospy.Time.now().to_nsec(),
+                        time.monotonic(),self.scan_timeout,self.diagnostic_state_stamp_ns)
+                except InputUnavailable as error:
+                    self.temporary_input_stop(str(error));r.sleep();continue
+                if self.input_good_since is None:self.input_good_since=time.monotonic()
+                if time.monotonic()-self.input_good_since<.3:
+                    self.vel_pub.publish(Twist());r.sleep();continue
+                self.stop_registry.clear('input')
 
             self.diagnostic_stage = "outdoor_tracking_guard"
             if self.outdoor_tracking_guard is not None:
@@ -357,6 +406,8 @@ class neupan_core:
                 self.outdoor_tracking_status = self.outdoor_tracking_guard.check(
                     ipath.cur_curve, self.robot_state, ipath.point_index, time.monotonic())
                 if self.outdoor_tracking_status['latched']:
+                    self.stop_registry.set('tracking',time.monotonic(),'new goal after verifying vehicle and route')
+                    self.publish_stop_snapshot('tracking')
                     self.vel_pub.publish(Twist())
                     self.runtime_pub.publish(json.dumps({
                         'stamp': rospy.Time.now().to_sec(), 'linear_x': 0., 'steering_deg': 0.,
@@ -366,6 +417,7 @@ class neupan_core:
                         'Outdoor tracking lost: holding STOP; verify vehicle/route, then send a NEW goal'))
                     r.sleep()
                     continue
+                self.stop_registry.clear('tracking')
             self.diagnostic_stage = "adjust_parameters"
             self.update_adaptive_adjust_parameters()
 
@@ -373,8 +425,51 @@ class neupan_core:
             solver_started = time.monotonic()
             self.diagnostic_stage = "solve"
             self.diagnostic_solver_input = (self.robot_state, self.obstacle_points)
-            action, info = self.neupan_planner(*self.diagnostic_solver_input)
-            solver_ms = (time.monotonic() - solver_started) * 1000.0
+            checked_scan = None
+            try:
+                contract=getattr(self,'camera_execution_contract',None)
+                reference_speed=getattr(self.neupan_planner,'ref_speed',None)
+                try:
+                    if contract and reference_speed is not None:
+                        self.neupan_planner.set_reference_speed(min(reference_speed,contract['speed_cap_mps']))
+                    action, info = self.neupan_planner(*self.diagnostic_solver_input)
+                finally:
+                    if contract and reference_speed is not None:
+                        self.neupan_planner.set_reference_speed(reference_speed)
+                solver_finished = time.monotonic()
+                safety_started = solver_finished
+                self.diagnostic_stage = 'validate_solution'
+                validate_solution(action, info, self.neupan_planner.robot, self.neupan_planner.dt)
+                contract=getattr(self,'camera_execution_contract',None)
+                if contract and not info.get('arrive'):
+                    action,info=cap_solution_speed(action,info,self.neupan_planner.robot,
+                                                  self.neupan_planner.dt,contract['speed_cap_mps'])
+                    validate_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt)
+                self.diagnostic_command_action=np.asarray(action,float).copy()
+                self.diagnostic_checked_trajectory=np.hstack(info['opt_state_list']) if info.get('opt_state_list') else None
+                self.diagnostic_checked_controls=info.get('vel_tensor')
+                if not info.get('arrive'):
+                    snapshot = getattr(self, 'safety_scan', None)
+                    if snapshot is None:
+                        raise InputUnavailable('full scan safety snapshot unavailable')
+                    scan_points, stamp_ns, received_mono = snapshot
+                    self.diagnostic_safety_scan = snapshot
+                    checked_scan = snapshot
+                    age = (rospy.Time.now().to_nsec()-stamp_ns)/1.e9
+                    if not 0 <= age <= self.scan_timeout or time.monotonic()-received_mono > self.scan_timeout:
+                        raise InputUnavailable('full scan expired before command publication')
+                    self.diagnostic_stage = 'trajectory_safety'
+                    self.trajectory_safety = trajectory_clearance(np.hstack(info['opt_state_list']),
+                        scan_points, self.neupan_planner.robot.vertices)
+                self.safety_check_ms = (time.monotonic()-safety_started)*1000
+            except InputUnavailable as error:
+                self.temporary_input_stop(str(error));r.sleep();continue
+            except Exception as error:
+                import sys
+                self.hold_planner_fault(error, sys.exc_info())
+                r.sleep()
+                continue
+            solver_ms = (solver_finished - solver_started) * 1000.0
             t3 = rospy.Time.now()
             if self.start_connector:
                 if self.start_connector.update_progress(self.neupan_planner.ipath.point_index):
@@ -393,6 +488,8 @@ class neupan_core:
             self.last_plan_time_debug = t0
 
             self.stop = info["stop"]
+            if self.stop:self.stop_registry.set('planner_obstacle',time.monotonic(),'new valid collision-free solution')
+            else:self.stop_registry.clear('planner_obstacle')
             self.arrive = info["arrive"]
 
             ref_state = None
@@ -413,15 +510,84 @@ class neupan_core:
                 )
 
             self.diagnostic_stage = "publish_plan_and_command"
+            reference_visual = None
+            if self.camera_guard is not None and info.get('ref_state_list'):
+                original=self.camera_guard.original
+                if original is not None:
+                    reference_visual=reference_offsets(np.hstack(info['ref_state_list']),
+                        [[p.pose.position.x,p.pose.position.y] for p in original.poses])
+                    status=getattr(self,'camera_guard_selected_state',{})
+                    reference_visual['camera_channel_accepted']=status.get('camera_channel_accepted',False)
+                    reference_visual['producer_active']=status.get('producer_active',False)
+                    reference_visual['guidance_source']=status.get('guidance_source','osm')
             # publish the path and velocity
             self.plan_pub.publish(self.generate_path_msg(info["opt_state_list"]))
             self.ref_state_pub.publish(self.generate_path_msg(info["ref_state_list"]))
             command = self.generate_twist_msg(action)
-            self.vel_pub.publish(command)
+            try:
+                # No expensive diagnostic or path construction may follow this
+                # gate before publishing. Never renew checked_scan using a new scan.
+                self.diagnostic_stage = 'final_command_freshness'
+                self.publish_input_ages = None
+                if abs(command.linear.x)>1.e-9 or abs(command.angular.z)>1.e-9:
+                    self.check_camera_execution(info,command)
+                # All geometric/select work is finished. Lock waits and short
+                # version checks precede the FINAL exact-input age check.
+                publication_lock=self.camera_guard.lock if self.camera_guard is not None else threading.RLock()
+                with publication_lock:
+                    if abs(command.linear.x)>1.e-9 or abs(command.angular.z)>1.e-9:
+                        if self.camera_guard is not None:
+                            if (self.camera_guard.authorization_generation!=self.camera_publication_generation
+                                    or self.camera_guard.safety_generation!=self.camera_publication_safety_generation):
+                                raise AuthorizationChanged('camera authorization changed after swept check')
+                            if (self.camera_publication_source=='camera' and
+                                    not 0<=time.monotonic()-self.camera_guard.received<=self.camera_guard.timeout):
+                                raise AuthorizationChanged('camera heartbeat expired at publication')
+                        self.publish_input_ages=checked_input_ages(checked_scan,rospy.Time.now().to_nsec(),
+                            time.monotonic(),self.scan_timeout,self.diagnostic_state_stamp_ns)
+                        contract=getattr(self,'camera_publication_contract',None)
+                        if contract and rospy.Time.now().to_nsec()>contract['expires_ns']:
+                            raise AuthorizationChanged('camera lease expired at publication')
+                        if self.camera_guard is not None and not self.camera_guard.commit_recovery(
+                                self.camera_publication_generation,self.camera_publication_safety_generation,rospy.Time.now().to_nsec()):
+                            raise AuthorizationChanged('camera recovery proof expired or changed before publication')
+                        if self.camera_guard is not None:self.stop_registry.clear('camera')
+                    self.vel_pub.publish(command)
+            except AuthorizationChanged as error:
+                self.vel_pub.publish(Twist())
+                self.stop_registry.set('authorization',time.monotonic(),'adopt latest authority and solve again; no sensor recovery delay')
+                self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
+                    command_source='authorization_retry',reason=str(error),stop_reasons=self.stop_registry.snapshot())))
+                rospy.logwarn_throttle(2.,yellow_terminal_text('Camera authority updated; discard old command and replan: %s'),str(error))
+                r.sleep();continue
+            except InputUnavailable as error:
+                self.temporary_input_stop(str(error));r.sleep();continue
+            except Exception as error:
+                import sys
+                self.hold_planner_fault(error,sys.exc_info())
+                r.sleep()
+                continue
+            if info.get('speed_retimed'):
+                self.neupan_planner.cur_vel_array=np.asarray(info['vel_tensor']).copy()
             command_time = time.monotonic()
             self.runtime_pub.publish(json.dumps({
                 "stamp": rospy.Time.now().to_sec(),
+                "command_source":"neupan_retimed_camera" if info.get('speed_retimed') else "neupan",
                 "solver_ms": solver_ms,
+                "safety_check_ms": getattr(self,'safety_check_ms',None),
+                "publish_input_ages": self.publish_input_ages,
+                "camera_checked_authorization_id":getattr(self,'camera_checked_authorization_id',None),
+                "camera_checked_authorization_generation":getattr(self,'camera_publication_generation',None),
+                "camera_checked_execution_contract": {key:self.camera_publication_contract.get(key) for key in
+                    ('version','path_digest','route_stamp_ns','expires_ns','speed_cap_mps','end_odom','coordinate_frame')}
+                    if getattr(self,'camera_publication_contract',None) else None,
+                "stop_reasons": self.stop_registry.snapshot(),
+                "camera_execution_contract": {key:self.camera_execution_contract.get(key) for key in
+                    ('version','path_digest','route_stamp_ns','expires_ns','speed_cap_mps','end_odom','coordinate_frame')}
+                    if getattr(self,'camera_execution_contract',None) else None,
+                "speed_retimed":bool(info.get('speed_retimed',False)),
+                "optimizer_action":info.get('optimizer_action'),
+                "total_processing_ms": (command_time-frame_started_mono)*1000,
                 "tf_lookup_ms": dt_tf,
                 "command_interval_ms": None if self.last_command_monotonic is None
                 else (command_time - self.last_command_monotonic) * 1000.0,
@@ -430,6 +596,8 @@ class neupan_core:
                 "planner_stop": bool(self.stop),
                 "planner_arrive": bool(self.arrive),
                 "tracking_guard": self.outdoor_tracking_status,
+                "trajectory_safety": getattr(self, 'trajectory_safety', None),
+                "reference_visual": reference_visual,
                 "path_point_index": int(self.neupan_planner.ipath.point_index),
                 "path_interval_m": float(self.neupan_planner.ipath.interval),
                 "robot_yaw_deg": degrees(float(self.robot_state[2, 0])),
@@ -466,6 +634,87 @@ class neupan_core:
                 )
 
             r.sleep()
+
+    def hold_planner_fault(self, error, exc_info):
+        """Non-None fault identity is independent of error message and stop flag."""
+        if getattr(self,'planner_fault',None) is None:
+            self.planner_fault = {'type':type(error).__name__,'message':str(error),
+                                  'stage':getattr(self,'diagnostic_stage','unknown')}
+        self.stop=True
+        if hasattr(self,'stop_registry'):
+            self.stop_registry.set('planner_fault',time.monotonic(),'inspect evidence and restart planner',True)
+        self.vel_pub.publish(Twist())  # Must precede any diagnostic IO.
+        try:
+            self.runtime_pub.publish(json.dumps({'stamp':rospy.Time.now().to_sec(),
+                'linear_x':0.,'steering_deg':0.,'command_source':'planner_fault',
+                'fault':self.planner_fault,'stage':self.diagnostic_stage},separators=(',',':')))
+            from neupan_diagnostics import report_failure
+            report_failure(self,exc_info)
+        except Exception as diagnostic_error:
+            rospy.logerr('NeuPAN fault diagnostics failed; STOP remains latched: %s', diagnostic_error)
+
+    def temporary_input_stop(self, reason):
+        self.vel_pub.publish(Twist())
+        self.input_good_since=None
+        self.stop_registry.set('input',time.monotonic(),'fresh bound pose/scan stable for 0.3s, then solve and recheck')
+        self.stop_registry.reasons['input'].update(detail=reason,stage=getattr(self,'diagnostic_stage','input'))
+        self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
+            command_source='temporary_input_stop',reason=reason,stop_reasons=self.stop_registry.snapshot())))
+        rospy.logwarn_throttle(2.,yellow_terminal_text('NeuPAN input STOP: %s; waiting for fresh stable inputs'),reason)
+
+    def publish_stop_snapshot(self, source):
+        now=time.monotonic();signature=(source,tuple(sorted(self.stop_registry.reasons)))
+        if signature!=getattr(self,'last_stop_snapshot_signature',None) or now-getattr(self,'last_stop_snapshot_time',-1.e30)>=.5:
+            self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
+                command_source=source,stop_reasons=self.stop_registry.snapshot())))
+            self.last_stop_snapshot_signature=signature;self.last_stop_snapshot_time=now
+
+    def check_camera_execution(self, info, command):
+        contract=getattr(self,'camera_execution_contract',None)
+        self.camera_publication_contract=contract
+        self.camera_checked_authorization_id=None
+        if self.camera_guard is not None:
+            _,_,state=self.camera_guard.select(time.monotonic(),rospy.Time.now().to_nsec())
+            current=state.get('execution_contract')
+            self.camera_publication_generation=state['authorization_generation']
+            self.camera_publication_safety_generation=state['safety_generation']
+            self.camera_publication_source=state['source']
+            self.camera_checked_authorization_id=state.get('authorization_id')
+            solved=getattr(self,'camera_guard_selected_state',{})
+            if solved and any(solved.get(key)!=state.get(key) for key in ('matched_route_identity','original_path_digest')):
+                raise AuthorizationChanged('original route changed during solve')
+            if state['source']=='stop' or state['safety_generation']!=getattr(self,'camera_safety_generation',None):
+                raise AuthorizationChanged('camera authority revoked during solve')
+            if contract is None:
+                if current or state.get('producer_active'):
+                    raise AuthorizationChanged('camera activated during OSM solve')
+            elif (state['source']!='camera' or not current
+                    or current.get('route_stamp_ns')!=contract.get('route_stamp_ns')):
+                raise AuthorizationChanged('camera authority replaced during solve')
+            else:
+                # A changed path is not re-labelled as the solved path: only
+                # the actual prediction's compatibility with NEW limits permits
+                # continuation. Tighter/conflicting limits cause a new solve.
+                contract=current
+                self.camera_publication_contract=contract
+        if not contract:return
+        if rospy.Time.now().to_nsec()>contract['expires_ns']:
+            raise AuthorizationChanged('camera execution authorization expired')
+        stamp=rospy.Time(self.diagnostic_state_stamp_ns//1000000000,self.diagnostic_state_stamp_ns%1000000000)
+        try:trans,rot=self.listener.lookupTransform('map','odom',stamp)
+        except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException) as error:
+            raise InputUnavailable('camera execution epoch TF missing: '+str(error))
+        angle=self.quat_to_yaw_list(rot);c,s=cos(angle),sin(angle)
+        poses=np.hstack(info['opt_state_list']).T.copy()
+        poses[:,:2]=(poses[:,:2]-np.asarray(trans[:2]))@np.array([[c,-s],[s,c]])
+        poses[:,2]-=angle
+        try:
+            check_execution_contract(contract,poses,rospy.Time.now().to_nsec(),command.linear.x,
+                                     self.neupan_planner.robot.vertices)
+        except ValueError as error:
+            if self.camera_guard is not None:raise AuthorizationChanged('latest camera limits reject prediction: '+str(error))
+            if 'expired' in str(error) or 'endpoint' in str(error):raise InputUnavailable(str(error))
+            raise
 
     def parse_adjust_profile(self, profile_param, fallback):
         profile = np.fromstring(str(profile_param).replace(",", " "), dtype=np.float32, sep=" ")
@@ -703,8 +952,7 @@ class neupan_core:
             angle = angles[i]
 
             if (
-                i % self.scan_downsample == 0
-                and distance >= self.scan_range[0]
+                distance >= self.scan_range[0]
                 and distance <= self.scan_range[1]
                 and angle > self.scan_angle_range[0]
                 and angle < self.scan_angle_range[1]
@@ -715,6 +963,7 @@ class neupan_core:
         if len(points) == 0:
             self.obstacle_points = None
             if not np.any(relevant_raw):
+                self.safety_scan = (np.empty((2, 0)), scan_msg.header.stamp.to_nsec(), time.monotonic())
                 self.filtered_empty_since = None
                 self.mark_scan_valid(now, "CLEAR_NO_RETURNS")
                 return None
@@ -733,7 +982,7 @@ class neupan_core:
 
         try:
             (trans, rot) = self.listener.lookupTransform(
-                self.map_frame, self.lidar_frame, rospy.Time(0)
+                self.map_frame, self.lidar_frame, scan_msg.header.stamp
             )
 
             yaw = self.quat_to_yaw_list(rot)
@@ -748,7 +997,9 @@ class neupan_core:
                 and self.scan_self_filter_width > 0.0
                 and self.robot_state is not None
             ):
-                robot_x, robot_y, robot_yaw = self.robot_state[:, 0]
+                body_trans, body_rot = self.listener.lookupTransform(
+                    self.map_frame, self.base_frame, scan_msg.header.stamp)
+                robot_x, robot_y, robot_yaw = body_trans[0], body_trans[1], self.quat_to_yaw_list(body_rot)
                 dx = self.obstacle_points[0, :] - robot_x
                 dy = self.obstacle_points[1, :] - robot_y
                 cos_yaw = cos(robot_yaw)
@@ -768,6 +1019,8 @@ class neupan_core:
                 )
                 self.obstacle_points = self.obstacle_points[:, outside_body]
 
+            self.safety_scan = (self.obstacle_points.copy(), scan_msg.header.stamp.to_nsec(), time.monotonic())
+            self.obstacle_points = self.obstacle_points[:, ::self.scan_downsample]
             self.mark_scan_valid(now, "TRACKING")
             rospy.loginfo_once("Scan obstacle points Received")
 
@@ -961,7 +1214,14 @@ class neupan_core:
         if self.camera_guard is None:
             return True
         now = time.monotonic()
-        path, signature, state = self.camera_guard.select(now)
+        path, signature, state = self.camera_guard.select(now,rospy.Time.now().to_nsec())
+        self.camera_guard_selected_state = state
+        self.camera_execution_contract=state.get('execution_contract')
+        self.camera_safety_generation=state.get('safety_generation')
+        if hasattr(self,'stop_registry'):
+            if state['source']=='stop' or state.get('recovery_pending'):
+                self.stop_registry.set('camera',now,'fresh verified original hazard area/path or explicit operator inspection')
+            else:self.stop_registry.clear('camera')
         current = (state['source'], state['reason'])
         if current != self.camera_guard_last_state or now-self.camera_guard_last_publish >= .5:
             self.camera_guard_pub.publish(String(data=json.dumps(state)))
@@ -971,7 +1231,8 @@ class neupan_core:
             self.camera_guard_signature = None
             with self.route_update_lock:
                 self.pending_route_update = None
-            rospy.logwarn_throttle(5., 'Camera path guard: no valid original route; holding stop')
+            rospy.logwarn_throttle(5., yellow_terminal_text(
+                'Camera path guard: %s; holding STOP'), state['reason'])
             return False
         if signature != self.camera_guard_signature:
             if not self.path_callback(copy.deepcopy(path)):
