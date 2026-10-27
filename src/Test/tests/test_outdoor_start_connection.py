@@ -57,12 +57,15 @@ class ReferenceSamplingTests(unittest.TestCase):
         for point in original:
             self.assertTrue(any(np.array_equal(point, p) for p in result))
 
-    def test_tracking_guard_latches_and_only_explicit_reset_releases(self):
+    def test_tracking_deviation_requests_checked_slow_prediction_not_permanent_stop(self):
         guard = OutdoorTrackingGuard()
         points = resample_forward_reference([[0,0,0,1], [20,0,0,1]])
         self.assertFalse(guard.check(points, [5,1.6,0], 50, 0.)['latched'])
-        self.assertTrue(guard.check(points, [5,1.6,0], 50, .6)['latched'])
-        self.assertTrue(guard.check(points, [5,0,0], 50, .7)['latched'])
+        report=guard.check(points, [5,1.6,0], 50, .6)
+        self.assertFalse(report['latched'])
+        self.assertEqual(report['phase'],'startup_convergence')
+        self.assertEqual(report['recommended_speed_cap_mps'],.3)
+        self.assertFalse(guard.check(points, [5,0,0], 50, .7)['latched'])
         guard.reset()
         self.assertFalse(guard.check(points, [5,0,0], 50, .8)['latched'])
 

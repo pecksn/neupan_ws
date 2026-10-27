@@ -1246,6 +1246,10 @@ class CameraRightPath:
             self.osm_exit_requested=True
         points=np.array([[p.pose.position.x,p.pose.position.y] for p in result.poses])
         context=osm_guidance_context(points,position[:2],yaw,self.osm_junctions)
+        self.guidance_diagnostics=dict(context=context,lookahead_m=8.,
+            nearest_junction_distance_m=float(np.linalg.norm(np.asarray(self.osm_junctions)-np.asarray(position[:2]),axis=1).min())
+                if len(self.osm_junctions) else None,
+            skip_new_cache=context!='straight')
         if context!='straight':
             self.osm_exit_requested=True
         bx=(points[:,0]-position[0])*math.cos(yaw)+(points[:,1]-position[1])*math.sin(yaw)
@@ -1390,6 +1394,9 @@ class CameraRightPath:
             self.final_path_diagnostics={}
             self.osm_exit_requested=False
             self.current_proof_geometry={}
+            self.guidance_diagnostics={}
+            self.route_usable_observation_points=0
+            self.new_cache_skipped_points=0
             if self.path is None or len(self.path.poses) < 2:
                 return
             result = copy.deepcopy(self.path)
@@ -1398,19 +1405,27 @@ class CameraRightPath:
                 self.publish_result(result,now,'hazard capacity exceeded; inspect and restart system',False,0)
                 return
             reason, active = 'ok', False
+            context='straight'
             cached_points=0
             try:
                 if hasattr(self,'osm_junctions'):
                     position,yaw=self.cache_pose(now)
                     points=np.array([[p.pose.position.x,p.pose.position.y] for p in result.poses])
                     context=osm_guidance_context(points,position[:2],yaw,self.osm_junctions)
+                    self.guidance_diagnostics=dict(context=context,lookahead_m=8.,
+                        nearest_junction_distance_m=float(np.linalg.norm(np.asarray(self.osm_junctions)-np.asarray(position[:2]),axis=1).min())
+                            if len(self.osm_junctions) else None,
+                        skip_new_cache=context!='straight')
                     if context!='straight':
                         self.osm_exit_requested=True
                 data = self.refine(now)
                 if getattr(self,'strategy','realtime')=='segment_cache':
                     points,bx,by,x,y,ly,ry,c,s,usable,target=data
+                    self.route_usable_observation_points=int(np.count_nonzero(usable))
                     for i in np.flatnonzero(usable):
-                        if self.osm_exit_requested and int(i) not in self.cache.committed and int(i) not in self.cache.pending:continue
+                        if self.osm_exit_requested and int(i) not in self.cache.committed and int(i) not in self.cache.pending:
+                            self.new_cache_skipped_points+=1
+                            continue
                         desired=float(np.interp(bx[i],x,y)-by[i])
                         # Route heading is close to vehicle heading; store normal shift.
                         was_committed = int(i) in self.cache.committed
@@ -1472,6 +1487,9 @@ class CameraRightPath:
                             if getattr(self,'last_verified_scope',None):self.remember_observation_gap(str(cache_error))
                             self.cache.clear()
                             self.applied=None
+            if (not active and not getattr(self,'corridor_stop_required',False)
+                    and getattr(self,'guidance_diagnostics',{}).get('context','straight')!='straight'):
+                reason=self.guidance_diagnostics['context']+'; skip new camera segments; retain OSM; '+reason
             if any(message in reason for message in (
                     'capture-time vehicle TF unavailable',
                     'non-finite capture-time vehicle TF',
@@ -1584,6 +1602,9 @@ class CameraRightPath:
         capture_age = ((rospy.Time.now().to_nsec()-capture)/1.e6
                        if isinstance(capture, int) and capture > 0 else None)
         inference_diagnostics = {
+            'osm_guidance_context':getattr(self,'guidance_diagnostics',{}),
+            'route_usable_observation_points':getattr(self,'route_usable_observation_points',0),
+            'new_cache_skipped_points':getattr(self,'new_cache_skipped_points',0),
             'hazard_regions':getattr(getattr(self,'hazards',None),'regions',{}),
             'hazard_capacity_exceeded':getattr(getattr(self,'hazards',None),'blocked',False),
             'recovery_wait_active':getattr(self,'recovery_wait_active',False),

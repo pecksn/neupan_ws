@@ -15,7 +15,7 @@ from test_camera_right_refinement import namespace as n
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT/'src/neupan_ros/src'))
 from neupan_safety import (checked_input_ages, validate_solution, trajectory_clearance,
-    pose_snapshot, StopRegistry, InputUnavailable,AuthorizationChanged,cap_solution_speed)
+    pose_snapshot, StopRegistry, InputUnavailable,AuthorizationChanged,CandidateRejected,cap_solution_speed,planner_obstacle_input)
 sys.path.insert(0,str(ROOT/'src/osm_map_handler/src'))
 from osm_camera_path_guard import CameraPathGuard, path_digest,check_execution_contract
 
@@ -24,7 +24,7 @@ class CommandBoundaryTests(unittest.TestCase):
     def run_loop(self, empty_error=False, delay=0., delay_at='check', newer_scan=False, disk_error=False,contract=None,recover=False,setup_hook=None):
         source=ROOT/'src/neupan_ros/src/neupan_core.py'
         original=next(x for x in ast.parse(source.read_text()).body if isinstance(x,ast.ClassDef) and x.name=='neupan_core')
-        body=[x for x in original.body if isinstance(x,ast.FunctionDef) and x.name in ('run','generate_twist_msg','hold_planner_fault','temporary_input_stop','check_camera_execution','publish_stop_snapshot')]
+        body=[x for x in original.body if isinstance(x,ast.FunctionDef) and x.name in ('run','generate_twist_msg','hold_planner_fault','temporary_input_stop','check_camera_execution','publish_stop_snapshot','cycle_metrics','candidate_stop')]
         selected=ast.fix_missing_locations(ast.Module(body=[ast.ClassDef(name='Run',bases=[],keywords=[],body=body,decorator_list=[])],type_ignores=[]))
         clock=NS(value=1000.,loops=0)
         class Stamp:
@@ -56,8 +56,9 @@ class CommandBoundaryTests(unittest.TestCase):
         ns=dict(np=np,rospy=ros,time=NS(monotonic=lambda:clock.value),Twist=Twist,sys=sys,
             tf=NS(LookupException=LookupError,ConnectivityException=ConnectionError,ExtrapolationException=TimeoutError),
             validate_solution=validate_solution,trajectory_clearance=checked,checked_input_ages=checked_input_ages,
-            pose_snapshot=pose_snapshot,StopRegistry=StopRegistry,InputUnavailable=InputUnavailable,AuthorizationChanged=AuthorizationChanged,threading=threading,
+            pose_snapshot=pose_snapshot,StopRegistry=StopRegistry,InputUnavailable=InputUnavailable,AuthorizationChanged=AuthorizationChanged,CandidateRejected=CandidateRejected,threading=threading,
             cap_solution_speed=cap_solution_speed,check_execution_contract=check_execution_contract,
+            planner_obstacle_input=planner_obstacle_input,
             json=json,degrees=math.degrees,sin=math.sin,cos=math.cos,atan2=math.atan2,
             yellow_terminal_text=lambda x:x,red_terminal_text=lambda x:x)
         exec(compile(selected,str(source),'exec'),ns)
@@ -69,7 +70,7 @@ class CommandBoundaryTests(unittest.TestCase):
         node.vel_pub=NS(publish=lambda msg:outputs.append(msg.linear.x))
         for name in ('runtime_pub','ref_path_pub','plan_pub','ref_state_pub','point_markers_pub_dune','point_markers_pub_nrmp','robot_marker_pub'):
             setattr(node,name,NS(publish=Mock()))
-        for name in ('apply_pending_goal_request','refresh_connection_scan','apply_pending_route','publish_scan_health','update_adaptive_adjust_parameters','update_goal_arrival'):
+        for name in ('apply_pending_goal_request','refresh_connection_scan','refresh_scan_snapshot','apply_pending_route','publish_scan_health','update_adaptive_adjust_parameters','update_goal_arrival'):
             setattr(node,name,Mock())
         node.apply_camera_path_guard=lambda:True;node.scan_is_healthy=lambda _:(True,'ok')
         def path(states):elapsed('path');return states
@@ -84,6 +85,7 @@ class CommandBoundaryTests(unittest.TestCase):
         node.camera_execution_contract=contract
         node.obstacle_points=np.array([[1.],[2.]])
         node.safety_scan=(node.obstacle_points.copy(),round(999.6*1.e9),999.6)
+        node.bind_scan_snapshot=lambda:(node.safety_scan,node.obstacle_points,0)
         vertices=np.array([[-.14,.81,.81,-.14],[-.425,-.425,.425,.425]])
         class Planner:
             calls=0;waypoints=[np.array([[1.],[0.],[0.]])];initial_path=waypoints

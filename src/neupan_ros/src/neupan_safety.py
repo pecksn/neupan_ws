@@ -11,6 +11,31 @@ class AuthorizationChanged(ValueError):
     """Healthy inputs, but the solved command no longer has current authority."""
 
 
+class CandidateRejected(ValueError):
+    """A well-formed prediction is unsafe; retry, do not latch an internal fault."""
+
+
+def planner_obstacle_input(planner, points):
+    """Adapt a VALID empty scan to NeuPAN's None interface, not a missing scan.
+
+    DUNE is skipped by the library for None, so explicitly retire its previous
+    minimum-distance/debug-point cache. Never enable no_obs for future frames.
+    The independent full safety snapshot (including time) stays untouched.
+    """
+    points=np.asarray(points,float)
+    if points.ndim!=2 or points.shape[0]!=2 or not np.isfinite(points).all():
+        raise ValueError('invalid planner obstacle snapshot')
+    if points.shape[1]:return points
+    pan=getattr(planner,'pan',None)
+    dune=getattr(pan,'dune_layer',None)
+    if dune is not None:
+        dune.min_distance=math.inf
+        dune.obstacle_points=None
+    nrmp=getattr(pan,'nrmp_layer',None)
+    if nrmp is not None:nrmp.obstacle_points=None
+    return None
+
+
 def pose_snapshot(listener, target, source):
     stamp=listener.getLatestCommonTime(target,source)
     if stamp.to_nsec()<=0:
@@ -166,5 +191,5 @@ def trajectory_clearance(states, points, vertices, margin=.05, spatial_step=.05)
             clearance = float(distance.min())-spatial_step/2
             minimum = min(minimum, clearance); checked += 1
             if clearance < margin:
-                raise ValueError('trajectory unsafe: clearance %.4fm at step %d fraction %.3f' % (clearance, index, fraction))
+                raise CandidateRejected('trajectory unsafe: clearance %.4fm at step %d fraction %.3f' % (clearance, index, fraction))
     return dict(min_clearance_m=minimum, checked_points=points.shape[1], checked_poses=checked)

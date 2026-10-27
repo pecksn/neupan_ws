@@ -52,10 +52,10 @@ def resample_forward_reference(points, spacing=.10):
 
 
 class OutdoorTrackingGuard:
-    """Latch a stop on sustained loss of the outdoor reference, not on GNSS quality.
+    """Diagnose convergence and request a checked slow prediction on deviation.
 
-    This is an envelope check, not a replacement steering controller. A new
-    accepted goal is required after a trip; camera refreshes cannot clear it.
+    Uncalibrated distance/angle thresholds are NOT proof of an unsafe command.
+    Malformed references remain latched; swept-body/input checks decide motion.
     """
     def __init__(self, distance=1.5, heading_deg=75., hold_sec=.5):
         self.distance, self.heading_deg, self.hold_sec = distance, heading_deg, hold_sec
@@ -64,6 +64,15 @@ class OutdoorTrackingGuard:
     def reset(self):
         self.bad_since = None
         self.latched = False
+        self.phase = 'startup_convergence'
+        self.initial_error = None
+        self.previous_error = None
+        self.last_check = None
+
+    def pause(self):
+        """Do not count missing observations as continuous deviation."""
+        self.bad_since = None
+        self.last_check = None
 
     def check(self, points, state, index, now):
         route = np.asarray(points, float).reshape(-1, 4)
@@ -91,14 +100,25 @@ class OutdoorTrackingGuard:
         gap = float(gaps[nearest])
         heading_error = abs(math.degrees(wrap(math.atan2(delta[nearest, 1], delta[nearest, 0])-state[2])))
         bad = gap > self.distance or heading_error > self.heading_deg
+        if self.last_check is not None and not 0 <= now-self.last_check <= .5:
+            self.bad_since = None
+        self.last_check = now
+        if self.initial_error is None:self.initial_error = gap
+        progress = self.initial_error-gap
         if bad:
             if self.bad_since is None:
                 self.bad_since = now
-            self.latched = self.latched or now-self.bad_since >= self.hold_sec
         else:
             self.bad_since = None
+            self.phase = 'tracking'
         report.update(cross_track_m=gap, heading_error_deg=heading_error, latched=self.latched,
-                      reason='route_tracking_lost' if self.latched else 'tracking_error_pending' if bad else 'ok')
+                      phase=self.phase, initial_cross_track_m=self.initial_error,
+                      convergence_progress_m=progress,
+                      error_trend_m=None if self.previous_error is None else gap-self.previous_error,
+                      continuous_bad_sec=0. if self.bad_since is None else now-self.bad_since,
+                      recommended_speed_cap_mps=.3 if bad else None,
+                      reason='invalid_tracking_reference' if self.latched else 'convergence_requested' if bad else 'ok')
+        self.previous_error = gap
         return report
 
 

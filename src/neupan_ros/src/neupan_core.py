@@ -22,7 +22,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 from neupan import neupan
 from neupan_safety import (validate_solution, trajectory_clearance, reference_offsets,
-                           checked_input_ages, pose_snapshot, InputUnavailable, AuthorizationChanged, StopRegistry, cap_solution_speed)
+                           checked_input_ages, pose_snapshot, InputUnavailable, AuthorizationChanged, CandidateRejected, StopRegistry, cap_solution_speed, planner_obstacle_input)
 from osm_camera_path_guard import CameraPathGuard, check_execution_contract
 from osm_outdoor_start_connection import RoadCorridor, ScanEnvelope, StartRouteConnector, resample_forward_reference, OutdoorTrackingGuard
 import copy
@@ -198,6 +198,10 @@ class neupan_core:
         self.filtered_empty_since = None
         self.scan_fault_reason = "waiting_for_scan"
         self.scan_mode = "WAITING"
+        self.scan_lock = threading.RLock()
+        self.scan_queue = deque(maxlen=8)
+        self.scan_snapshot = None
+        self.scan_tf_diagnostics = {}
         self.last_scan_status_publish = rospy.Time(0)
 
         # publisher
@@ -273,6 +277,13 @@ class neupan_core:
         self.input_good_since=None
 
         while not rospy.is_shutdown():
+
+            self.cycle_started_mono=time.monotonic()
+            self.cycle_timing={}
+            self.candidate_rejections=0
+            self.solver_started_mono=None
+            self.solver_finished_mono=None
+            self.refresh_scan_snapshot()
 
             if getattr(self, 'planner_fault', None) is not None:
                 self.stop_registry.set('planner_fault',time.monotonic(),'inspect evidence and restart planner',True)
@@ -380,6 +391,15 @@ class neupan_core:
                 self.generate_path_msg(self.neupan_planner.initial_path)
             )
 
+            # Preparation may exceed the deadline while fresh frames are queued.
+            # Refresh scan AND pose before health/recovery, not just before solve.
+            self.diagnostic_stage = 'prepared_input_refresh'
+            try:
+                self.refresh_scan_snapshot()
+                trans,rot,self.diagnostic_state_stamp_ns=pose_snapshot(self.listener,self.map_frame,self.base_frame)
+                self.robot_state=np.array([trans[0],trans[1],self.quat_to_yaw_list(rot)]).reshape(3,1)
+            except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException,InputUnavailable) as error:
+                self.temporary_input_stop(str(error));r.sleep();continue
             scan_healthy, scan_reason = self.scan_is_healthy(rospy.Time.now())
             self.publish_scan_health(rospy.Time.now())
             if self.stop_on_scan_fault and not scan_healthy:
@@ -396,7 +416,9 @@ class neupan_core:
                 except InputUnavailable as error:
                     self.temporary_input_stop(str(error));r.sleep();continue
                 if self.input_good_since is None:self.input_good_since=time.monotonic()
-                if time.monotonic()-self.input_good_since<.3:
+                # One window for the complete bound pose/scan, not scan 0.5s
+                # followed by another input 0.3s window.
+                if time.monotonic()-self.input_good_since<max(.3,getattr(self,'scan_recovery_stable_sec',.3)):
                     self.vel_pub.publish(Twist());r.sleep();continue
                 self.stop_registry.clear('input')
 
@@ -421,35 +443,53 @@ class neupan_core:
             self.diagnostic_stage = "adjust_parameters"
             self.update_adaptive_adjust_parameters()
 
+            # Preparation can be slow (route replacement, path publication).
+            # Bind a NEW complete pose before solving, never re-stamp a result.
+            try:
+                self.refresh_scan_snapshot()
+                checked_scan,solver_points,queued_frames=self.bind_scan_snapshot()
+                trans,rot,self.diagnostic_state_stamp_ns=pose_snapshot(self.listener,self.map_frame,self.base_frame)
+                self.robot_state=np.array([trans[0],trans[1],self.quat_to_yaw_list(rot)]).reshape(3,1)
+                solve_ages=checked_input_ages(checked_scan,rospy.Time.now().to_nsec(),time.monotonic(),
+                                   self.scan_timeout,self.diagnostic_state_stamp_ns)
+            except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException,InputUnavailable) as error:
+                self.temporary_input_stop(str(error));r.sleep();continue
+            self.cycle_timing['preparation_ms']=(time.monotonic()-self.cycle_started_mono)*1000
+            self.cycle_timing.update(solve_input_ages=solve_ages,solve_queued_frames=queued_frames)
+
             t2 = rospy.Time.now()
             solver_started = time.monotonic()
+            self.solver_started_mono=solver_started
             self.diagnostic_stage = "solve"
-            self.diagnostic_solver_input = (self.robot_state, self.obstacle_points)
-            checked_scan = None
+            self.diagnostic_solver_input = (self.robot_state, solver_points)
             try:
+                solver_obstacles=planner_obstacle_input(self.neupan_planner,solver_points)
                 contract=getattr(self,'camera_execution_contract',None)
                 reference_speed=getattr(self.neupan_planner,'ref_speed',None)
                 try:
                     if contract and reference_speed is not None:
                         self.neupan_planner.set_reference_speed(min(reference_speed,contract['speed_cap_mps']))
-                    action, info = self.neupan_planner(*self.diagnostic_solver_input)
+                    action, info = self.neupan_planner(self.robot_state,solver_obstacles)
                 finally:
                     if contract and reference_speed is not None:
                         self.neupan_planner.set_reference_speed(reference_speed)
                 solver_finished = time.monotonic()
+                self.solver_finished_mono=solver_finished
                 safety_started = solver_finished
                 self.diagnostic_stage = 'validate_solution'
                 validate_solution(action, info, self.neupan_planner.robot, self.neupan_planner.dt)
                 contract=getattr(self,'camera_execution_contract',None)
-                if contract and not info.get('arrive'):
+                tracking_cap=(getattr(self,'outdoor_tracking_status',None) or {}).get('recommended_speed_cap_mps')
+                caps=([contract['speed_cap_mps']] if contract else [])+([tracking_cap] if tracking_cap is not None else [])
+                if caps and not info.get('arrive'):
                     action,info=cap_solution_speed(action,info,self.neupan_planner.robot,
-                                                  self.neupan_planner.dt,contract['speed_cap_mps'])
+                                                  self.neupan_planner.dt,min(caps))
                     validate_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt)
                 self.diagnostic_command_action=np.asarray(action,float).copy()
                 self.diagnostic_checked_trajectory=np.hstack(info['opt_state_list']) if info.get('opt_state_list') else None
                 self.diagnostic_checked_controls=info.get('vel_tensor')
                 if not info.get('arrive'):
-                    snapshot = getattr(self, 'safety_scan', None)
+                    snapshot = checked_scan
                     if snapshot is None:
                         raise InputUnavailable('full scan safety snapshot unavailable')
                     scan_points, stamp_ns, received_mono = snapshot
@@ -459,9 +499,38 @@ class neupan_core:
                     if not 0 <= age <= self.scan_timeout or time.monotonic()-received_mono > self.scan_timeout:
                         raise InputUnavailable('full scan expired before command publication')
                     self.diagnostic_stage = 'trajectory_safety'
-                    self.trajectory_safety = trajectory_clearance(np.hstack(info['opt_state_list']),
-                        scan_points, self.neupan_planner.robot.vertices)
+                    try:
+                        self.trajectory_safety = trajectory_clearance(np.hstack(info['opt_state_list']),
+                            scan_points, self.neupan_planner.robot.vertices)
+                        self.candidate_rejections=0
+                    except CandidateRejected as rejected:
+                        # Bounded alternatives, not blind replay of an old speed.
+                        # Each slower command has a newly integrated FULL swept
+                        # prediction; final camera/age checks still follow.
+                        self.candidate_rejections=1
+                        if self.neupan_planner.robot.kinematics!='acker':raise rejected
+                        accepted=False
+                        original_action,original_info=action,info
+                        velocities=original_info['vel_tensor']
+                        if hasattr(velocities,'detach'):velocities=velocities.detach().cpu().numpy()
+                        for factor in (.5,.25):
+                            action,info=cap_solution_speed(original_action,original_info,self.neupan_planner.robot,
+                                self.neupan_planner.dt,float(np.max(np.abs(np.asarray(velocities)[0])))*factor)
+                            validate_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt)
+                            try:
+                                self.trajectory_safety=trajectory_clearance(np.hstack(info['opt_state_list']),
+                                    scan_points,self.neupan_planner.robot.vertices)
+                                accepted=True;break
+                            except CandidateRejected:self.candidate_rejections+=1
+                        if not accepted:raise rejected
+                        self.diagnostic_command_action=np.asarray(action,float).copy()
+                        self.diagnostic_checked_trajectory=np.hstack(info['opt_state_list'])
+                        self.diagnostic_checked_controls=info.get('vel_tensor')
+                self.stop_registry.clear('candidate')
                 self.safety_check_ms = (time.monotonic()-safety_started)*1000
+                self.cycle_timing.update(solver_ms=(solver_finished-solver_started)*1000,safety_ms=self.safety_check_ms)
+            except CandidateRejected as error:
+                self.candidate_stop(str(error));r.sleep();continue
             except InputUnavailable as error:
                 self.temporary_input_stop(str(error));r.sleep();continue
             except Exception as error:
@@ -557,7 +626,7 @@ class neupan_core:
                 self.vel_pub.publish(Twist())
                 self.stop_registry.set('authorization',time.monotonic(),'adopt latest authority and solve again; no sensor recovery delay')
                 self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
-                    command_source='authorization_retry',reason=str(error),stop_reasons=self.stop_registry.snapshot())))
+                    command_source='authorization_retry',reason=str(error),stop_reasons=self.stop_registry.snapshot(),timing=self.cycle_metrics())))
                 rospy.logwarn_throttle(2.,yellow_terminal_text('Camera authority updated; discard old command and replan: %s'),str(error))
                 r.sleep();continue
             except InputUnavailable as error:
@@ -572,9 +641,13 @@ class neupan_core:
             command_time = time.monotonic()
             self.runtime_pub.publish(json.dumps({
                 "stamp": rospy.Time.now().to_sec(),
-                "command_source":"neupan_retimed_camera" if info.get('speed_retimed') else "neupan",
+                "command_source":("neupan_retimed_camera" if getattr(self,'camera_execution_contract',None)
+                    else "neupan_retimed_tracking" if (getattr(self,'outdoor_tracking_status',None) or {}).get('recommended_speed_cap_mps') is not None
+                    else "neupan_retimed_collision") if info.get('speed_retimed') else "neupan",
                 "solver_ms": solver_ms,
                 "safety_check_ms": getattr(self,'safety_check_ms',None),
+                "timing":self.cycle_metrics(),
+                "candidate_rejections":getattr(self,'candidate_rejections',0),
                 "publish_input_ages": self.publish_input_ages,
                 "camera_checked_authorization_id":getattr(self,'camera_checked_authorization_id',None),
                 "camera_checked_authorization_generation":getattr(self,'camera_publication_generation',None),
@@ -656,11 +729,35 @@ class neupan_core:
     def temporary_input_stop(self, reason):
         self.vel_pub.publish(Twist())
         self.input_good_since=None
-        self.stop_registry.set('input',time.monotonic(),'fresh bound pose/scan stable for 0.3s, then solve and recheck')
+        if getattr(self,'outdoor_tracking_guard',None) is not None:self.outdoor_tracking_guard.pause()
+        self.stop_registry.set('input',time.monotonic(),'fresh bound pose/scan for one shared recovery window, then solve and recheck')
         self.stop_registry.reasons['input'].update(detail=reason,stage=getattr(self,'diagnostic_stage','input'))
         self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
-            command_source='temporary_input_stop',reason=reason,stop_reasons=self.stop_registry.snapshot())))
+            command_source='temporary_input_stop',reason=reason,stop_reasons=self.stop_registry.snapshot(),
+            timing=self.cycle_metrics())))
         rospy.logwarn_throttle(2.,yellow_terminal_text('NeuPAN input STOP: %s; waiting for fresh stable inputs'),reason)
+
+    def cycle_metrics(self):
+        now=time.monotonic()
+        result=dict(getattr(self,'cycle_timing',{}))
+        result.update(stage=getattr(self,'diagnostic_stage',None),
+            elapsed_ms=(now-getattr(self,'cycle_started_mono',now))*1000,
+            state_stamp_ns=getattr(self,'diagnostic_state_stamp_ns',None))
+        if result['state_stamp_ns'] is not None:
+            result['state_age_ms']=(rospy.Time.now().to_nsec()-result['state_stamp_ns'])/1.e6
+        begin=getattr(self,'solver_started_mono',None);end=getattr(self,'solver_finished_mono',None)
+        if begin is not None:result.setdefault('solver_ms',((now if end is None else end)-begin)*1000)
+        if end is not None:result.setdefault('post_solver_ms',(now-end)*1000)
+        result['scan_tf']=dict(getattr(self,'scan_tf_diagnostics',{}))
+        return result
+
+    def candidate_stop(self, reason):
+        self.vel_pub.publish(Twist())
+        self.stop_registry.set('candidate',time.monotonic(),'recompute with current inputs; release only after full checks')
+        self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
+            command_source='candidate_rejected',reason=reason,stop_reasons=self.stop_registry.snapshot(),
+            rejected_candidates=getattr(self,'candidate_rejections',1),timing=self.cycle_metrics())))
+        rospy.logwarn_throttle(2.,yellow_terminal_text('NeuPAN candidate rejected; retrying task: %s'),reason)
 
     def publish_stop_snapshot(self, source):
         now=time.monotonic();signature=(source,tuple(sorted(self.stop_registry.reasons)))
@@ -754,9 +851,7 @@ class neupan_core:
             return False, "scan_transform_stale_{:.2f}s".format(valid_age)
         if self.scan_valid_since is None:
             return False, self.scan_fault_reason
-        stable_sec = (now - self.scan_valid_since).to_sec()
-        if stable_sec < self.scan_recovery_stable_sec:
-            return False, "scan_recovering_{:.2f}s".format(stable_sec)
+        # Recovery is timed once on the complete pose+scan in run().
         return True, "ok"
 
     def publish_scan_health(self, now):
@@ -778,6 +873,7 @@ class neupan_core:
             "healthy": healthy,
             "reason": reason,
             "mode": self.scan_mode,
+            "capture_tf":dict(getattr(self,'scan_tf_diagnostics',{})),
             "scan_age_sec": None
             if self.last_scan_received_time is None
             else max(0.0, (now - self.last_scan_received_time).to_sec()),
@@ -922,86 +1018,108 @@ class neupan_core:
         self.start_connector.scan_transform_state = state
 
     def scan_callback(self, scan_msg):
-
-        now = rospy.Time.now()
-        self.last_scan_received_time = now
+        received=time.monotonic()
+        self.last_scan_received_time = rospy.Time.now()
+        with self.scan_lock:
+            self.scan_queue.append((scan_msg,received))
         if self.start_connector:
             with self.connection_scan_lock:
-                self.connection_scan_queue.append((scan_msg, time.monotonic()))
+                self.connection_scan_queue.append((scan_msg, received))
 
-        if self.robot_state is None:
-            self.mark_scan_fault("robot_pose_unavailable_for_scan")
-            return None
+    def refresh_scan_snapshot(self):
+        """Retry same-epoch TF off callback; atomically commit the full frame.
 
-        ranges = np.array(scan_msg.ranges)
-        angles = scan_msg.angle_min + np.arange(len(ranges)) * scan_msg.angle_increment
-        relevant_raw = np.isfinite(ranges)
-        relevant_raw &= ranges >= max(float(scan_msg.range_min), self.scan_range[0])
-        relevant_raw &= ranges <= min(float(scan_msg.range_max), self.scan_range[1])
-        relevant_raw &= angles > self.scan_angle_range[0]
-        relevant_raw &= angles < self.scan_angle_range[1]
+        A queued frame does not invalidate the previous fresh snapshot. The
+        monotonic receive clock is captured ONCE in scan_callback, never renewed.
+        """
+        now=time.monotonic();ros_ns=rospy.Time.now().to_nsec()
+        with self.scan_lock:
+            queued=list(self.scan_queue)
+        pending=[(msg,received) for msg,received in queued
+                 if 0<=now-received<=self.scan_timeout
+                 and 0<msg.header.stamp.to_nsec() and -50000000<=ros_ns-msg.header.stamp.to_nsec()<=self.scan_timeout*1.e9]
+        previous=getattr(self,'scan_snapshot',None)
+        selected=None;last_error=None
+        for scan_msg,received in sorted(pending,key=lambda item:item[0].header.stamp.to_nsec(),reverse=True):
+            stamp=scan_msg.header.stamp.to_nsec()
+            if previous is not None and stamp<=previous['safety'][1]:continue
+            if stamp>ros_ns:continue
+            try:
+                selected=self.convert_scan_snapshot(scan_msg,received)
+                break
+            except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException) as error:
+                last_error=dict(exception_type=type(error).__name__,exception=str(error),
+                    requested_stamp_ns=stamp,source_frame=scan_msg.header.frame_id,
+                    wait_ms=(now-received)*1000)
+                try:last_error['chain_latest_ns']=self.listener.getLatestCommonTime(
+                    self.map_frame,scan_msg.header.frame_id or self.lidar_frame).to_nsec()
+                except tf.Exception:last_error['chain_latest_ns']=None
+            except (ValueError,TypeError,OverflowError) as error:
+                last_error=dict(exception_type=type(error).__name__,exception=str(error),requested_stamp_ns=stamp)
+        if selected is not None:
+            with self.scan_lock:
+                # Publish ONE immutable-by-convention frame before compatibility
+                # fields. Only this planning thread writes transformed snapshots.
+                self.scan_snapshot=selected
+                self.safety_scan=selected['safety']
+                self.obstacle_points=selected['planner_points']
+                self.mark_scan_valid(rospy.Time.now(),selected['mode'])
+                self.scan_queue=deque(((m,r) for m,r in self.scan_queue
+                    if m.header.stamp.to_nsec()>selected['safety'][1]),maxlen=8)
+            previous=selected
+        healthy=False
+        if previous is not None:
+            try:
+                checked_input_ages(previous['safety'],rospy.Time.now().to_nsec(),time.monotonic(),
+                    min(self.scan_timeout,self.scan_transform_timeout))
+                healthy=True
+            except InputUnavailable:pass
+        self.scan_tf_diagnostics=dict(state='using_previous_fresh_capture' if healthy and selected is None and pending
+            else 'ready' if healthy else 'waiting_for_capture_tf' if pending else 'no_fresh_scan',
+            queue_length=len(pending),selected_stamp_ns=None if previous is None else previous['safety'][1],
+            selected_age_ms=None if previous is None else (rospy.Time.now().to_nsec()-previous['safety'][1])/1.e6,
+            last_tf_error=last_error)
+        if not healthy:
+            self.mark_scan_fault('scan_tf_waiting' if pending else 'scan_snapshot_expired_or_missing')
+        with self.scan_lock:
+            self.scan_queue=deque(((m,r) for m,r in self.scan_queue
+                if 0<=time.monotonic()-r<=self.scan_timeout),maxlen=8)
 
-        points = []
-        # x, y, z, yaw, pitch, roll = self.lidar_offset
+    def convert_scan_snapshot(self, scan_msg, received):
+        """Build privately; a failed second TF lookup must not partly update data."""
 
-        if self.flip_angle:
-            angles = np.flip(angles)
+        ranges=np.asarray(scan_msg.ranges,float)
+        if not len(ranges) or not np.any(np.isfinite(ranges)|np.isposinf(ranges)):
+            raise ValueError('scan has no usable ranges')
+        if not np.isfinite([scan_msg.angle_min,scan_msg.angle_increment,scan_msg.range_min,scan_msg.range_max]).all():
+            raise ValueError('invalid scan metadata')
+        if scan_msg.range_min<0 or scan_msg.range_max<=scan_msg.range_min:
+            raise ValueError('invalid scan distance limits')
+        angles=scan_msg.angle_min+np.arange(len(ranges))*scan_msg.angle_increment
+        if self.flip_angle:angles=np.flip(angles)
+        mask=np.isfinite(ranges)&(ranges>=max(self.scan_range[0],float(scan_msg.range_min)))
+        mask&=(ranges<=min(self.scan_range[1],float(scan_msg.range_max)))
+        mask&=(angles>self.scan_angle_range[0])&(angles<self.scan_angle_range[1])
+        point_array=np.vstack((ranges[mask]*np.cos(angles[mask]),ranges[mask]*np.sin(angles[mask])))
+        (trans, rot) = self.listener.lookupTransform(
+                self.map_frame, scan_msg.header.frame_id or self.lidar_frame, scan_msg.header.stamp)
 
-        for i in range(len(ranges)):
-            distance = ranges[i]
-            angle = angles[i]
+        yaw = self.quat_to_yaw_list(rot)
+        x, y = trans[0], trans[1]
 
-            if (
-                distance >= self.scan_range[0]
-                and distance <= self.scan_range[1]
-                and angle > self.scan_angle_range[0]
-                and angle < self.scan_angle_range[1]
-            ):
-                point = np.array([[distance * cos(angle)], [distance * sin(angle)]])
-                points.append(point)
+        trans_matrix, rot_matrix = get_transform(np.c_[x, y, yaw].reshape(3, 1))
+        obstacle_points = rot_matrix @ point_array + trans_matrix
 
-        if len(points) == 0:
-            self.obstacle_points = None
-            if not np.any(relevant_raw):
-                self.safety_scan = (np.empty((2, 0)), scan_msg.header.stamp.to_nsec(), time.monotonic())
-                self.filtered_empty_since = None
-                self.mark_scan_valid(now, "CLEAR_NO_RETURNS")
-                return None
-
-            if self.filtered_empty_since is None:
-                self.filtered_empty_since = now
-            filtered_sec = (now - self.filtered_empty_since).to_sec()
-            if filtered_sec >= self.scan_filtered_empty_timeout:
-                self.mark_scan_fault("all_finite_scan_points_filtered")
-            else:
-                self.mark_scan_valid(now, "FILTERED_EMPTY_GRACE")
-            return None
-
-        self.filtered_empty_since = None
-        point_array = np.hstack(points)
-
-        try:
-            (trans, rot) = self.listener.lookupTransform(
-                self.map_frame, self.lidar_frame, scan_msg.header.stamp
-            )
-
-            yaw = self.quat_to_yaw_list(rot)
-            x, y = trans[0], trans[1]
-
-            trans_matrix, rot_matrix = get_transform(np.c_[x, y, yaw].reshape(3, 1))
-            self.obstacle_points = rot_matrix @ point_array + trans_matrix
-
-            if (
+        if (
                 self.scan_self_filter
                 and self.scan_self_filter_length > 0.0
                 and self.scan_self_filter_width > 0.0
-                and self.robot_state is not None
             ):
                 body_trans, body_rot = self.listener.lookupTransform(
                     self.map_frame, self.base_frame, scan_msg.header.stamp)
                 robot_x, robot_y, robot_yaw = body_trans[0], body_trans[1], self.quat_to_yaw_list(body_rot)
-                dx = self.obstacle_points[0, :] - robot_x
-                dy = self.obstacle_points[1, :] - robot_y
+                dx = obstacle_points[0, :] - robot_x
+                dy = obstacle_points[1, :] - robot_y
                 cos_yaw = cos(robot_yaw)
                 sin_yaw = sin(robot_yaw)
                 local_x = cos_yaw * dx + sin_yaw * dy
@@ -1017,30 +1135,20 @@ class neupan_core:
                 outside_body = (np.abs(local_x) > half_length) | (
                     np.abs(local_y) > half_width
                 )
-                self.obstacle_points = self.obstacle_points[:, outside_body]
+                obstacle_points = obstacle_points[:, outside_body]
 
-            self.safety_scan = (self.obstacle_points.copy(), scan_msg.header.stamp.to_nsec(), time.monotonic())
-            self.obstacle_points = self.obstacle_points[:, ::self.scan_downsample]
-            self.mark_scan_valid(now, "TRACKING")
-            rospy.loginfo_once("Scan obstacle points Received")
+        if not np.isfinite(obstacle_points).all():raise ValueError('nonfinite transformed scan')
+        return dict(safety=(obstacle_points.copy(),scan_msg.header.stamp.to_nsec(),received),
+            planner_points=obstacle_points[:,::self.scan_downsample].copy(),
+            source_frame=scan_msg.header.frame_id or self.lidar_frame,target_frame=self.map_frame,
+            mode='TRACKING' if point_array.shape[1] else 'CLEAR_NO_RETURNS')
 
-            return self.obstacle_points
-
-        except (
-            tf.LookupException,
-            tf.ConnectivityException,
-            tf.ExtrapolationException,
-        ):
-            self.mark_scan_fault("scan_tf_unavailable")
-            rospy.loginfo_throttle(
-                1,
-                red_terminal_text(
-                    "waiting for tf for the transform from {} to {}".format(
-                        self.lidar_frame, self.map_frame
-                    )
-                ),
-            )
-            return
+    def bind_scan_snapshot(self):
+        """One atomic frame for solver, full swept check and final age check."""
+        with self.scan_lock:
+            snapshot=self.scan_snapshot
+            if snapshot is None:raise InputUnavailable('no complete scan snapshot at solve binding')
+            return snapshot['safety'],snapshot['planner_points'],len(self.scan_queue)
 
     def update_goal_arrival(self):
         if self.arrive:

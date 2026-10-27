@@ -1,5 +1,26 @@
 # test_motion_tools
 
+2026-10-27检查顺序补充：扫描绑定专项增加4项550 ms准备、健康前刷新及输入恢复分支测试，共14项；完整597项：589通过、8项可选跳过。最新报告独立放在`videos/neupan_precheck_order_20261027/`，不覆盖前轮报告；以下旧条目为各自版本结果。
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests --output-dir videos/neupan_precheck_order_20261027
+python3 src/Test/tests/test_scan_binding_followup.py --report-dir videos/neupan_precheck_order_20261027
+```
+
+2026-10-27空扫描与准备后绑定补充：`tests/test_scan_binding_followup.py`新增10项，真实库验证非空→空→空→非空及旧最小距离缓存；组合生产run/扫描队列复现准备350 ms＋求解200 ms。当前全量593项：585通过、8项可选跳过，独立报告在`videos/neupan_scan_binding_20261027/`，不覆盖此前结果。
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests --output-dir videos/neupan_scan_binding_20261027
+python3 src/Test/tests/test_scan_binding_followup.py --report-dir videos/neupan_scan_binding_20261027
+```
+
+2026-10-27实车起步问题整改：新增`tests/test_startup_recovery.py`18项，覆盖正常扫描同刻TF队列、原接收时间、完整帧提交、真实超时/乱序/恢复、起步诊断与低速、候选碰撞重算和内部异常保持。完整583项：575通过、8项可选跳过。下述脚本只读两组故障bag全部分片；可选`--solve`在每组一个静态场景调用3次真实优化器，不是闭环驾驶。报告统一放在工作区`videos/neupan_startup_recovery_20261027`，无ROS节点/车辆控制。
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests --output-dir videos/neupan_startup_recovery_20261027
+python3 src/Test/scripts/verify_startup_recovery.py --bags --solve --output-dir videos/neupan_startup_recovery_20261027
+```
+
 2026-10-27发布/恢复协议整改：新增`tests/test_camera_publication_protocol.py`共16项，完整565项：557通过、8项可选跳过。覆盖同路线降速/区域收缩、兼容更新、心跳、检查中撤销、最终时效/锁等待、缓存TTL/TF清理与两阶段恢复。报告在`videos/neupan_publication_fix_20261027/`，真实生产方法配假时钟，不是实车闭环。以下较早条目的数量是各自当时结果。
 
 ```bash
