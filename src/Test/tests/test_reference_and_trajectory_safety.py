@@ -104,8 +104,9 @@ class TrajectorySafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'differs'):
             validate_solution(np.array([[1.4],[0.]]),info,self.robot,.1)
         states[-1][0,0]=220.
-        with self.assertRaisesRegex(ValueError,'residual'):
-            validate_solution(np.array([[.8],[0.]]),info,self.robot,.1)
+        # Native predicted states are validated numerically, not re-solved
+        # or vetoed using another nonlinear integration in the ROS wrapper.
+        validate_solution(np.array([[.8],[0.]]),info,self.robot,.1)
 
     def test_failure_revokes_action_even_when_disk_write_fails(self):
         import neupan_diagnostics as d

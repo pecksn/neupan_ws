@@ -261,10 +261,35 @@ def corridor_report(delivered, geometry, anchor, indices, minimum=.80):
                 required_minimum_m=minimum)
 
 
+def observation_area_valid(area):
+    """Validate evidence independently of whether a particular path fits it.
+
+    A reference outside a usable image polygon may have a valid replacement.
+    Missing/malformed calibration or polygon is NOT usable search evidence.
+    """
+    if not isinstance(area,dict) or not area:return False
+    try:
+        origin=np.asarray(area['origin'],float);rotation=np.asarray(area['rotation'],float)
+        matrix=np.asarray(area['matrix'],float);distortion=np.asarray(area['distortion'],float)
+        polygon=np.asarray(area['polygon'],float);body=np.asarray(area['footprint'],float)
+        if (origin.shape!=(3,) or rotation.shape!=(3,3) or matrix.shape!=(3,3)
+                or distortion.ndim!=1 or distortion.size not in (0,4,5,8,12,14)
+                or polygon.ndim!=2 or polygon.shape[1]!=2 or len(polygon)<3
+                or body.ndim!=2 or body.shape[1]!=2 or len(body)<3):return False
+        if not all(np.isfinite(value).all() for value in (origin,rotation,matrix,distortion,polygon,body)):return False
+        return bool(matrix[0,0]>0 and matrix[1,1]>0
+            and np.allclose(matrix[2],[0.,0.,1.],atol=1.e-6)
+            and np.allclose(rotation.T@rotation,np.eye(3),atol=.01)
+            and abs(np.linalg.det(rotation)-1.)<.01
+            and abs(cv2.contourArea(polygon.astype(np.float32)))>1.e-6
+            and abs(cv2.contourArea(body.astype(np.float32)))>1.e-6)
+    except (KeyError,TypeError,ValueError,OverflowError,cv2.error):return False
+
+
 def observed_area_contains(point, path, index, evidence, anchor):
     """Only measured drivable pixels authorize a single-side footprint sweep."""
     area=evidence.get('area')
-    if not area:return False
+    if not observation_area_valid(area):return False
     direction=path[min(index+1,len(path)-1)]-path[max(0,index-1)]
     yaw=math.atan2(direction[1],direction[0])-anchor[1]
     body=np.asarray(area['footprint'],float)
@@ -719,8 +744,19 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
     # history keep their previous scope and are not trimmed to this window.
     report.update(reference_gap_m=float(np.median(gaps)),reference_gap_range_m=[float(min(gaps)),float(max(gaps))],corridor=corridor)
     lo,hi=clearance
-    if corridor['ok'] and lo-.10<=np.median(gaps)<=hi+.10:
+    if not corridor.get('boundary_unsafe') and lo-.10<=np.median(gaps)<=hi+.10:
         report['reason']='hold_in_band';return current.copy(),report
+    if not corridor['ok'] and not corridor.get('boundary_unsafe'):
+        single_keys=[i for i in all_keys if geometry[i].get('mode')=='right_only']
+        unavailable=[i for i in single_keys if not observation_area_valid(geometry[i].get('area'))]
+        if unavailable:
+            report.update(reason='hold_insufficient_observation_area',
+                area_evidence_state='missing_or_invalid',unavailable_area_indices=unavailable)
+            return current.copy(),report
+        # The evidence exists; only the CURRENT reference fails its coverage.
+        # Let the original bounded search test replacement footprints against
+        # the same measured area. This is no permission to execute a candidate.
+        report['area_evidence_state']='valid_current_reference_not_covered'
     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(points,axis=0),axis=1))]
     previous=np.sum((current-points)*normals,axis=1)
     delta=float(np.clip(np.median(gaps),lo,hi)-np.median(gaps))

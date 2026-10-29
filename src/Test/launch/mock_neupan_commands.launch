@@ -1,0 +1,16 @@
+<launch>
+  <!-- Start the existing vehicle launch separately; no production file changes. -->
+  <!-- CAN MOVE THE CAR: raise drive wheels/disconnect motors first. -->
+  <arg name="enabled" default="false" />
+  <arg name="duration_sec" default="120" />
+  <arg name="speed_max_mps" default="0.25" />
+  <arg name="steer_max_rad" default="0.20" />
+  <arg name="required_node" default="/neupan_control" />
+  <node pkg="test_motion_tools" type="mock_neupan_commands.py" name="mock_neupan_commands" output="screen">
+    <param name="enabled" value="$(arg enabled)" type="bool" />
+    <param name="duration_sec" value="$(arg duration_sec)" />
+    <param name="speed_max_mps" value="$(arg speed_max_mps)" />
+    <param name="steer_max_rad" value="$(arg steer_max_rad)" />
+    <param name="required_node" value="$(arg required_node)" />
+  </node>
+</launch>

@@ -1,7 +1,7 @@
 # 阿克曼无人车室外导航项目分析
 
-> 更新日期：2026-10-28。本轮逐文件补齐整个neupan_ros包与外部NeuPAN算法的职责、改动和上游对照；定位等其他模块沿用此前`704e6fc`基线分析。
-> 本文件只维护系统架构、模块职责、运行链路、关键接口及配置依据。所有问题、整改状态、测试与验收记录统一维护在 [PROJECT_ISSUES_CN.md](PROJECT_ISSUES_CN.md)。
+> 更新日期：2026-10-29。本文保留现有实现的模块职责、运行链路、关键接口及逐程序/上游对照；定位等其他模块沿用此前`704e6fc`基线分析。
+> 待修改事项统一维护在 [PROJECT_ISSUES_CN.md](PROJECT_ISSUES_CN.md)；详细运行与测试证据保存在`tracker_logs/`，不把已完成修复过程留作问题待办。
 > 日常修复bug只更新问题文档；架构、启动方式或接口契约改变时才同步更新本文。不再另外维护日期版复核或整改任务文档。
 
 ## 1. 项目定位与范围
@@ -9,6 +9,8 @@
 这是基于ROS1 Noetic的阿克曼无人车室外导航工程：GNSS提供全局位置/航向参考，FAST-LIO与轮式里程计支持本地连续定位，OSM提供道路参考路线，NeuPAN循环计算局部动作，经控制选择器和串口驱动送入MCU。
 
 用户当前采用顺序任务流程：完成当前路线、停车、再下发下一目标。室内导航、TEB对照、Gazebo仿真、开环采集和标定作为独立入口保留，不能默认与实车主线使用相同的配置和控制出口。
+
+**2026-10-29已实施精简：** 普通导航恢复“NeuPAN原生求解→数值/输入时效/任务归属校验→直接发布首个动作”。ROS不再改写整段控制或热启动，不再施加持续减速目标、二次全预测碰撞门槛或独立派发线程。原生选点与排序恢复，本车参数、模型、外部initial_path时间/距离修复和定位/扫描/人工停止保护保留。相机仅做约1–3 m稳定参考修正；具体现场验收仍见问题文档。
 
 - `src/`：源码与功能包。
 - `build/`、`devel/`：catkin构建产物，不作为业务源码修改入口。
@@ -28,7 +30,7 @@ GNSS位置/航向/质量 → GPS投影 + 全局定位保护 → /odometry/global
 本地/全局里程计 → map与odom对齐
 
 经纬度目标 → 地图目标 → OSM A* → 参考路线
-参考路线 + 位姿 + LaserScan → NeuPAN循环求解 → ROS外层复核/有效控制段派发 → /cmd_vel/auto
+参考路线 + 位姿 + LaserScan → NeuPAN原生求解 → 输入时效/数值/任务归属校验 → 首动作直发 → /cmd_vel/auto
 自动速度 / 云端遥控 → mux → /cmd_vel/selected → 底盘限幅与校验 → MCU
 ```
 
@@ -38,7 +40,7 @@ GNSS位置/航向/质量 → GPS投影 + 全局定位保护 → /odometry/global
 
 用户流程是：接收目标、沿路线行驶、到达后停车等待下一目标。源码中 `update_goal_arrival` 设置等待状态；主循环在等待时持续发布零速度，节点本身不退出。
 
-行驶过程中，`run`反复读取位姿、装载路径并调用NeuPAN。室外默认启用`AcceptedExecution`：主循环接入合格解，独立派发线程约10 Hz复核当前位姿、最新完整扫描和剩余控制，求解暂时阻塞时可继续合格动作。因此：
+行驶过程中，`run`反复绑定位姿与扫描、装载参考并调用NeuPAN，直接发布本次原生首动作。没有派发旧控制序列的第二线程。因此：
 
 - **任务层面**：当前路线通常连续执行到终点。
 - **计算层面**：沿途多次求解，不是出发前只计算一次全部速度。
@@ -57,7 +59,7 @@ GNSS位置/航向/质量 → GPS投影 + 全局定位保护 → /odometry/global
 | 遥控源超时 | 完整launch默认1.0秒 | 手动模式不受自动定位门控拦截 |
 | 定位安全心跳 | 主线自动模式检查安全值，缺失或达到默认1.0秒期限停车 | `use_global_ekf=true` 分支关闭此门控，不能假设两分支等价 |
 | 扫描保护 | 缺失、超时、转换故障及恢复稳定性检查 | 扫描按其测量时刻查询TF；发布前检查实际复核快照，不用新回调给旧结果续期 |
-| 有效控制段派发 | 复核并按时间推进同一原生控制序列，版本/期限固定 | 不是第二个优化器；限速和连续性修正会影响实际动作，需与求解线程共同验证 |
+| 原生首动作直发 | 单一求解/发布主线；不复用过期动作 | 慢求解超过mux的0.5 s自动指令期限仍可能停车，不放宽看门狗 |
 | 最终输入保护 | 非有限值停车，正反向限速，转角限制，非法配置拒绝启动 | 软件上限不是硬件性能验收 |
 | 相机路径监督 | 路线身份/摘要和心跳检查；失败回退原路线，无有效原路线停车 | 只有启用相机控制才影响控制选择 |
 | 掉头连接准入 | 反向路线触发局部前进搜索，等待/失败停车 | 普通路线不经过相同的扫掠准入 |
@@ -72,7 +74,7 @@ GNSS位置/航向/质量 → GPS投影 + 全局定位保护 → /odometry/global
 | `wheeltec_gps_driver` | NMEA与设备解状态解析 | `libnmea_navsat_driver`、G90相关launch |
 | `osm_map_handler` | 目标投影、路网A*、相机路径修正和室外连接准备 | `global_astar_node.cpp`、`gps_goal_bridge.py`、`osm_camera_path_refinement.py` |
 | `hybrid-a-star-annotation` | 共享C++车辆运动学搜索核心 | `hybrid_astar`包及其HYAS库 |
-| `neupan_ros` | 求解编排、路径装载、输入/轨迹复核、有限控制段派发及诊断 | `src/neupan_core.py`、`neupan_safety.py`、`neupan_navigation.py`、`neupan_execution.py` |
+| `neupan_ros` | 原生求解编排、参考装载、输入/数值校验与诊断 | `src/neupan_core.py`、`neupan_safety.py`、`neupan_navigation.py` |
 | `hybridnets_receiver` | 接收GPU视频与视觉结果JSON | `launch/receiver.launch` |
 | `lidar_curb_refinement` | 路沿检测及可选路径修正 | `road_curb_debug.launch` |
 | `usb_camera` / `FAST-Calib` | 相机输入、内外参及标定 | 各包config与launch |
@@ -181,20 +183,19 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 
 当前包共有22个Python程序、2个C++程序和3个Shell脚本，下面全部列出。模型、地图、世界、图片、URDF和配置另列，不能把128个文件都理解成新增控制逻辑。
 
-### 8.2 实车直接使用的6个Python程序
+### 8.2 实车直接使用的Python程序
 
-下表路径相对于`src/neupan_ros/`。原核心531行，当前约2100行；核心类方法从14个增加到55个，其中41个新增、6个原方法改变、8个消息/可视化转换方法保持原逻辑。行数包含诊断与注释，不代表优化器规模；清单中的旧行数是审计基线，不作为运行契约。
+下表路径相对于`src/neupan_ros/`。上节数量与上游统计是精简前审计基线；不是当前控制逻辑计数。
 
-| 程序 | 用途与主要接口 | 相对原版的具体变化 | 对运动的实际影响 |
-| --- | --- | --- | --- |
-| [scripts/neupan_node.py](src/neupan_ros/scripts/neupan_node.py) | ROS可执行入口，创建核心并调用`run()` | 从原`src/neupan_node.py`迁移；通过rospkg查找实现模块，捕获异常后保存证据并重新抛出 | 入口及异常报告；不单独计算转向 |
-| [src/neupan_core.py](src/neupan_ros/src/neupan_core.py) | 输入、任务、求解和发布的编排中心 | 增加同刻扫描TF/快照、OSM路由装载、到达等待、室外连接、相机消费、运行中参数切换、候选复查/降速/有限重求解、执行段接入、停车原因和恢复 | 已超出原版的简单算法封装；可限制动作、选择参考和触发零速 |
-| [src/neupan_safety.py](src/neupan_ros/src/neupan_safety.py) | 数值检查与动作连续性：`validate_solution`、`trajectory_clearance`、`continuous_solution`、`StopRegistry`等 | 原版无此模块；分开输入缺失、绑定结果过期、授权改变、候选不合格；复制算法复用的结果；管理命令历史、限速及全扫描车体扫掠 | `continuous_solution`会改变控制副本并按阿克曼运动学重新积分；最终复核这些实际待发控制。模块中的publisher包装器也参与零速历史记录，不能仅凭文件头注释认为它只读 |
-| [src/neupan_navigation.py](src/neupan_ros/src/neupan_navigation.py) | `GeometryObstacleAdapter`、`MotionFeedback`及条件制动占用检查 | 原版无此模块；从完整扫描按名义车体扫掠/角度覆盖选取最多100点；DUNE输出的点、μ、λ成组重排，供NRMP最多10点；轮式位姿差分与可选编码器接口；实测边界下的方向性停车覆盖 | 改变优化器实际看到的障碍及顺序；约1 Hz位置差分只作区间均速诊断。停车覆盖须有速度、延迟、减速度、转向误差/速率/绝对值和停止余量的完整测量边界；覆盖正倒车，不假设刹车期间保持转角。旧常转角影子仅作诊断 |
-| [src/neupan_execution.py](src/neupan_ros/src/neupan_execution.py) | `AcceptedExecution`接管已接受的原生有限控制序列，独立复核/派发 | 原版无此模块；约10 Hz取新位姿/扫描，按已消耗时间推进同一控制段；版本与到期时刻固定；一次复查过期最多完整重绑复查一次；显式停止/新授权可撤销；可选实测停车余量分支 | 求解暂慢时仍可派发经复核的剩余动作。过期检查与当前输入故障分类分离；两次过期且当前输入健康时可零速重算，但不新增断流恢复等待。可选例外复用同一原生预测与方向性占用，不再用全向圆域；未标定默认仍需整段合格 |
-| [src/neupan_diagnostics.py](src/neupan_ros/src/neupan_diagnostics.py) | 异常栈、输入/输出数组快照与候选拒绝证据 | 原版无此模块；`CandidateEvidenceSink`用有界异步队列写候选证据；`report_failure`报告不可恢复异常 | 普通诊断采样不触发停车；核心/入口捕获异常调用`report_failure`时，它也会先尝试发零速再写盘，覆盖求解边界外异常；日志失败不能撤销停车 |
+| 程序 | 当前职责 | 对运动的影响 |
+| --- | --- | --- |
+| [scripts/neupan_node.py](src/neupan_ros/scripts/neupan_node.py) | ROS入口与异常报告 | 不单独计算转向 |
+| [src/neupan_core.py](src/neupan_ros/src/neupan_core.py) | 扫描/同刻TF适配、参考与任务装载、单次原生求解、首动作发布、停车原因和日志 | 原生action直接发布；模式/任务变化、输入失效及异常时零速，不改写转角或热启动 |
+| [src/neupan_safety.py](src/neupan_ros/src/neupan_safety.py) | 有限值/形状/硬上限、精确输入年龄和停车原因；保留独立历史危险所需几何工具 | 普通主线不再执行完整预测硬否决；不做速度重定时或连续性改写 |
+| [src/neupan_navigation.py](src/neupan_ros/src/neupan_navigation.py) | `MotionFeedback`区间运动统计 | 只读诊断，不影响速度/转向/停车；无选点hook和制动包络 |
+| [src/neupan_diagnostics.py](src/neupan_ros/src/neupan_diagnostics.py) | 内部异常栈与输入/输出快照 | 异常先停车再写日志；撤掉旧候选拒绝异步采集层 |
 
-室外普通OSM分支在设置`outdoor_reference_spacing_m=0.50`后启用运动连续性和上述适配，默认`geometric_obstacle_selection=true`、`checked_execution_enabled=true`。室内、旧Hybrid A*室外分支及单独旧launch没有完全相同的参数接线，不能把某分支测试结论扩展到所有入口。`enable_adaptive_adjust`在核心类中默认true，但完整launch明确传false；现场以实际启动参数为准。
+`neupan_execution.py`及其独立线程已删除。完整launch不再提供`checked_execution/geometric_obstacle_selection/停车标定`实验参数；仅把旧开关设false不能替代本次代码精简。原生本车100/10选点预算、模型和权重不变。50 cm采样与`enable_adaptive_adjust=false`仍保留。
 
 ### 8.3 本车启动、参数、训练与模型
 
@@ -315,7 +316,7 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 | [neupan/blocks/nrmp.py](/home/nuc/lxw/NeuPAN/neupan/blocks/nrmp.py) | 构造可微凸优化层，结合参考跟踪、避障距离变量、车体约束和线性化运动学求解控制/状态序列 | 未改 | 本机`q_s`为标量；作者版本支持3维状态权重并增加dtype转换等处理。本机没有对应向量权重实现；不能直接照作者新示例填`[qx,qy,qyaw]` |
 | [neupan/blocks/dune_train.py](/home/nuc/lxw/NeuPAN/neupan/blocks/dune_train.py) | 离线生成车体距离训练数据、训练/验证网络、保存检查点及测试结果 | 未改 | 与作者主要是保存路径变量拼写和注释差异；不是新增训练方法，普通导航不运行训练循环 |
 | [neupan/robot/__init__.py](/home/nuc/lxw/NeuPAN/neupan/robot/__init__.py) | 导出robot类 | 未改 | 与py38/main一致 |
-| [neupan/robot/robot.py](/home/nuc/lxw/NeuPAN/neupan/robot/robot.py) | 车体顶点/半空间、阿克曼/差速/全向线性化、参考代价及速度/预测内变化率约束 | 未改 | 本机参考状态代价用标量`q_s`；作者增加向量权重分支。原生相邻控制的变化率约束已存在，ROS新增的是与上次实际发出指令/可用反馈的首步连接 |
+| [neupan/robot/robot.py](/home/nuc/lxw/NeuPAN/neupan/robot/robot.py) | 车体顶点/半空间、阿克曼/差速/全向线性化、参考代价及速度/预测内变化率约束 | 未改 | 本机参考状态代价用标量`q_s`；作者增加向量权重分支。原生相邻控制的变化率约束已存在，ROS额外首步连续性层已撤出 |
 | [neupan/configuration/__init__.py](/home/nuc/lxw/NeuPAN/neupan/configuration/__init__.py) | Torch设备、NumPy/Tensor转换、数值类型和计时开关 | 未改 | 本机转换固定float32；作者版本统一`tensor_dtype`并扩展`np_to_tensor`梯度参数。与NRMP输出转换共同构成版本差异 |
 | [neupan/util/__init__.py](/home/nuc/lxw/NeuPAN/neupan/util/__init__.py) | 计时、角度归一化、坐标变换、多边形半空间、文件查找与抽点 | 未改 | 与py38一致；对main主要差在`tuple[...]`类型注解，为Python 3.8兼容差异，不是新避障方法 |
 
@@ -329,13 +330,10 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 
 | 变化入口 | 实际改变了什么 | 没有据此改变的内容 |
 | --- | --- | --- |
-| ROS的`GeometryObstacleAdapter` | 在当前planner实例上包装PAN点流生成、挂DUNE输出hook，改变100/10点预算内的选点及μ/λ/点的成组顺序 | 没有改DUNE权重、MLP结构和NRMP目标函数源文件；有限选点仍是近似 |
 | 室外YAML及可选自适应profile | 车体几何、时间步、预测长度、速度、控制限值和目标权重 | 改数值不等于更换优化算法；主launch自适应默认关闭 |
 | 选中的`.pth` | DUNE实际推理权重 | 载入既有模型不等于本轮训练了新模型 |
-| `continuous_solution`、降速和有限重求解 | 原始控制可被限幅并重新积分；必要时用不同热启动/参考速度再调用**同一个NeuPAN** | 没有新增第二套优化器；但实际下发动作确实可能不同于原生首步 |
-| `AcceptedExecution` | 按时间派发已有原生控制段，并用新输入重新检查 | 不重新优化路线；不无限重复旧速度，也不刷新原控制段期限 |
 
-正常实车只有一个NeuPAN预测优化器；外层复用阿克曼运动学作动作复核，仿真目录的障碍速度/让行实验另有独立启用条件。
+普通实车仅由原生NeuPAN预测、跟踪和避障，ROS不再重建普通控制序列或设置全预测硬否决；相机真实独立危险仍保留原处理。仿真独立实验不进入实车主线。
 
 ### 9.5 关键参数应按公式解释
 
@@ -349,7 +347,7 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 | `eta` | 距离变量奖励项`-eta*sum(d)`的权重，配合距离上下界与避障违约罚项 | 不是单独决定全部避障强弱的势场半径 |
 | `d_min`、`d_max` | 优化中距离变量d的下界/上界，参与避障代价与约束 | 不是小于d_min才开启避障，也不是大于d_max就删除全部障碍点 |
 | `robot.max_acce[1]` | 阿克曼前轮转角变化率上限，当前0.08 rad/s | 不是yaw角速度；从0到0.35 rad仅按该上限需约4.38 s |
-| `collision_threshold` | 原生`check_stop()`使用的最小学习距离阈值，当前配置0.001 m | 不等于外层完整扫描的0.05 m净距要求，也不保证5 s全预测均满足该净距 |
+| `collision_threshold` | 原生`check_stop()`使用的最小学习距离阈值，当前配置0.001 m | 不是固定停车距离；普通主线不再叠加0.05 m全预测硬否决，真实净距仍须实测 |
 
 三份本车配置的`p_u`、点数预算、预测时长、`q_s`及距离变量注释已按上述公式统一；只改说明，参数数值保持不变。参数实验及实测验收在问题文档维护，调参仍以实际加载值为准。
 
@@ -374,11 +372,11 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 | 能力 | 作者原版及本机原生算法 | 当前ROS工程层 |
 | --- | --- | --- |
 | 预测、跟踪、避障优化 | **已有**PAN/DUNE/NRMP滚动预测与优化，输出整段控制和首步动作 | 复用，不能再以“原生不会预测”为理由另造求解器 |
-| 预测内速度/转角与变化率 | **已有**运动学与预测序列相邻控制约束 | 增加与上次发送/可用反馈的首步连续性，可能改变原动作 |
-| 原生碰撞停车 | **已有**`min_distance < collision_threshold`；DUNE最小距离来自当前时刻参与点的学习估计 | 另加完整扫描、车体几何和预测扫掠，检查对象与范围更大 |
-| 完整扫描全预测的一票否决 | 原ROS封装没有当前这套外层门槛；不能把原生预测软代价等同于它 | 属于新增执行复核，其保守程度应单独评价 |
+| 预测内速度/转角与变化率 | **已有**运动学与预测序列相邻控制约束 | 直接采用原生动作，不叠加ROS首步改写 |
+| 原生碰撞停车 | **已有**`min_distance < collision_threshold`；学习最小距离与预测避障由原生算法处理 | 保留原生stop/arrive；不额外全扫描否决普通候选 |
+| 完整扫描全预测的一票否决 | 原ROS封装没有这套门槛 | 本轮撤出；不宣称原生避障构成独立紧急制动保证 |
 | 求解后精确绑定输入时效与恢复 | 原ROS扫描回调/位姿主要查最新TF，没有本车测量快照和恢复分类 | 属于新增职责；原版没有对应误分类分支，也未因此解决输入时效 |
-| 求解暂慢时的独立控制段派发 | 原版在同一循环求解并发布首步动作 | 属于新增职责，有限覆盖、版本和发布同步由本工程负责 |
+| 求解暂慢时的独立控制段派发 | 原版在同一循环求解并发布首步动作 | 本轮撤掉旧线程；mux指令超时保护仍在 |
 | 相机粗略靠右、单右边界和缺失回退 | 原版没有本项目这条链路 | 本工程新增OSM参考修正；原版不能作为该功能已实现的证明 |
 | GNSS恢复/失锁、手动接管、MCU协议 | 原ROS包不提供本车整套定位/底盘实现 | 其他功能包承担，不能归为重写了NeuPAN目标函数 |
 

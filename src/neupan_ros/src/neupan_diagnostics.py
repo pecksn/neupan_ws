@@ -7,90 +7,9 @@ import sys
 import tempfile
 import time
 import traceback
-import queue
-import threading
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
-
-
-class CandidateEvidenceSink:
-    """Bounded off-thread evidence, not a planner fault or control publisher."""
-    def __init__(self,folder,limit=64,interval=1.):
-        self.folder=folder;self.limit=limit;self.interval=interval
-        self.count=0;self.last=-float('inf');self.errors=0;self.dropped=0
-        self.queue=queue.Queue(maxsize=2)
-        self.thread=threading.Thread(target=self._worker,daemon=True);self.thread.start()
-    def capture(self,node,error,info):
-        now=time.monotonic()
-        if self.count>=self.limit or now-self.last<self.interval:return
-        cycle=getattr(node,'diagnostic_cycle_id',None)
-        if cycle is None or cycle!=getattr(node,'diagnostic_context_cycle_id',None):
-            self.dropped+=1;return
-        try:
-            arrays={}
-            info=info or {}
-            def add(name,value):
-                if value is None:return
-                if hasattr(value,'detach'):value=value.detach().cpu().numpy()
-                value=np.asarray(value)
-                if value.dtype.kind not in 'biufc' or value.size>200000:return
-                arrays[name]=value.copy()
-            scan=getattr(node,'diagnostic_safety_scan',None)
-            if scan:add('scan_points',scan[0])
-            solver_input=getattr(node,'diagnostic_solver_input',None)
-            if solver_input is not None:add('solver_pose',solver_input[0])
-            if info.get('opt_state_list'):add('original_states',np.hstack(info['opt_state_list']))
-            add('original_controls',info.get('vel_tensor'))
-            if info.get('ref_state_list'):add('reference',np.hstack(info['ref_state_list']))
-            add('initial_warm_controls',getattr(node,'candidate_initial_warm',None))
-            add('solve_input_warm_controls',getattr(node,'diagnostic_initial_warm',None))
-            add('raw_solver_states',getattr(node,'diagnostic_raw_solver_states',None))
-            add('raw_solver_controls',getattr(node,'diagnostic_raw_solver_controls',None))
-            add('initial_dune_points',getattr(node,'candidate_initial_dune',None))
-            add('initial_nrmp_points',getattr(node,'candidate_initial_nrmp',None))
-            for i,item in enumerate(getattr(node,'candidate_attempts',[])[:4]):
-                add('alternative_%d_states'%i,np.hstack(item['opt_state_list']))
-                add('alternative_%d_controls'%i,item.get('vel_tensor'))
-            metadata=dict(kind='candidate_rejection_not_solver_crash',session=getattr(node,'planner_session_id','unknown'),
-                cycle_id=cycle,context_cycle_id=getattr(node,'diagnostic_context_cycle_id',None),
-                cycle_started_monotonic=getattr(node,'cycle_started_mono',None),capture_monotonic=now,
-                stage=getattr(node,'diagnostic_stage',None),
-                stamp=time.time(),state_stamp_ns=getattr(node,'diagnostic_state_stamp_ns',None),
-                scan_stamp_ns=scan[1] if scan else None,scan_receive_monotonic=scan[2] if scan else None,
-                reason=str(error),first_conflict=getattr(error,'details',{}),
-                continuity_feedback_source=info.get('continuity_source','unknown'),
-                motion_feedback=info.get('motion_feedback'),
-                current_attempt_motion_feedback=getattr(getattr(node,'motion_policy',None),'feedback_snapshot',None),
-                obstacle_selection=None if getattr(node,'obstacle_adapter',None) is None else dict(node.obstacle_adapter.report),
-                obstacle_selection_role='last_solver_attempt',
-                initial_obstacle_selection=getattr(node,'candidate_initial_selection',None),
-                stopping_envelope_shadow=getattr(node,'stopping_envelope_diagnostic',None),
-                publication_status='candidate_only_final_publication_gate_not_yet_passed',
-                capture_limit=self.limit,dropped=self.dropped)
-            metadata['array_bindings']={name:dict(cycle_id=cycle,state_stamp_ns=metadata['state_stamp_ns'],
-                scan_stamp_ns=metadata['scan_stamp_ns'],role='solve_input_warm_start' if name=='solve_input_warm_controls'
-                else 'first_solver_result' if name.startswith(('raw_solver','initial_dune','initial_nrmp'))
-                else 'alternative_result' if name.startswith('alternative_') else 'bound_input_or_checked_candidate') for name in arrays}
-            expected=('scan_points','solver_pose','raw_solver_states','raw_solver_controls','original_states',
-                'original_controls','solve_input_warm_controls','initial_dune_points','initial_nrmp_points')
-            metadata['missing_fields']=[name for name in expected if name not in arrays]
-            if cycle!=getattr(node,'diagnostic_cycle_id',None):
-                self.dropped+=1;return
-            self.queue.put_nowait((metadata,arrays,self.count))
-            self.count+=1;self.last=now
-        except queue.Full:self.dropped+=1
-        except Exception:self.errors+=1
-    def _worker(self):
-        while True:
-            metadata,arrays,index=self.queue.get()
-            try:
-                os.makedirs(self.folder,exist_ok=True)
-                name='neupan_candidate_%s_%06d_%03d'%(metadata['session'],metadata['cycle_id'],index)
-                np.savez_compressed(os.path.join(self.folder,name+'.npz'),**arrays)
-                with open(os.path.join(self.folder,name+'.json'),'w') as stream:json.dump(metadata,stream,ensure_ascii=False)
-            except Exception:self.errors+=1
-            finally:self.queue.task_done()
 
 
 def save_failure(node, exc_info, log_dir):

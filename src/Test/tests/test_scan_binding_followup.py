@@ -165,7 +165,8 @@ class PreparationBindingTests(unittest.TestCase):
     def test_fresh_scan_during_slow_solve_does_not_rescue_expired_result(self):
         node,commands,_=binding_case('during_solve_expired')
         self.assertTrue(all(v==0 for v in commands))
-        self.assertIn('input',node.stop_registry.reasons)
+        self.assertIn('calculation_retry',node.stop_registry.reasons)
+        self.assertNotIn('input',node.stop_registry.reasons)
         self.assertIsNone(getattr(node,'planner_fault',None))
 
 

@@ -181,7 +181,6 @@ install(FILES
   src/neupan_diagnostics.py
   src/neupan_safety.py
   src/neupan_navigation.py
-  src/neupan_execution.py
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/src
 )
 

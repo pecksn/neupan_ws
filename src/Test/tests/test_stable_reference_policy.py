@@ -14,7 +14,7 @@ import test_followup_safety as fixture
 import test_camera_publication_protocol as protocol
 from test_camera_right_refinement import namespace as n
 from test_startup_recovery import Stamp
-from neupan_safety import (MotionContinuity,continuous_solution,validate_solution,ZeroAwarePublisher,
+from neupan_safety import (validate_solution,
                           trajectory_clearance,CandidateRejected)
 from osm_camera_path_guard import CameraPathGuard,path_digest
 
@@ -26,7 +26,100 @@ def road(gap=2.4):
     return points,geometry
 
 
+def single_side_road(gap=3.6,upper_y=.4):
+    """Measured right edge + real pixel polygon, no invented left edge."""
+    points,geometry=road(gap)
+    rotation=np.array([[0.,0.,1.],[-1.,0.,0.],[0.,-1.,0.]])
+    origin=np.array([0.,0.,1.])
+    ground=np.array([[1.,-gap,0.],[12.,-gap,0.],[12.,upper_y,0.],[1.,upper_y,0.]])
+    optical=(ground-origin)@rotation
+    polygon=optical[:,:2]/optical[:,2,None]*200.+[960.,540.]
+    area=dict(origin=origin.tolist(),rotation=rotation.tolist(),
+        matrix=[[200.,0.,960.],[0.,200.,540.],[0.,0.,1.]],distortion=[0.]*5,
+        footprint=[[-.14,-.425],[.81,-.425],[.81,.425],[-.14,.425]],polygon=polygon.tolist())
+    for item in geometry.values():
+        item.update(mode='right_only',area=area);item['points_odom'][1]=np.nan
+    return points,geometry,area
+
+
 class StableReferenceTests(unittest.TestCase):
+    def test_single_right_valid_area_can_admit_repair_not_current_reference(self):
+        points,geometry,_=single_side_road()
+        limits=dict(speed=1.5,wheelbase=.67,max_steer=.35,max_steer_rate=.08)
+        initial=n['corridor_report'](points,geometry,([0.,0.],0.),geometry)
+        self.assertFalse(initial['ok']);self.assertFalse(initial['boundary_unsafe'])
+        candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.],limits)
+        self.assertTrue(report['changed']);self.assertTrue(report['corridor']['ok'])
+        self.assertEqual(report['area_evidence_state'],'valid_current_reference_not_covered')
+        self.assertAlmostEqual(report['offset_change_m'],-.6)
+        self.assertGreaterEqual(report['corridor']['min_right_m'],.8)
+        self.assertLessEqual(report['shape']['max_steering_rad'],.350001)
+        self.assertLessEqual(report['shape']['max_spatial_steer_rate'],.080001)
+        np.testing.assert_array_equal(candidate[0],points[0]);np.testing.assert_array_equal(candidate[-1],points[-1])
+
+    def test_single_right_repaired_reference_confirmed_consumed_then_frozen(self):
+        node,guard,clock,_,_=self.repair_node(3.6)
+        _,geometry,_=single_side_road();node.cache_geometry=geometry
+        node.cache.committed={i:(0.,clock[0]) for i in geometry}
+        with self.repair_context(clock):
+            for seq in (1,1,2,3):
+                clock[0]+=.2;node.last_seq=seq
+                result=copy.deepcopy(node.path)
+                active,count=node.stable_result(result,clock[0],.2)
+                node.publish_result(result,clock[0],'single-side repair',active,count)
+                state=guard.select(clock[0],round(clock[0]*1.e9))[2]
+                self.assertNotEqual(state['source'],'stop');self.assertFalse(node.hazards.regions)
+                self.assertEqual(getattr(node,'reference_version',0),1 if seq==3 else 0)
+            self.assertEqual(state['source'],'camera');self.assertEqual(state['reference_version'],1)
+            self.assertEqual(state['matched_path_digest'],path_digest(result))
+            frozen=node.frozen_reference_map.copy()
+            clock[0]+=.2;node.last_seq=4
+            node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+            np.testing.assert_array_equal(node.frozen_reference_map,frozen)
+            self.assertEqual(node.reference_version,1)
+            self.assertEqual(node.final_path_diagnostics['reason'],'hold_spatial_entry_until_traversed')
+
+    def test_unparseable_single_side_area_holds_without_search_or_danger(self):
+        for broken in ({},dict(matrix=[[1,0],[0,1]]),dict(origin=[math.nan,0,1]),
+                       dict(rotation=np.zeros((3,3)).tolist()),dict(polygon=[[0,0]])):
+            points,geometry,area=single_side_road()
+            invalid={} if not broken else dict(area,**broken)
+            for item in geometry.values():item['area']=invalid
+            with patch.dict(n,shape_report=Mock(side_effect=AssertionError('invalid evidence must not search'))):
+                candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+            np.testing.assert_array_equal(candidate,points)
+            self.assertEqual(report['reason'],'hold_insufficient_observation_area')
+            self.assertEqual(report['area_evidence_state'],'missing_or_invalid')
+            self.assertNotIn('search_attempts',report)
+
+    def test_valid_area_with_no_feasible_repair_holds_without_creating_hazard(self):
+        points,geometry,_=single_side_road(3.6,upper_y=-1.8)
+        candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,
+            [0.,0.],max_shift=.1)
+        np.testing.assert_array_equal(candidate,points)
+        self.assertFalse(report['changed']);self.assertEqual(report['reason'],'hold_no_feasible_spatial_change')
+        self.assertGreater(report['search_attempts'],0);self.assertFalse(report['corridor']['boundary_unsafe'])
+
+    def test_advisory_in_band_missing_body_image_coverage_never_searches(self):
+        points,geometry=road(2.685)
+        for item in geometry.values():item['mode']='right_only' # No observed-area proof.
+        with patch.dict(n,shape_report=Mock(side_effect=AssertionError('band-in advisory must not search'))):
+            candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+        np.testing.assert_array_equal(candidate,points)
+        self.assertEqual(report['reason'],'hold_in_band')
+        self.assertFalse(report['corridor']['boundary_unsafe']);self.assertFalse(report['corridor']['ok'])
+        self.assertNotIn('search_attempts',report)
+
+    def test_advisory_outside_band_missing_area_holds_without_new_danger(self):
+        node,_,clock,points,geometry=self.repair_node(3.6)
+        for item in geometry.values():item['mode']='right_only'
+        with self.repair_context(clock):
+            for seq in range(1,5):
+                node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+        np.testing.assert_array_equal(node.frozen_reference_map,points)
+        self.assertFalse(node.hazards.regions);self.assertFalse(node.corridor_stop_required)
+        self.assertEqual(node.final_path_diagnostics['reason'],'hold_insufficient_observation_area')
+
     def test_160_frame_straight_sequences_keep_zero_or_one_correction(self):
         for gap,expected in ((2.4,0),(3.6,1)):
             with self.subTest(gap=gap):
@@ -462,83 +555,6 @@ class AlignmentTests(unittest.TestCase):
         node.hazards.regions={'real':dict(kind='boundary')}
         with self.context(state),self.assertRaises(ValueError):node.cache_pose(state.value)
         self.assertFalse(node.cache.committed);self.assertIn('real',node.hazards.regions)
-
-
-class MotionTests(unittest.TestCase):
-    def profile(self):
-        robot=NS(kinematics='acker',L=.67,max_speed=np.array([1.5,.35]),max_acce=np.array([.8,.08]))
-        info=dict(stop=False,arrive=False,vel_tensor=np.vstack((np.ones(50)*.8,np.ones(50)*.3)),
-                  opt_state_list=[np.zeros((3,1))])
-        return robot,info
-
-    def test_first_command_and_horizon_slew_then_reintegration(self):
-        robot,info=self.profile();policy=MotionContinuity();policy.record([.2,-.1],10.)
-        action,result=continuous_solution(np.array([[.8],[.3]]),info,robot,.1,policy,10.1)
-        self.assertLessEqual(action[0,0]-.2,.080001);self.assertLessEqual(action[1,0]+.1,.008001)
-        validate_solution(action,result,robot,.1)
-
-    def test_speed_restriction_is_retained_then_released_gradually(self):
-        policy=MotionContinuity();policy.restrict(.2);policy.record([.2,0.],10.)
-        for i in (1,2,3):policy.accepted(10.+i*.1,.8,.8,clearance=.06);policy.record([.2,0.],10.+i*.1)
-        self.assertEqual(policy.cap,.2);self.assertEqual(policy.good,0)
-        for i in (1,2):policy.accepted(11.+i*.1,.8,.8,clearance=.2);policy.record([.2,0.],11.+i*.1)
-        self.assertEqual(policy.cap,.2);policy.accepted(11.3,.8,.8,clearance=.2)
-        self.assertGreater(policy.cap,.2)
-        self.assertLess(policy.cap,.3)
-
-    def test_every_zero_branch_updates_command_history(self):
-        policy=MotionContinuity();policy.record([.8,.3],10.)
-        published=[];pub=ZeroAwarePublisher(NS(publish=published.append),policy,lambda:10.1)
-        pub.publish(NS(linear=NS(x=0.),angular=NS(z=0.)))
-        np.testing.assert_array_equal(policy.last,[0.,0.]);self.assertEqual(policy.stamp,10.1)
-
-    def test_collision_details_capture_first_conflict(self):
-        vertices=np.array([[-.14,.81,.81,-.14],[-.425,-.425,.425,.425]])
-        with self.assertRaises(CandidateRejected) as caught:
-            trajectory_clearance(np.array([[0.,.1],[0.,0.],[0.,0.]]),np.array([[.9],[0.]]),vertices)
-        self.assertIn('point_body',caught.exception.details);self.assertIn('step',caught.exception.details)
-
-    def test_actual_run_slow_candidate_does_not_jump_back_to_point_eight(self):
-        def hook(node,clock,ns):
-            node.motion_policy=MotionContinuity();node.obstacle_points=np.array([[1.03],[0.]])
-            node.safety_scan=(node.obstacle_points.copy(),1000000000000,1000.)
-        node,commands=fixture.CommandBoundaryTests().run_loop(setup_hook=hook)
-        self.assertTrue(all(0<v<=.4 for v in commands));self.assertLessEqual(node.neupan_planner.used_reference_speeds[-1],.4)
-
-    def test_rejected_all_profiles_really_resolves_and_keeps_stop(self):
-        def hook(node,clock,ns):
-            node.motion_policy=MotionContinuity();node.obstacle_points=np.array([[.9],[0.]])
-            node.safety_scan=(node.obstacle_points.copy(),1000000000000,1000.)
-        node,commands=fixture.CommandBoundaryTests().run_loop(setup_hook=hook)
-        self.assertTrue(all(v==0 for v in commands));self.assertGreater(node.neupan_planner.calls,2)
-        self.assertIsNone(getattr(node,'planner_fault',None))
-
-    def test_calculation_expiry_with_fresh_live_inputs_does_not_reset_input_window(self):
-        def hook(node,clock,ns):node.motion_policy=MotionContinuity()
-        node,_=fixture.CommandBoundaryTests().run_loop(delay=.2,newer_scan=True,setup_hook=hook)
-        records=[json.loads(call.args[0]) for call in node.runtime_pub.publish.call_args_list]
-        self.assertTrue(any(r.get('command_source')=='calculation_retry' for r in records))
-        self.assertNotIn('input',node.stop_registry.reasons)
-
-    def test_true_live_expiry_still_uses_input_recovery(self):
-        def hook(node,clock,ns):node.motion_policy=MotionContinuity()
-        node,_=fixture.CommandBoundaryTests().run_loop(delay=.2,setup_hook=hook)
-        self.assertIn('input',node.stop_registry.reasons)
-
-
-class EvidenceTests(unittest.TestCase):
-    def test_bounded_evidence_is_not_a_fault_and_saves_numeric_inputs(self):
-        from neupan_diagnostics import CandidateEvidenceSink
-        with tempfile.TemporaryDirectory() as folder:
-            sink=CandidateEvidenceSink(folder,limit=1,interval=0.)
-            node=NS(diagnostic_safety_scan=(np.zeros((2,3)),123,1.),diagnostic_solver_input=(np.zeros((3,1)),None),
-                    planner_session_id='test',diagnostic_state_stamp_ns=123,diagnostic_cycle_id=1,diagnostic_context_cycle_id=1)
-            info=dict(opt_state_list=[np.zeros((3,1)),np.zeros((3,1))],vel_tensor=np.zeros((2,1)))
-            for _ in range(3):sink.capture(node,CandidateRejected('test',{'step':1}),info)
-            sink.queue.join();self.assertEqual(sink.count,1);self.assertEqual(sink.errors,0)
-            self.assertEqual(len(list(Path(folder).glob('*.npz'))),1)
-            data=json.loads(next(Path(folder).glob('*.json')).read_text())
-            self.assertEqual(data['kind'],'candidate_rejection_not_solver_crash')
 
 
 if __name__=='__main__':unittest.main()

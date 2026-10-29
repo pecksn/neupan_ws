@@ -1,5 +1,6 @@
 """Oct26 follow-up: execute control loop with fake outputs; pure path regressions."""
 import ast
+from contextlib import ExitStack, contextmanager
 import copy
 import json
 import math
@@ -15,8 +16,7 @@ from test_camera_right_refinement import namespace as n
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT/'src/neupan_ros/src'))
 from neupan_safety import (checked_input_ages, validate_solution, trajectory_clearance,
-    pose_snapshot, StopRegistry, InputUnavailable,ResultExpired,AuthorizationChanged,CandidateRejected,cap_solution_speed,planner_obstacle_input,MotionContinuity,continuous_solution,check_motion_feedback,candidate_snapshot,reference_offsets)
-from neupan_navigation import braking_envelope
+    pose_snapshot, StopRegistry, InputUnavailable,ResultExpired,AuthorizationChanged,CandidateRejected,planner_obstacle_input,candidate_snapshot,reference_offsets)
 sys.path.insert(0,str(ROOT/'src/osm_map_handler/src'))
 from osm_camera_path_guard import CameraPathGuard, path_digest,check_execution_contract
 
@@ -25,7 +25,7 @@ class CommandBoundaryTests(unittest.TestCase):
     def run_loop(self, empty_error=False, delay=0., delay_at='check', newer_scan=False, disk_error=False,contract=None,recover=False,setup_hook=None):
         source=ROOT/'src/neupan_ros/src/neupan_core.py'
         original=next(x for x in ast.parse(source.read_text()).body if isinstance(x,ast.ClassDef) and x.name=='neupan_core')
-        body=[x for x in original.body if isinstance(x,ast.FunctionDef) and x.name in ('run','generate_twist_msg','hold_planner_fault','temporary_input_stop','check_camera_execution','publish_stop_snapshot','cycle_metrics','candidate_stop','capture_candidate_rejection','stopping_shadow','refresh_camera_hazard_scope','continue_checked_execution','trajectory_execution_check','final_execution_input_check')]
+        body=[x for x in original.body if isinstance(x,ast.FunctionDef) and x.name in ('command_gate','control_mode_callback','run','generate_twist_msg','hold_planner_fault','temporary_input_stop','check_camera_execution','publish_stop_snapshot','cycle_metrics','candidate_stop','capture_candidate_rejection','stopping_shadow','refresh_camera_hazard_scope','continue_checked_execution','trajectory_execution_check','final_execution_input_check')]
         selected=ast.fix_missing_locations(ast.Module(body=[ast.ClassDef(name='Run',bases=[],keywords=[],body=body,decorator_list=[])],type_ignores=[]))
         clock=NS(value=1000.,loops=0)
         class Stamp:
@@ -56,14 +56,12 @@ class CommandBoundaryTests(unittest.TestCase):
             result=trajectory_clearance(*args);elapsed('check');return result
         ns=dict(np=np,rospy=ros,time=NS(monotonic=lambda:clock.value),Twist=Twist,sys=sys,
             tf=NS(LookupException=LookupError,ConnectivityException=ConnectionError,ExtrapolationException=TimeoutError),
-            validate_solution=validate_solution,trajectory_clearance=checked,checked_input_ages=checked_input_ages,
+            validate_solution=lambda *a:(validate_solution(*a),elapsed('check'))[0],trajectory_clearance=checked,checked_input_ages=checked_input_ages,
             pose_snapshot=pose_snapshot,StopRegistry=StopRegistry,InputUnavailable=InputUnavailable,AuthorizationChanged=AuthorizationChanged,CandidateRejected=CandidateRejected,threading=threading,
-            cap_solution_speed=cap_solution_speed,check_execution_contract=check_execution_contract,
+            check_execution_contract=check_execution_contract,contextmanager=contextmanager,ExitStack=ExitStack,
             planner_obstacle_input=planner_obstacle_input,
-            MotionContinuity=MotionContinuity,continuous_solution=continuous_solution,ResultExpired=ResultExpired,math=math,
+            ResultExpired=ResultExpired,math=math,
             reference_offsets=reference_offsets,
-            braking_envelope=braking_envelope,
-            check_motion_feedback=check_motion_feedback,
             candidate_snapshot=candidate_snapshot,
             json=json,degrees=math.degrees,sin=math.sin,cos=math.cos,atan2=math.atan2,
             yellow_terminal_text=lambda x:x,red_terminal_text=lambda x:x)
@@ -84,6 +82,7 @@ class CommandBoundaryTests(unittest.TestCase):
         node.generate_dune_points_markers_msg=Mock();node.generate_nrmp_points_markers_msg=Mock();node.generate_robot_marker_msg=Mock()
         node.quat_to_yaw_list=lambda _:0.
         node.listener=NS(lookupTransform=lambda *_:((0.,0.,0.),(0.,0.,0.,1.)),getLatestCommonTime=lambda *_:Stamp(clock.value if recover else 1000.))
+        node.command_lock=threading.RLock();node.control_mode=0;node.command_route_version=0
         node.route_update_lock=threading.RLock();node.pending_route_update=None;node.waiting_for_new_goal=False
         node.map_frame='map';node.base_frame='base_link';node.stop_on_scan_fault=True;node.scan_timeout=.5
         node.outdoor_tracking_guard=None;node.outdoor_tracking_status=None;node.start_connector=None;node.camera_guard=None
@@ -106,8 +105,12 @@ class CommandBoundaryTests(unittest.TestCase):
                 self.used_reference_speeds.append(self.ref_speed)
                 if empty_error:raise ValueError()
                 elapsed('solver')
-                states=[np.array([[x],[0.],[0.]]) for x in (0.,.08,.16)]
-                return np.array([[.8],[0.]]),dict(stop=False,arrive=False,opt_state_list=states,ref_state_list=copy.deepcopy(states),vel_tensor=np.array([[.8,.8],[0.,0.]]))
+                # A native solver stub; a legacy contract case supplies a
+                # compliant native sequence, not ROS-side control retiming.
+                active_contract=getattr(node,'camera_execution_contract',None)
+                speed=active_contract['speed_cap_mps'] if active_contract else .8
+                states=[np.array([[i*speed*.1],[0.],[0.]]) for i in range(3)]
+                return np.array([[speed],[0.]]),dict(stop=False,arrive=False,opt_state_list=states,ref_state_list=copy.deepcopy(states),vel_tensor=np.array([[speed,speed],[0.,0.]]))
         node.neupan_planner=Planner()
         if setup_hook:setup_hook(node,clock,ns)
         diagnostic=ModuleType('neupan_diagnostics');diagnostic.report_failure=Mock(side_effect=OSError('disk full') if disk_error else None)
@@ -132,9 +135,10 @@ class CommandBoundaryTests(unittest.TestCase):
 
     def test_new_callback_does_not_renew_already_checked_snapshot(self):
         node,commands=self.run_loop(delay=.2,newer_scan=True)
-        self.assertTrue(all(x==0 for x in commands))
-        self.assertEqual(node.neupan_planner.calls,1)
-        self.assertIn('input',node.stop_registry.reasons)
+        self.assertEqual(commands[0],0.) # First expired result never leaks.
+        self.assertEqual(node.neupan_planner.calls,2)
+        self.assertIn(.8,commands) # Next native solve uses the NEW snapshot.
+        self.assertNotIn('input',node.stop_registry.reasons)
 
     def test_fresh_safe_command_still_passes(self):
         node,commands=self.run_loop()
@@ -155,11 +159,89 @@ class CommandBoundaryTests(unittest.TestCase):
         self.assertTrue(all(abs(v)<=.3 for v in commands))
         self.assertIsNone(getattr(node,'planner_fault',None))
         self.assertEqual(node.neupan_planner.ref_speed,.8)
-        self.assertTrue(all(v==.3 for v in node.neupan_planner.used_reference_speeds))
+        self.assertTrue(all(v==.8 for v in node.neupan_planner.used_reference_speeds))
 
     def test_pose_age_and_clock_errors(self):
         for measurement,receive,state in ((999.9,999.9,999.),(1000.1,999.9,1000.),(999.9,1000.1,1000.)):
             with self.assertRaises(ValueError):checked_input_ages((None,round(measurement*1.e9),receive),10**12,1000.,.5,round(state*1.e9))
+
+
+class NativeOutputTests(unittest.TestCase):
+    """Native control stub only: verifies ROS integration, not obstacle safety."""
+    def native_run(self,mode=None,replace_task=False,nonfinite=False,arrive=False,alternate=False):
+        seen=[];returned=[]
+        def hook(node,clock,ns):
+            node.vel_pub=NS(publish=lambda msg:seen.append([float(msg.linear.x),float(msg.angular.z)]))
+            node.control_mode=mode if mode is not None else 0
+            node.motion_feedback=NS(snapshot=lambda *_:dict(average_speed_mps=-1.))
+            base=type(node.neupan_planner)
+            class Native(base):
+                def __call__(self,*args):
+                    action,info=super().__call__(*args)
+                    steer=.35 if alternate and self.calls==1 else -.35
+                    action[1,0]=steer;info['vel_tensor'][1,:]=steer
+                    if nonfinite:action[0,0]=math.nan
+                    if arrive:info['arrive']=True;action[:]=0.
+                    if replace_task:node.command_route_version+=1
+                    returned.append((action.copy(),info['vel_tensor'].copy()))
+                    return action,info
+            node.neupan_planner=Native()
+            node.neupan_planner.cur_vel_array=np.full((2,2),.1234)
+            node.neupan_planner.set_reference_speed=Mock(side_effect=AssertionError('ROS must not retarget native speed'))
+        node,_=CommandBoundaryTests().run_loop(setup_hook=hook)
+        return node,seen,returned
+
+    def test_native_speed_and_steering_publish_without_postprocessing(self):
+        node,commands,returned=self.native_run()
+        np.testing.assert_allclose(commands,[[.8,-.35],[.8,-.35]])
+        self.assertEqual(node.neupan_planner.calls,2)
+        node.neupan_planner.set_reference_speed.assert_not_called()
+        np.testing.assert_array_equal(node.neupan_planner.cur_vel_array,np.full((2,2),.1234))
+        for action,controls in returned:np.testing.assert_array_equal(action,controls[:,:1])
+        records=[json.loads(call.args[0]) for call in node.runtime_pub.publish.call_args_list]
+        for row in records:
+            if row.get('command_source')=='neupan_native':
+                self.assertEqual(row['native_action'],[row['linear_x'],math.radians(row['steering_deg'])])
+
+    def test_native_steering_reversal_is_not_delayed_by_ros(self):
+        _,commands,_=self.native_run(alternate=True)
+        np.testing.assert_allclose(commands,[[.8,.35],[.8,-.35]])
+
+    def test_manual_mode_has_no_native_nonzero_commands(self):
+        node,commands,_=self.native_run(mode=1)
+        self.assertEqual(node.neupan_planner.calls,0)
+        self.assertTrue(commands and all(value==[0.,0.] for value in commands))
+
+    def test_route_replacement_during_solve_cancels_old_action(self):
+        _,commands,_=self.native_run(replace_task=True)
+        self.assertTrue(commands and all(value==[0.,0.] for value in commands))
+
+    def test_mode_change_during_solve_cancels_old_action(self):
+        def hook(node,clock,ns):
+            base=type(node.neupan_planner)
+            class Native(base):
+                def __call__(self,*args):
+                    result=super().__call__(*args)
+                    node.control_mode=1;node.command_route_version+=1
+                    return result
+            node.neupan_planner=Native()
+        node,commands=CommandBoundaryTests().run_loop(setup_hook=hook)
+        self.assertEqual(node.neupan_planner.calls,1);self.assertTrue(all(v==0 for v in commands))
+
+    def test_nonfinite_native_action_faults_and_holds_zero(self):
+        node,commands,_=self.native_run(nonfinite=True)
+        self.assertEqual(node.neupan_planner.calls,1);self.assertIsNotNone(node.planner_fault)
+        self.assertTrue(commands and all(value==[0.,0.] for value in commands))
+
+    def test_native_arrival_remains_zero(self):
+        node,commands,_=self.native_run(arrive=True)
+        self.assertTrue(all(value==[0.,0.] for value in commands));self.assertIsNone(getattr(node,'planner_fault',None))
+
+    def test_removed_executor_and_control_rewriters_are_not_runtime_dependencies(self):
+        core=(ROOT/'src/neupan_ros/src/neupan_core.py').read_text()
+        for name in ('AcceptedExecution','continuous_solution','cap_solution_speed','GeometryObstacleAdapter','motion_policy'):
+            self.assertNotIn(name,core)
+        self.assertFalse((ROOT/'src/neupan_ros/src/neupan_execution.py').exists())
 
 
 class PathBoundaryTests(unittest.TestCase):

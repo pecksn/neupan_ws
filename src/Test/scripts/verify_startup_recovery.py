@@ -28,24 +28,21 @@ def probe_solver(route,pose,scan,cfg):
     """Static recorded scene, actual optimizer; not a vehicle closed loop."""
     import time
     from neupan import neupan
-    from neupan_safety import validate_solution,cap_solution_speed,trajectory_clearance
+    from neupan_safety import validate_solution,trajectory_clearance
     planner=neupan.init_from_yaml(cfg['config_file'],pan={'dune_checkpoint':cfg['dune_checkpoint']})
     planner.set_initial_path([p.reshape(4,1) for p in route])
-    planner.set_reference_speed(min(planner.ref_speed,.3))
     rows=[]
     for attempt in range(3):
         begin=time.monotonic()
         try:
             action,info=planner(np.asarray(pose).reshape(3,1),scan)
             validate_solution(action,info,planner.robot,planner.dt)
-            action,info=cap_solution_speed(action,info,planner.robot,planner.dt,.3)
-            validate_solution(action,info,planner.robot,planner.dt)
             checked=trajectory_clearance(np.hstack(info['opt_state_list']),scan,planner.robot.vertices)
             rows.append(dict(attempt=attempt,action=np.asarray(action).reshape(-1).tolist(),
                 outcome='checked_candidate',clearance=checked,elapsed_ms=(time.monotonic()-begin)*1000))
         except Exception as error:
             rows.append(dict(attempt=attempt,outcome=type(error).__name__,reason=str(error),elapsed_ms=(time.monotonic()-begin)*1000))
-    return dict(scope='Three real optimizer calls at ONE recorded static scene, checked cap 0.3m/s; no pose integration or camera authority/publication emulation. Elapsed time is offline only.',
+    return dict(scope='Three real optimizer calls at ONE recorded static scene, native action; geometric check is diagnostic only; no pose integration or camera authority/publication emulation. Elapsed time is offline only.',
         input_pose=pose,scan_points=scan.shape[1],cases=rows)
 
 

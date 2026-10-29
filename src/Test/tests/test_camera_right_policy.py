@@ -12,7 +12,7 @@ from test_camera_right_refinement import namespace as n, workspace
 sys.path.insert(0,str(workspace/'src/neupan_ros/src'))
 sys.path.insert(0,str(workspace/'src/osm_map_handler/src'))
 from neupan_safety import (pose_snapshot, checked_input_ages, InputUnavailable, StopRegistry,
-    cap_solution_speed, validate_solution,trajectory_clearance)
+    validate_solution,trajectory_clearance)
 from osm_camera_path_guard import CameraPathGuard, path_digest, check_execution_contract
 
 
@@ -347,32 +347,6 @@ class ExecutionPolicy(unittest.TestCase):
     def contract(self):
         return dict(version=1,path_digest='test',expires_ns=500000000,speed_cap_mps=.3,coordinate_frame='odom',
             end_odom=[8.,0.],direction_odom=[1.,0.],sections=[dict(route_point=[x,0.],normal=[0.,1.],right=[x,-2.],left=[x,2.]) for x in np.arange(1.,8.1,.5)])
-    def test_hard_cap_reintegrates_and_validates_the_actual_prediction(self):
-        robot=NS(kinematics='acker',L=.67,max_speed=np.array([1.5,.35]),max_acce=np.array([.8,.08]))
-        states=[np.array([[i*.08],[0.],[0.]]) for i in range(5)]
-        info=dict(opt_state_list=states,vel_tensor=np.array([[.8]*4,[0.]*4]),stop=False,arrive=False)
-        action,result=cap_solution_speed(np.array([[.8],[0.]]),info,robot,.1,.3)
-        validate_solution(action,result,robot,.1)
-        self.assertAlmostEqual(action[0,0],.3)
-        self.assertAlmostEqual(result['opt_state_list'][-1][0,0],.12)
-        self.assertAlmostEqual(info['opt_state_list'][-1][0,0],.32)
-    def test_real_planner_saved_inputs_with_reduced_reference_and_hard_cap(self):
-        from neupan import neupan
-        files=sorted((workspace/'tracker_logs').glob('neupan_failure_20261026_*.npz'))
-        if not files:self.skipTest('recorded solver snapshots not available')
-        for filename in files:
-            data=np.load(filename);meta=json.loads(filename.with_suffix('.json').read_text())
-            planner=neupan.init_from_yaml(meta['config_file'],pan={'dune_checkpoint':meta['dune_checkpoint']})
-            planner.ipath.set_initial_path([p.reshape(4,1) for p in data['initial_path'].T])
-            for key in ('point_index','curve_index'):setattr(planner.ipath,key,meta['path_progress'][key])
-            planner.cur_vel_array=data['cur_vel_array'].copy()
-            planner.set_reference_speed(.3)
-            action,info=planner(data['solver_robot_state'],data['solver_obstacle_points'])
-            validate_solution(action,info,planner.robot,planner.dt)
-            action,info=cap_solution_speed(action,info,planner.robot,planner.dt,.3)
-            validate_solution(action,info,planner.robot,planner.dt)
-            trajectory_clearance(np.hstack(info['opt_state_list']),data['solver_obstacle_points'],planner.robot.vertices)
-            self.assertLessEqual(abs(float(action[0,0])),.300001)
     def test_speed_expiry_endpoint_and_actual_swept_corridor_are_enforced(self):
         footprint=np.array([[-.14,.81,.81,-.14],[-.425,-.425,.425,.425]])
         states=np.array([[2.,0.,0.],[2.1,0.,0.]])

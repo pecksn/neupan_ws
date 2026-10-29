@@ -21,12 +21,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
 from neupan import neupan
-from neupan_navigation import GeometryObstacleAdapter, MotionFeedback, braking_envelope
-from neupan_execution import (AcceptedExecution, RevokingPublisher, execution_clearance,
-                              validate_calibration, check_measured_reserve_limits)
+from neupan_navigation import MotionFeedback
 from contextlib import ExitStack, contextmanager
-from neupan_safety import (validate_solution, trajectory_clearance, reference_offsets,
-                           checked_input_ages, pose_snapshot, InputUnavailable, ResultExpired, AuthorizationChanged, CandidateRejected, StopRegistry, cap_solution_speed, planner_obstacle_input, MotionContinuity, continuous_solution, check_motion_feedback, candidate_snapshot, ZeroAwarePublisher)
+from neupan_safety import (validate_solution, reference_offsets, checked_input_ages,
+                           pose_snapshot, InputUnavailable, ResultExpired, AuthorizationChanged,
+                           StopRegistry, planner_obstacle_input, trajectory_clearance, CandidateRejected)
 from osm_camera_path_guard import CameraPathGuard, check_execution_contract
 from osm_outdoor_start_connection import RoadCorridor, ScanEnvelope, StartRouteConnector, resample_forward_reference, OutdoorTrackingGuard
 import copy
@@ -121,11 +120,6 @@ class neupan_core:
                 np.isfinite(self.outdoor_reference_spacing) and self.outdoor_reference_spacing >= .02):
             raise ValueError('outdoor_reference_spacing_m must be zero or finite and at least 0.02 m')
         self.outdoor_tracking_guard = OutdoorTrackingGuard() if self.outdoor_reference_spacing else None
-        self.motion_policy=MotionContinuity() if self.outdoor_reference_spacing else None
-        self.candidate_evidence_sink=None
-        if self.motion_policy is not None:
-            from neupan_diagnostics import CandidateEvidenceSink
-            self.candidate_evidence_sink=CandidateEvidenceSink(rospy.get_param('~diagnostic_log_dir','/home/nuc/lxw/neupan_ws/tracker_logs'))
         self.outdoor_tracking_status = None
         self.camera_guard = CameraPathGuard(float(rospy.get_param('~camera_right_guard_timeout', 3.0))) \
             if rospy.get_param('~camera_right_guard_enabled', False) else None
@@ -155,28 +149,9 @@ class neupan_core:
         self.neupan_planner = neupan.init_from_yaml(
             self.planner_config_file, pan=pan
         )
-        self.obstacle_adapter=None
-        self.motion_feedback=None
-        if self.motion_policy is not None:
-            if rospy.get_param('~geometric_obstacle_selection',True):
-                self.obstacle_adapter=GeometryObstacleAdapter(self.neupan_planner)
-            self.motion_feedback=MotionFeedback(
-                timeout=float(rospy.get_param('~motion_feedback_timeout_sec',1.5)),
-                sample_max_interval=float(rospy.get_param('~motion_feedback_max_sample_interval_sec',1.5)),
-                instant_max_window=float(rospy.get_param('~motion_feedback_instant_max_window_sec',.2)),
-                instant_timeout=float(rospy.get_param('~motion_feedback_instant_timeout_sec',.2)))
-            self.motion_policy.feedback_provider=lambda:self.motion_feedback.snapshot(
-                rospy.Time.now().to_nsec(),time.monotonic())
-            rospy.Subscriber(rospy.get_param('~motion_feedback_odom_topic','/odom'),
-                             Odometry,self.motion_feedback_odom_cb,queue_size=10)
-            self.steering_feedback_joint=rospy.get_param('~steering_feedback_joint','front_steering')
-            steering_topic=rospy.get_param('~steering_feedback_topic','')
-            if steering_topic:
-                rospy.Subscriber(steering_topic,JointState,self.steering_feedback_cb,queue_size=10)
-        # Diagnostic-only until physical delay/braking calibration is available.
-        # No candidate may bypass the complete sweep through this shadow path.
-        self.stopping_shadow_delay=float(rospy.get_param('~stopping_shadow_delay_sec',0.))
-        self.stopping_shadow_deceleration=float(rospy.get_param('~stopping_shadow_deceleration_mps2',0.))
+        # Measured feedback is diagnostic only; never changes native controls.
+        self.motion_feedback=MotionFeedback()
+        rospy.Subscriber('/odom',Odometry,self.motion_feedback_odom_cb,queue_size=10)
         # Outdoor U-turn connection only. Neither the optimiser nor its
         # existing reverse capability or the indoor search profile is changed.
         self.start_connector = None
@@ -219,9 +194,9 @@ class neupan_core:
         self.arrival_path_key = None
         self.waiting_for_new_goal = False
         self.route_update_lock = threading.RLock()
-        self.execution_gate=threading.RLock()
-        self.execution_route_version=0
-        self.execution_control_mode=0
+        self.command_lock=threading.RLock()
+        self.command_route_version=0
+        self.control_mode=0
         self.pending_route_update = None
         self.pending_goal_request_stamp = None
         self.minimum_path_stamp = 0
@@ -241,7 +216,6 @@ class neupan_core:
 
         # publisher
         self.vel_pub = rospy.Publisher("/neupan_cmd_vel", Twist, queue_size=10)
-        if self.motion_policy is not None:self.vel_pub=ZeroAwarePublisher(self.vel_pub,self.motion_policy,time.monotonic)
         self.shutdown_requested = False
         self.planner_fault = None
         self.planner_session_id = '%s-%s' % (__import__('os').getpid(), time.time_ns())
@@ -296,29 +270,12 @@ class neupan_core:
         self.goal_arrived_timer = rospy.Timer(
             rospy.Duration(1.0 / goal_arrived_rate), self.goal_arrived_timer_callback
         )
-        # Same NeuPAN sequence, independently checked/dispatched while a solve
-        # blocks. No second planner, forecast, model or relaxed mux watchdog.
-        self.execution=None
-        self.execution_calibration=None
-        profile=rospy.get_param('~execution_stopping_calibration',{})
-        if profile:self.execution_calibration=validate_calibration(profile,self.neupan_planner.robot)
-        if self.motion_policy is not None and rospy.get_param('~checked_execution_enabled',True):
-            self.execution_output=self.vel_pub
-            self.execution=AcceptedExecution(self.neupan_planner.robot,self.neupan_planner.dt,
-                self.motion_policy,self.execution_inputs,self.execution_authority,self.command_gate,
-                self.execution_emit,self.execution_report,timeout=min(self.scan_timeout,self.scan_transform_timeout),
-                calibration=self.execution_calibration)
-            self.vel_pub=RevokingPublisher(self.vel_pub,self.execution)
-            rospy.Subscriber('/vehicle/control_mode',UInt8,self.execution_mode_callback,queue_size=10)
-            rospy.loginfo('NeuPAN ROS checked execution enabled; native solver unchanged; stopping calibration: %s',
-                          'measured profile' if profile else 'unavailable (full sweep remains required)')
-        
+        # One automatic control publisher, owned by the solve loop only.
+        rospy.Subscriber('/vehicle/control_mode',UInt8,self.control_mode_callback,queue_size=10)
 
     def shutdown_stop(self):
         self.shutdown_requested = True
         self.shutdown_requested_monotonic = time.monotonic()
-        execution=getattr(self,'execution',None)
-        if execution is not None:execution.close()
         try:
             self.vel_pub.publish(Twist())
         except Exception:
@@ -326,102 +283,19 @@ class neupan_core:
 
     @contextmanager
     def command_gate(self):
-        # Global order for BOTH main publication and dispatcher publication.
+        # Serialize task/mode replacement with the single command publisher.
         with ExitStack() as stack:
-            stack.enter_context(self.execution_gate)
+            stack.enter_context(self.command_lock)
             stack.enter_context(self.route_update_lock)
             if self.camera_guard is not None:stack.enter_context(self.camera_guard.lock)
             yield
 
-    def execution_authority(self):
-        """No solver/IPATH reads from the worker; only immutable task authority."""
-        if (self.shutdown_requested or self.planner_fault or self.waiting_for_new_goal
-                or self.arrive or self.pending_route_update is not None
-                or self.pending_goal_request_stamp is not None or self.execution_control_mode!=0):return None
-        if hasattr(self,'stop_registry') and any(key in self.stop_registry.reasons
-                for key in ('input','tracking','planner_fault','planner_obstacle','camera')):return None
-        guard=self.camera_guard
-        camera=None
-        if guard is not None:
-            # Explicit visual contracts and retained/scoped hazards continue via
-            # the original synchronous final checker; never bypass their proofs.
-            state=getattr(self,'camera_guard_selected_state',{})
-            current=guard.status or {}
-            detail=current.get('inference_diagnostics') or {}
-            if (guard.hazard_regions or guard.corridor_hold_key is not None or guard.pending_recovery
-                    or getattr(self,'camera_execution_contract',None)
-                    or state.get('source')=='stop'
-                    or (current.get('control_enabled') is True and current.get('active') is True
-                        and (detail.get('execution_contract') or detail.get('reference_role','visual_execution')!='advisory'))):return None
-            # Advisory observations are NOT a per-frame driving licence. Only
-            # the adopted reference/task version, original route and real
-            # hazards revoke an accepted ordinary map-following segment.
-            camera=(guard.safety_generation,guard.original_key,guard.original_digest)
-        return (self.execution_route_version,camera)
-
-    def execution_inputs(self):
-        """Privately transform newest queued scan; never mutate solver snapshots."""
-        try:
-            with self.scan_lock:
-                queued=list(self.scan_queue)
-                snapshot=self.scan_snapshot
-            cached=getattr(self,'execution_scan_cache',None)
-            if cached is not None and (snapshot is None or cached['safety'][1]>snapshot['safety'][1]):snapshot=cached
-            now=time.monotonic();ros_ns=rospy.Time.now().to_nsec()
-            for message,received in sorted(queued,key=lambda item:item[0].header.stamp.to_nsec(),reverse=True):
-                stamp=message.header.stamp.to_nsec()
-                if snapshot is not None and stamp<=snapshot['safety'][1]:continue
-                if not (0<=now-received<=self.scan_timeout and 0<=ros_ns-stamp<=self.scan_timeout*1.e9):continue
-                try:snapshot=self.convert_scan_snapshot(message,received);break
-                except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException,ValueError):continue
-            if snapshot is None:raise InputUnavailable('execution has no complete fresh scan')
-            self.execution_scan_cache=snapshot
-            trans,rot,stamp=pose_snapshot(self.listener,self.map_frame,self.base_frame)
-            with self.command_gate():context=self.execution_authority()
-            return dict(pose=np.array([trans[0],trans[1],self.quat_to_yaw_list(rot)]),
-                scan=snapshot['safety'],state_stamp_ns=stamp,context=context,
-                now_ns=lambda:rospy.Time.now().to_nsec())
-        except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException) as error:
-            raise InputUnavailable('execution TF unavailable: '+str(error)) from error
-
-    def execution_emit(self,action):
-        # Never call generate_twist_msg here: it reads mutable planner flags.
-        message=Twist();message.linear.x=float(action[0,0]);message.angular.z=float(action[1,0])
-        self.execution_output.publish(message)
-
-    def execution_mode_callback(self,message):
+    def control_mode_callback(self,message):
         with self.command_gate():
-            if message.data==self.execution_control_mode:return
-            self.execution_control_mode=message.data
-            self.execution_route_version+=1
+            if message.data==self.control_mode:return
+            self.control_mode=message.data
+            self.command_route_version+=1
             self.vel_pub.publish(Twist())  # AUTO history is retired on BOTH edges.
-
-    def execution_report(self,result):
-        kind=result.get('fault_kind')
-        if kind=='geometry' or result.get('trajectory_safety',{}).get('requires_replanning'):
-            self.motion_policy.restrict(.2)
-        self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),
-            command_source='neupan_checked_execution',**result),separators=(',',':')))
-
-    def trajectory_execution_check(self,info,points):
-        result=execution_clearance(info,points,self.neupan_planner.robot,self.neupan_planner.dt,
-                                  getattr(self,'execution_calibration',None))
-        if result.get('requires_replanning') and self.motion_policy is not None:self.motion_policy.restrict(.2)
-        return result
-
-    def final_execution_input_check(self,scan,motion):
-        self.publish_input_ages=checked_input_ages(scan,rospy.Time.now().to_nsec(),time.monotonic(),
-                                                  self.scan_timeout,self.diagnostic_state_stamp_ns)
-        check_measured_reserve_limits(self.trajectory_safety,self.execution_calibration,
-                                      self.publish_input_ages,getattr(motion,'publication_feedback',None))
-
-    def continue_checked_execution(self,reason):
-        execution=getattr(self,'execution',None)
-        if execution is None or not execution.resume():return False
-        self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),
-            command_source='checked_execution_continuation',reason=reason,result_expired=reason.startswith('result expired;'),
-            execution=dict(execution.last_result)),separators=(',',':')))
-        return True
 
     def motion_feedback_odom_cb(self,message):
         pose=message.pose.pose
@@ -429,60 +303,28 @@ class neupan_core:
             [pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w])],
             message.header.stamp.to_nsec(),time.monotonic(),message.header.frame_id,rospy.Time.now().to_nsec())
 
-    def steering_feedback_cb(self,message):
-        # JointState must be a real sensor topic, never /cmd_vel or a command echo.
-        try:
-            index=message.name.index(self.steering_feedback_joint)
-            angle=float(message.position[index])
-            if abs(angle)>float(np.asarray(self.neupan_planner.robot.max_speed).reshape(2)[1]):
-                raise ValueError('steering encoder outside configured bound')
-            self.motion_feedback.encoder(angle,message.header.stamp.to_nsec(),time.monotonic(),rospy.Time.now().to_nsec())
-        except (ValueError,IndexError,TypeError):
-            self.motion_feedback.encoder(math.nan,0,time.monotonic())
-
     def run(self):
 
         r = rospy.Rate(50)
         self.stop_registry=StopRegistry()
         self.input_good_since=None
-        execution=getattr(self,'execution',None)
-        if execution is not None:execution.start()
-
         while not rospy.is_shutdown():
-
-            if execution is not None:
-                if execution.fault and getattr(self,'planner_fault',None) is None:
-                    self.hold_planner_fault(execution.fault_info[1],execution.fault_info);r.sleep();continue
-                reason=execution.input_failure
-                if reason:
-                    self.temporary_input_stop(reason)
-                    with self.command_gate():execution.input_failure=None
-                    r.sleep();continue
+            if getattr(self,'control_mode',0)!=0:
+                self.vel_pub.publish(Twist());r.sleep();continue
 
             self.cycle_started_mono=time.monotonic()
             self.native_solution_stop=False
-            self.candidate_rejection_details=None
             self.diagnostic_stage='cycle_start'
             self.diagnostic_cycle_id=getattr(self,'diagnostic_cycle_id',0)+1
             self.diagnostic_context_cycle_id=self.diagnostic_cycle_id
-            # No previous-cycle fallback, including rejection before the first
-            # continuous projection or before any alternative was generated.
-            info=original_info=None
-            self.candidate_original_info=None
-            self.candidate_attempts=[]
+            # Failure evidence must belong to the current native solve.
+            info=None
             for name in ('diagnostic_solver_input','diagnostic_safety_scan','diagnostic_state_stamp_ns',
                          'diagnostic_initial_warm','diagnostic_raw_solver_states','diagnostic_raw_solver_controls',
-                         'candidate_initial_warm','candidate_initial_dune','candidate_initial_nrmp',
-                         'candidate_initial_selection','diagnostic_command_action',
+                         'diagnostic_command_action',
                          'diagnostic_checked_trajectory','diagnostic_checked_controls'):
                 setattr(self,name,None)
-            if getattr(self,'motion_policy',None) is not None:
-                self.motion_policy.feedback_snapshot=None
-                self.motion_policy.publication_feedback=None
-                self.motion_policy.feedback_degraded_at_publication=[]
             self.cycle_timing={}
-            self.candidate_rejections=0
-            self.stopping_envelope_diagnostic=None
             self.solver_started_mono=None
             self.solver_finished_mono=None
             self.refresh_scan_snapshot()
@@ -660,165 +502,38 @@ class neupan_core:
                 self.temporary_input_stop(str(error));r.sleep();continue
             self.cycle_timing['preparation_ms']=(time.monotonic()-self.cycle_started_mono)*1000
             self.cycle_timing.update(solve_input_ages=solve_ages,solve_queued_frames=queued_frames)
-            solve_execution_context=None
-            solve_route_version=getattr(self,'execution_route_version',0)
-            if execution is not None:
-                with self.command_gate():solve_execution_context=self.execution_authority()
+            solve_route_version=getattr(self,'command_route_version',0)
 
             t2 = rospy.Time.now()
             solver_started = time.monotonic()
             self.solver_started_mono=solver_started
             self.diagnostic_stage = "solve"
-            self.diagnostic_solver_input = (self.robot_state,
-                checked_scan[0] if getattr(self,'obstacle_adapter',None) is not None else solver_points)
+            self.diagnostic_solver_input = (self.robot_state,solver_points)
             try:
-                if getattr(self,'obstacle_adapter',None) is not None and not checked_scan[0].shape[1]:
-                    self.obstacle_adapter.report=dict(full_points=0,selected_points=0,ordering='valid_empty_scan')
-                # The geometric adapter needs ALL returns, otherwise an earlier
-                # scan stride can discard a thin pole before either solver layer.
-                solver_obstacles=planner_obstacle_input(self.neupan_planner,
-                    checked_scan[0] if getattr(self,'obstacle_adapter',None) is not None else solver_points)
+                solver_obstacles=planner_obstacle_input(self.neupan_planner,solver_points)
                 warm=getattr(self.neupan_planner,'cur_vel_array',None)
                 if hasattr(warm,'detach'):warm=warm.detach().cpu().numpy()
                 self.diagnostic_initial_warm=None if warm is None else np.asarray(warm,float).copy()
-                contract=getattr(self,'camera_execution_contract',None)
-                motion=getattr(self,'motion_policy',None)
-                reference_speed=getattr(self.neupan_planner,'ref_speed',None)
-                try:
-                    if reference_speed is not None and (contract or motion is not None):
-                        self.neupan_planner.set_reference_speed(min(reference_speed,contract['speed_cap_mps'] if contract else math.inf,
-                            motion.cap if motion is not None else math.inf))
-                    action, info = self.neupan_planner(self.robot_state,solver_obstacles)
-                finally:
-                    if reference_speed is not None and (contract or motion is not None):
-                        self.neupan_planner.set_reference_speed(reference_speed)
-                solver_finished = time.monotonic()
-                self.solver_finished_mono=solver_finished
-                safety_started = solver_finished
-                self.diagnostic_stage = 'validate_solution'
-                self.diagnostic_raw_solver_states=np.hstack(info['opt_state_list']).copy() if info.get('opt_state_list') else None
-                raw_controls=info.get('vel_tensor')
-                if hasattr(raw_controls,'detach'):raw_controls=raw_controls.detach().cpu().numpy()
-                self.diagnostic_raw_solver_controls=None if raw_controls is None else np.asarray(raw_controls,float).copy()
-                self.candidate_initial_dune=getattr(self.neupan_planner,'dune_points',None)
-                self.candidate_initial_nrmp=getattr(self.neupan_planner,'nrmp_points',None)
-                self.candidate_initial_selection=None if getattr(self,'obstacle_adapter',None) is None else dict(self.obstacle_adapter.report)
-                validate_solution(action, info, self.neupan_planner.robot, self.neupan_planner.dt)
+                # Native solve exactly once. No ROS speed target, control-array
+                # rewriting, secondary collision gate or warm-start feedback.
+                action,info=self.neupan_planner(self.robot_state,solver_obstacles)
+                solver_finished=time.monotonic();self.solver_finished_mono=solver_finished
+                self.diagnostic_stage='validate_native_output'
+                validate_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt)
                 self.native_solution_stop=bool(info.get('stop'))
-                if execution is not None and (info.get('stop') or info.get('arrive')):
-                    self.vel_pub.publish(Twist())  # Native stop wins over ANY older accepted sequence.
-                contract=getattr(self,'camera_execution_contract',None)
-                tracking_cap=(getattr(self,'outdoor_tracking_status',None) or {}).get('recommended_speed_cap_mps')
-                caps=([contract['speed_cap_mps']] if contract else [])+([tracking_cap] if tracking_cap is not None else [])
-                if caps and not info.get('arrive'):
-                    action,info=cap_solution_speed(action,info,self.neupan_planner.robot,
-                                                  self.neupan_planner.dt,min(caps))
-                    validate_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt)
-                original_info=candidate_snapshot(info)
-                if motion is not None:
-                    action,info=continuous_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt,motion,time.monotonic())
-                    validate_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt)
                 self.diagnostic_command_action=np.asarray(action,float).copy()
-                self.diagnostic_checked_trajectory=np.hstack(info['opt_state_list']) if info.get('opt_state_list') else None
-                self.diagnostic_checked_controls=info.get('vel_tensor')
-                if not info.get('arrive'):
-                    snapshot = checked_scan
-                    if snapshot is None:
-                        raise InputUnavailable('full scan safety snapshot unavailable')
-                    scan_points, stamp_ns, received_mono = snapshot
-                    self.diagnostic_safety_scan = snapshot
-                    checked_scan = snapshot
-                    age = (rospy.Time.now().to_nsec()-stamp_ns)/1.e9
-                    if not 0 <= age <= self.scan_timeout or time.monotonic()-received_mono > self.scan_timeout:
-                        raise ResultExpired('full scan expired before command publication')
-                    self.diagnostic_stage = 'trajectory_safety'
-                    try:
-                        self.trajectory_safety = (self.trajectory_execution_check(info,scan_points) if execution is not None
-                            else trajectory_clearance(np.hstack(info['opt_state_list']),scan_points,self.neupan_planner.robot.vertices))
-                        self.candidate_rejections=0
-                    except CandidateRejected as rejected:
-                        self.stopping_envelope_diagnostic=self.stopping_shadow(info,scan_points,rejected)
-                        # Bounded alternatives, not blind replay of an old speed.
-                        # Each slower command has a newly integrated FULL swept
-                        # prediction; final camera/age checks still follow.
-                        self.candidate_rejections=1
-                        if self.neupan_planner.robot.kinematics!='acker':raise rejected
-                        accepted=False
-                        original_action,original_info=action,candidate_snapshot(info)
-                        self.candidate_original_info=original_info
-                        self.candidate_attempts=[]
-                        warm=getattr(self.neupan_planner,'cur_vel_array',info['vel_tensor'])
-                        if hasattr(warm,'detach'):warm=warm.detach().cpu().numpy()
-                        self.candidate_initial_warm=np.asarray(warm,float).copy()
-                        self.candidate_initial_dune=getattr(self.neupan_planner,'dune_points',None)
-                        self.candidate_initial_nrmp=getattr(self.neupan_planner,'nrmp_points',None)
-                        velocities=original_info['vel_tensor']
-                        if hasattr(velocities,'detach'):velocities=velocities.detach().cpu().numpy()
-                        for factor in (.5,.25):
-                            requested_cap=float(np.max(np.abs(np.asarray(velocities)[0])))*factor
-                            action,info=cap_solution_speed(original_action,original_info,self.neupan_planner.robot,
-                                self.neupan_planner.dt,requested_cap)
-                            if motion is not None:
-                                info.pop('speed_cap_mps',None)
-                                if caps:info['speed_cap_mps']=min(caps)
-                                action,info=continuous_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt,motion,time.monotonic())
-                                info['requested_speed_cap_mps']=requested_cap
-                            validate_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt)
-                            self.candidate_attempts.append(candidate_snapshot(info))
-                            try:
-                                self.trajectory_safety=(self.trajectory_execution_check(info,scan_points) if execution is not None
-                                    else trajectory_clearance(np.hstack(info['opt_state_list']),scan_points,self.neupan_planner.robot.vertices))
-                                accepted=True;break
-                            except CandidateRejected:self.candidate_rejections+=1
-                        if not accepted and motion is not None:
-                            # One bounded REAL re-solve with reduced speed and an
-                            # away-from-conflict warm seed. A seed is not a hard
-                            # constraint or a claim that a detour always exists.
-                            motion.restrict(min(.2,float(reference_speed or .2)))
-                            seed=np.asarray(velocities,float).copy()
-                            side=-1. if rejected.details.get('point_body',[0.,0.])[1]>=0 else 1.
-                            steer_step=float(np.asarray(self.neupan_planner.robot.max_acce).reshape(2)[1])*self.neupan_planner.dt
-                            steer_bound=float(np.asarray(self.neupan_planner.robot.max_speed).reshape(2)[1])
-                            seed[1]=np.clip(seed[1]+side*steer_step*np.arange(seed.shape[1]),-steer_bound,steer_bound)
-                            self.neupan_planner.cur_vel_array=seed
-                            retry_started=time.monotonic()
-                            try:
-                                self.neupan_planner.set_reference_speed(min(float(reference_speed or .2),motion.cap))
-                                action,info=self.neupan_planner(self.robot_state,solver_obstacles)
-                            finally:self.neupan_planner.set_reference_speed(reference_speed)
-                            self.cycle_timing['retry_solver_ms']=(time.monotonic()-retry_started)*1000
-                            validate_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt)
-                            if execution is not None and (info.get('stop') or info.get('arrive')):
-                                self.native_solution_stop=bool(info.get('stop'))
-                                self.vel_pub.publish(Twist())
-                            self.candidate_attempts.append(candidate_snapshot(info))
-                            if caps:action,info=cap_solution_speed(action,info,self.neupan_planner.robot,self.neupan_planner.dt,min(caps))
-                            action,info=continuous_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt,motion,time.monotonic())
-                            validate_solution(action,info,self.neupan_planner.robot,self.neupan_planner.dt)
-                            self.candidate_attempts.append(candidate_snapshot(info))
-                            self.trajectory_safety=(self.trajectory_execution_check(info,scan_points) if execution is not None
-                                else trajectory_clearance(np.hstack(info['opt_state_list']),scan_points,self.neupan_planner.robot.vertices))
-                            accepted=True
-                        if not accepted:raise rejected
-                        if motion is not None:motion.restrict(info.get('requested_speed_cap_mps',motion.cap))
-                        self.diagnostic_command_action=np.asarray(action,float).copy()
-                        self.diagnostic_checked_trajectory=np.hstack(info['opt_state_list'])
-                        self.diagnostic_checked_controls=info.get('vel_tensor')
-                        self.capture_candidate_rejection(rejected,original_info)
-                self.stop_registry.clear('candidate')
-                self.safety_check_ms = (time.monotonic()-safety_started)*1000
-                self.cycle_timing.update(solver_ms=(solver_finished-solver_started)*1000,safety_ms=self.safety_check_ms)
-            except CandidateRejected as error:
-                self.candidate_rejection_details=dict(error.details)
-                self.capture_candidate_rejection(error,original_info if original_info is not None else info)
-                self.candidate_stop(str(error));r.sleep();continue
+                self.diagnostic_raw_solver_states=np.hstack(info['opt_state_list']).copy() if info.get('opt_state_list') else None
+                controls=info.get('vel_tensor')
+                if hasattr(controls,'detach'):controls=controls.detach().cpu().numpy()
+                self.diagnostic_raw_solver_controls=None if controls is None else np.asarray(controls,float).copy()
+                self.safety_check_ms=(time.monotonic()-solver_finished)*1000
+                self.cycle_timing.update(solver_ms=(solver_finished-solver_started)*1000,
+                                        safety_ms=self.safety_check_ms)
             except InputUnavailable as error:
                 self.temporary_input_stop(str(error),after_result=isinstance(error,ResultExpired));r.sleep();continue
             except Exception as error:
                 import sys
-                self.hold_planner_fault(error, sys.exc_info())
-                r.sleep()
-                continue
+                self.hold_planner_fault(error,sys.exc_info());r.sleep();continue
             solver_ms = (solver_finished - solver_started) * 1000.0
             t3 = rospy.Time.now()
             if self.start_connector:
@@ -874,7 +589,6 @@ class neupan_core:
             self.plan_pub.publish(self.generate_path_msg(info["opt_state_list"]))
             self.ref_state_pub.publish(self.generate_path_msg(info["ref_state_list"]))
             command = self.generate_twist_msg(action)
-            execution_staged=False
             try:
                 # No expensive diagnostic or path construction may follow this
                 # gate before publishing. Never renew checked_scan using a new scan.
@@ -884,13 +598,13 @@ class neupan_core:
                     self.check_camera_execution(info,command)
                 # All geometric/select work is finished. Lock waits and short
                 # version checks precede the FINAL exact-input age check.
-                publication_lock=(self.command_gate() if execution is not None else
-                    self.camera_guard.lock if self.camera_guard is not None else threading.RLock())
-                with publication_lock:
-                    if execution is not None and execution.fault:raise RuntimeError(execution.fault)
-                    if execution is not None and execution.input_failure:raise InputUnavailable(execution.input_failure)
-                    if execution is not None and solve_route_version!=self.execution_route_version:
-                        raise AuthorizationChanged('task or route replaced during solve')
+                with self.command_gate():
+                    if (solve_route_version!=getattr(self,'command_route_version',0)
+                            or getattr(self,'control_mode',0)!=0
+                            or self.pending_route_update is not None
+                            or getattr(self,'pending_goal_request_stamp',None) is not None
+                            or getattr(self,'shutdown_requested',False)):
+                        raise AuthorizationChanged('task, route or control mode changed during solve')
                     if abs(command.linear.x)>1.e-9 or abs(command.angular.z)>1.e-9:
                         if self.camera_guard is not None:
                             if (self.camera_guard.authorization_generation!=self.camera_publication_generation
@@ -901,12 +615,8 @@ class neupan_core:
                                      or getattr(self,'camera_publication_contract',None))
                                     and not 0<=time.monotonic()-self.camera_guard.received<=self.camera_guard.timeout):
                                 raise AuthorizationChanged('camera heartbeat expired at publication')
-                        check_motion_feedback(motion,action,self.neupan_planner.robot,self.neupan_planner.dt)
                         self.publish_input_ages=checked_input_ages(checked_scan,rospy.Time.now().to_nsec(),
                             time.monotonic(),self.scan_timeout,self.diagnostic_state_stamp_ns)
-                        if execution is not None:
-                            check_measured_reserve_limits(self.trajectory_safety,self.execution_calibration,
-                                self.publish_input_ages,getattr(motion,'publication_feedback',None))
                         contract=getattr(self,'camera_publication_contract',None)
                         if contract and rospy.Time.now().to_nsec()>contract['expires_ns']:
                             raise AuthorizationChanged('camera lease expired at publication')
@@ -914,26 +624,14 @@ class neupan_core:
                                 self.camera_publication_generation,self.camera_publication_safety_generation,rospy.Time.now().to_nsec()):
                             raise AuthorizationChanged('camera recovery proof expired or changed before publication')
                         if self.camera_guard is not None:self.stop_registry.clear('camera')
-                    if (execution is not None and solve_execution_context is not None
-                            and not self.stop and not self.arrive and abs(command.linear.x)>1.e-9):
-                        execution_staged=execution.stage(info,solve_execution_context,
-                            dict(cycle_id=self.diagnostic_cycle_id,scan_stamp_ns=checked_scan[1],
-                                 state_stamp_ns=self.diagnostic_state_stamp_ns,
-                                 reference_receipt=getattr(self,'reference_receipt',None)),action=action,
-                            final_check=lambda:self.final_execution_input_check(checked_scan,motion))
-                    else:self.vel_pub.publish(command)
+                    self.vel_pub.publish(command)
             except AuthorizationChanged as error:
-                if self.continue_checked_execution('authorization updated: '+str(error)):
-                    r.sleep();continue
                 self.vel_pub.publish(Twist())
                 self.stop_registry.set('authorization',time.monotonic(),'adopt latest authority and solve again; no sensor recovery delay')
                 self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
                     command_source='authorization_retry',reason=str(error),stop_reasons=self.stop_registry.snapshot(),timing=self.cycle_metrics())))
                 rospy.logwarn_throttle(2.,yellow_terminal_text('Control authority or motion feedback updated; discard old command and replan: %s'),str(error))
                 r.sleep();continue
-            except CandidateRejected as error:
-                self.candidate_rejection_details=dict(error.details)
-                self.candidate_stop(str(error));r.sleep();continue
             except InputUnavailable as error:
                 self.temporary_input_stop(str(error),after_result=isinstance(error,ResultExpired));r.sleep();continue
             except Exception as error:
@@ -941,44 +639,23 @@ class neupan_core:
                 self.hold_planner_fault(error,sys.exc_info())
                 r.sleep()
                 continue
-            if info.get('speed_retimed'):
-                self.neupan_planner.cur_vel_array=np.asarray(info['vel_tensor']).copy()
             command_time = time.monotonic()
-            if motion is not None:
-                if self.candidate_rejections==0 and not self.stop and abs(command.linear.x)>1.e-9:
-                    if not getattr(self,'trajectory_safety',{}).get('requires_replanning'):
-                        motion.accepted(command_time,float(np.asarray(self.neupan_planner.robot.max_acce).reshape(2)[0]),float(reference_speed or .8),
-                            getattr(self,'trajectory_safety',{}).get('min_clearance_m'))
-                if not execution_staged:motion.record([command.linear.x,command.angular.z],command_time)
             self.runtime_pub.publish(json.dumps({
                 "stamp": rospy.Time.now().to_sec(),
                 "cycle_id":self.diagnostic_cycle_id,
-                "execution_version":None if execution is None else execution.version,
-                "execution_staged":execution_staged,
                 "reference_receipt":getattr(self,'reference_receipt',None),
                 "selected_reference_version":(getattr(self,'camera_guard_selected_state',None) or {}).get('reference_version')
                     if (getattr(self,'camera_guard_selected_state',None) or {}).get('source')=='camera' else None,
                 "observed_producer_reference_version":(getattr(self,'camera_guard_selected_state',None) or {}).get('reference_version'),
                 "native_stop":bool(info.get('stop')),
-                "full_scan_rejection":bool(getattr(self,'trajectory_safety',{}).get('full_scan_rejection',False)),
                 "result_expired":False,
-                "command_source":"neupan_continuous_navigation" if motion is not None else ("neupan_retimed_camera" if getattr(self,'camera_execution_contract',None)
-                    else "neupan_retimed_tracking" if (getattr(self,'outdoor_tracking_status',None) or {}).get('recommended_speed_cap_mps') is not None
-                    else "neupan_retimed_collision") if info.get('speed_retimed') else "neupan",
+                "command_source":"neupan_native",
                 "solver_ms": solver_ms,
                 "safety_check_ms": getattr(self,'safety_check_ms',None),
                 "timing":self.cycle_metrics(),
-                "candidate_rejections":getattr(self,'candidate_rejections',0),
-                "persistent_speed_cap_mps":None if motion is None or not math.isfinite(motion.cap) else motion.cap,
-                "persistent_speed_cap_role":"deceleration_target_rechecked_with_full_scan",
-                "continuity_source":info.get('continuity_source'),
-                "motion_feedback":info.get('motion_feedback'),
-                "motion_feedback_at_publication":None if motion is None else getattr(motion,'publication_feedback',None),
-                "motion_feedback_degraded_at_publication":[] if motion is None else getattr(motion,'feedback_degraded_at_publication',[]),
-                "obstacle_selection":None if getattr(self,'obstacle_adapter',None) is None else self.obstacle_adapter.report,
-                "stopping_envelope_shadow":getattr(self,'stopping_envelope_diagnostic',None),
-                "candidate_evidence":None if getattr(self,'candidate_evidence_sink',None) is None else dict(
-                    queued=self.candidate_evidence_sink.count,errors=self.candidate_evidence_sink.errors,dropped=self.candidate_evidence_sink.dropped),
+                "native_action":np.asarray(action,float).reshape(2).tolist(),
+                "motion_feedback":None if getattr(self,'motion_feedback',None) is None else self.motion_feedback.snapshot(
+                    rospy.Time.now().to_nsec(),time.monotonic()),
                 "publish_input_ages": self.publish_input_ages,
                 "camera_checked_authorization_id":getattr(self,'camera_checked_authorization_id',None),
                 "camera_checked_authorization_generation":getattr(self,'camera_publication_generation',None),
@@ -989,8 +666,6 @@ class neupan_core:
                 "camera_execution_contract": {key:self.camera_execution_contract.get(key) for key in
                     ('version','path_digest','route_stamp_ns','expires_ns','speed_cap_mps','end_odom','coordinate_frame')}
                     if getattr(self,'camera_execution_contract',None) else None,
-                "speed_retimed":bool(info.get('speed_retimed',False)),
-                "optimizer_action":info.get('optimizer_action'),
                 "total_processing_ms": (command_time-frame_started_mono)*1000,
                 "tf_lookup_ms": dt_tf,
                 "command_interval_ms": None if self.last_command_monotonic is None
@@ -1000,7 +675,6 @@ class neupan_core:
                 "planner_stop": bool(self.stop),
                 "planner_arrive": bool(self.arrive),
                 "tracking_guard": self.outdoor_tracking_status,
-                "trajectory_safety": getattr(self, 'trajectory_safety', None),
                 "reference_visual": reference_visual,
                 "path_point_index": int(self.neupan_planner.ipath.point_index),
                 "path_interval_m": float(self.neupan_planner.ipath.interval),
@@ -1058,10 +732,9 @@ class neupan_core:
             rospy.logerr('NeuPAN fault diagnostics failed; STOP remains latched: %s', diagnostic_error)
 
     def temporary_input_stop(self, reason,after_result=False):
-        motion=getattr(self,'motion_policy',None)
-        # Result expiry is NOT evidence that CURRENT live inputs are lost. Do
-        # not reset motion history/recovery until continuation has been checked.
-        if after_result and motion is not None:
+        # An expired calculation is not a fresh-input outage. Rebind healthy
+        # inputs and retry next cycle; never publish/replay an expired action.
+        if after_result:
             try:
                 self.refresh_scan_snapshot()
                 snapshot,_,_=self.bind_scan_snapshot()
@@ -1069,16 +742,13 @@ class neupan_core:
                 checked_input_ages(snapshot,rospy.Time.now().to_nsec(),time.monotonic(),self.scan_timeout,stamp)
             except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException,InputUnavailable):pass
             else:
-                if self.continue_checked_execution('result expired; fresh live inputs: '+reason):return
-                self.vel_pub.publish(Twist())  # No qualified execution segment, not an input-outage latch.
-                motion.record([0.,0.],time.monotonic())
-                self.stop_registry.set('calculation_retry',time.monotonic(),'fresh live inputs; immediately recompute, never reuse expired result')
+                self.vel_pub.publish(Twist())
+                self.stop_registry.set('calculation_retry',time.monotonic(),'fresh inputs; recompute without outage recovery')
                 self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
                     command_source='calculation_retry',result_expired=True,reason=reason,
                     stop_reasons=self.stop_registry.snapshot(),timing=self.cycle_metrics())))
                 return
         self.vel_pub.publish(Twist())
-        if motion is not None:motion.record([0.,0.],time.monotonic())
         self.input_good_since=None
         if getattr(self,'outdoor_tracking_guard',None) is not None:self.outdoor_tracking_guard.pause()
         self.stop_registry.set('input',time.monotonic(),'fresh bound pose/scan for one shared recovery window, then solve and recheck')
@@ -1101,52 +771,6 @@ class neupan_core:
         if end is not None:result.setdefault('post_solver_ms',(now-end)*1000)
         result['scan_tf']=dict(getattr(self,'scan_tf_diagnostics',{}))
         return result
-
-    def candidate_stop(self, reason):
-        motion=getattr(self,'motion_policy',None)
-        if motion is not None:motion.restrict(.2)
-        if self.continue_checked_execution('new candidate rejected; re-solve: '+reason):return
-        self.vel_pub.publish(Twist())
-        if motion is not None:
-            motion.restrict(.2);motion.record([0.,0.],time.monotonic())
-        self.stop_registry.set('candidate',time.monotonic(),'recompute with current inputs; release only after full checks')
-        self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
-            command_source='candidate_rejected',reason=reason,stop_reasons=self.stop_registry.snapshot(),
-            native_stop=getattr(self,'native_solution_stop',False),
-            full_scan_rejection=bool((getattr(self,'candidate_rejection_details',None) or {}).get('full_scan_rejection')
-                                    or 'clearance_m' in (getattr(self,'candidate_rejection_details',None) or {})),
-            rejection_classification=(getattr(self,'candidate_rejection_details',None) or {}).get('classification','candidate_rejected'),
-            result_expired=False,
-            first_conflict=getattr(self,'candidate_rejection_details',None),
-            motion_feedback=None if motion is None else motion.feedback_snapshot,
-            obstacle_selection=None if getattr(self,'obstacle_adapter',None) is None else self.obstacle_adapter.report,
-            stopping_envelope_shadow=getattr(self,'stopping_envelope_diagnostic',None),
-            rejected_candidates=getattr(self,'candidate_rejections',1),timing=self.cycle_metrics())))
-        rospy.logwarn_throttle(2.,yellow_terminal_text('NeuPAN candidate rejected; retrying task: %s'),reason)
-
-    def capture_candidate_rejection(self,error,info):
-        sink=getattr(self,'candidate_evidence_sink',None)
-        if sink is None:return
-        sink.capture(self,error,info)
-
-    def stopping_shadow(self,info,points,rejected):
-        delay=getattr(self,'stopping_shadow_delay',0.)
-        deceleration=getattr(self,'stopping_shadow_deceleration',0.)
-        report=dict(mode='diagnostic_only_no_authorization',full_conflict=rejected.details,
-                    configured=delay>0 and deceleration>0)
-        if not report['configured']:return report
-        try:
-            controls=info['vel_tensor']
-            if hasattr(controls,'detach'):controls=controls.detach().cpu().numpy()
-            feedback=(getattr(self,'motion_policy',None).feedback_snapshot or {}) if getattr(self,'motion_policy',None) else {}
-            envelope=braking_envelope(np.hstack(info['opt_state_list']),controls,self.neupan_planner.robot,
-                self.neupan_planner.dt,delay,deceleration,feedback.get('speed_mps'))
-            report['envelope_check']=trajectory_clearance(envelope,points,self.neupan_planner.robot.vertices)
-            report['envelope_clear']=True
-        except CandidateRejected as error:
-            report.update(envelope_clear=False,conflict=error.details)
-        except ValueError as error:report['error']=str(error)
-        return report
 
     def publish_stop_snapshot(self, source):
         now=time.monotonic();signature=(source,tuple(sorted(self.stop_registry.reasons)))
@@ -1558,7 +1182,7 @@ class neupan_core:
     def goal_request_callback(self, goal):
         with self.route_update_lock:
             self.pending_goal_request_stamp = goal.header.stamp.to_nsec()
-            self.execution_route_version=getattr(self,'execution_route_version',0)+1
+            self.command_route_version=getattr(self,'command_route_version',0)+1
 
     def apply_pending_goal_request(self):
         with self.route_update_lock:
@@ -1592,7 +1216,7 @@ class neupan_core:
             if kind == "path" and self.waiting_for_new_goal and path_key == self.arrival_path_key:
                 return
             self.pending_route_update = (kind, data, path_key)
-            self.execution_route_version=getattr(self,'execution_route_version',0)+1
+            self.command_route_version=getattr(self,'command_route_version',0)+1
         rospy.loginfo("Queued new %s for NeuPAN", kind)
 
     def apply_pending_route(self):

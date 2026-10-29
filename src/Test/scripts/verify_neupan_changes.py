@@ -354,7 +354,7 @@ def main():
         import unittest
         sys.path.append('/usr/lib/python3/dist-packages')
         result=unittest.TextTestRunner(verbosity=0).run(unittest.defaultTestLoader.discover(str(ROOT/'src/Test/tests'),pattern=args.test_pattern))
-        files=[ROOT/'src/neupan_ros/src'/name for name in ('neupan_core.py','neupan_safety.py','neupan_diagnostics.py','neupan_navigation.py','neupan_execution.py')]
+        files=[ROOT/'src/neupan_ros/src'/name for name in ('neupan_core.py','neupan_safety.py','neupan_diagnostics.py','neupan_navigation.py')]
         files += [ROOT/'src/osm_map_handler/src'/name for name in ('osm_camera_path_refinement.py','osm_camera_path_guard.py')]
         record=dict(tests=result.testsRun,passed=result.testsRun-len(result.skipped)-len(result.failures)-len(result.errors),
             test_pattern=args.test_pattern,

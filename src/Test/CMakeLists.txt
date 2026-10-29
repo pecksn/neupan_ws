@@ -24,5 +24,6 @@ catkin_install_python(PROGRAMS
   scripts/open_loop_motion.py
   scripts/motor_side_mapping_test.py
   scripts/daily_rosbag_record.py
+  scripts/mock_neupan_commands.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

@@ -1,5 +1,14 @@
 # test_motion_tools
 
+2026-10-29当前主线：NeuPAN原生首动作直发，撤出独立派发、持续限速、整段改写、外加全预测硬否决及几何选点hook。旧`test_checked_execution.py`及对应实现已删除；`test_followup_safety.py`包含原生输出/任务/人工切换回归，`test_stable_reference_policy.py`覆盖带内区域不足不搜索。当前完整回归见[报告](../../videos/neupan_native_restore_20261029/unit_regression.json)，未完成实车闭环验收。
+
+下方按日期保留的是历史报告说明，旧控制层的用例数量、参数与输出含义不代表当前实现。统一入口仍为：
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests \
+  --output-dir videos/neupan_native_restore_20261029
+```
+
 最新文档方案跟进：复查过期最多完整重绑复查一次，方向性停车占用覆盖正倒车/转角误差与变化率，靠右回放关联生产、消费与已有跟踪记录。当前专项51项，完整Noetic回归及实测缺口统一见[问题文档](../../PROJECT_ISSUES_CN.md#本节软件验证与证据)；不另建日期版整改说明。`verify_stable_navigation.py`支持重复`--camera-bag`和`--json-only`，按录制开始时间排序分片，输出JSON/NPZ而非控制话题。
 
 2026-10-28控制衔接专项：`tests/test_checked_execution.py`覆盖结果过期不插零速、真实断流、有限解进度/到期、新障碍、手动切换、原生停车、版本并发、新解接管、最终年龄复查、测量约束及真实部署模型接口；均为离线假发布器。原生求解器保持唯一，制动参数夹具不是车辆标定。完整结果见[本轮报告](../../videos/neupan_checked_execution_20261028/report.md)。

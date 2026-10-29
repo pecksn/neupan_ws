@@ -131,14 +131,17 @@ class RecoveryTests(unittest.TestCase):
                 else:node.obstacle_points=np.array([[.9],[0.]])
                 node.safety_scan=(node.obstacle_points.copy(),round(clock.value*1.e9),clock.value)
                 # The fixture's sleep refreshes the same full scan each cycle.
-                if kind=='removed':
-                    original=ns['trajectory_clearance']
-                    def clearance(*args):
-                        try:return original(*args)
-                        finally:
-                            if node.neupan_planner.calls>=1:
-                                node.obstacle_points=np.array([[1.],[2.]])
-                    ns['trajectory_clearance']=clearance
+                if kind in ('blocked','removed'):
+                    base=type(node.neupan_planner)
+                    class NativeStopPlanner(base):
+                        def __call__(self,*args):
+                            action,info=super().__call__(*args)
+                            if kind=='blocked' or self.calls==1:
+                                info['stop']=True;action=np.zeros((2,1))
+                            return action,info
+                    node.neupan_planner=NativeStopPlanner()
+                    node.neupan_planner.min_distance=NS(detach=lambda:NS(item=lambda:.1))
+                    node.neupan_planner.collision_threshold=.2
             if kind=='startup':
                 node.outdoor_tracking_guard=OutdoorTrackingGuard()
                 node.neupan_planner.ipath.cur_curve=resample_forward_reference([[0.,1.54,0.,1.],[20.,1.54,0.,1.]])
@@ -149,21 +152,21 @@ class RecoveryTests(unittest.TestCase):
     def test_persistent_near_collision_stops_but_keeps_replanning(self):
         node,commands=self.run_case('blocked')
         self.assertEqual(node.neupan_planner.calls,9);self.assertTrue(all(v==0 for v in commands))
-        self.assertIsNone(getattr(node,'planner_fault',None));self.assertIn('candidate',node.stop_registry.reasons)
+        self.assertIsNone(getattr(node,'planner_fault',None));self.assertIn('planner_obstacle',node.stop_registry.reasons)
 
     def test_obstacle_removed_automatically_resumes_original_task(self):
         node,commands=self.run_case('removed')
         self.assertEqual(commands[0],0.);self.assertIn(.8,commands)
         self.assertNotIn('candidate',node.stop_registry.reasons);self.assertIsNone(getattr(node,'planner_fault',None))
 
-    def test_safe_slow_alternative_avoids_unnecessary_zero(self):
+    def test_wrapper_does_not_replace_native_action_with_slow_alternative(self):
         node,commands=self.run_case('slow')
-        self.assertTrue(commands);self.assertTrue(all(0<v<.8 for v in commands))
-        self.assertTrue(node.diagnostic_checked_trajectory is not None)
+        self.assertTrue(commands);self.assertTrue(all(v==.8 for v in commands))
+        self.assertEqual(node.neupan_planner.calls,9)
 
-    def test_real_run_startup_154cm_does_not_latch_and_uses_checked_low_speed(self):
+    def test_real_run_startup_154cm_is_diagnostic_not_outer_speed_rewrite(self):
         node,commands=self.run_case('startup')
-        self.assertTrue(all(0<v<=.3 for v in commands));self.assertFalse(node.outdoor_tracking_status['latched'])
+        self.assertTrue(all(v==.8 for v in commands));self.assertFalse(node.outdoor_tracking_status['latched'])
 
     def test_nonfinite_is_still_internal_fault(self):
         node,commands=self.run_case('nan')

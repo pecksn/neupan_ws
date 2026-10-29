@@ -1,8 +1,6 @@
-"""ROS post-solve checks, detached-control corrections and publication helpers.
+"""Read-only native-output/input validation and retained hazard geometry.
 
-continuous_solution/cap_solution_speed modify control COPIES and reintegrate
-them for verification; ZeroAwarePublisher tracks real zero publications. This
-is neither a read-only utility nor another NeuPAN optimiser.
+No command retiming, persistent speed policy or secondary executor.
 """
 import math
 import numpy as np
@@ -26,41 +24,6 @@ class CandidateRejected(ValueError):
         super().__init__(message);self.details=details or {}
 
 
-class MotionContinuity:
-    """Persistent cap and LAST SENT command continuity, not actuator feedback."""
-    def __init__(self):
-        self.cap=math.inf;self.good=0;self.last=None;self.stamp=None
-        self.history=None
-        self.feedback_provider=None
-        self.feedback_snapshot=None
-    def restrict(self,speed):
-        self.cap=min(self.cap,max(0.,float(speed)));self.good=0
-    def record(self,command,now):
-        value=np.asarray(command,float).reshape(2).copy()
-        self.last=value;self.stamp=now
-        self.history=(value,float(now))  # One atomic last-SENT command/time pair.
-    def accepted(self,now,acceleration,nominal,clearance=None):
-        # Release hysteresis only, NOT a new collision/STOP threshold. A valid
-        # empty scan has clearance=None under the existing no-obstacle contract.
-        if clearance is not None and clearance<.15:
-            self.good=0;return
-        self.good+=1
-        if self.good>=3 and math.isfinite(self.cap):
-            elapsed=0. if self.stamp is None else max(0.,min(.25,now-self.stamp))
-            self.cap=min(nominal,self.cap+acceleration*elapsed)
-            if self.cap>=nominal-1.e-6:self.cap=math.inf
-
-
-class ZeroAwarePublisher:
-    """Retain zero commands from EVERY stop branch as command-space history."""
-    def __init__(self,publisher,policy,clock):self.publisher=publisher;self.policy=policy;self.clock=clock
-    def publish(self,message):
-        self.publisher.publish(message)
-        if abs(message.linear.x)<1.e-9 and abs(message.angular.z)<1.e-9:
-            self.policy.record([0.,0.],self.clock())
-    def __getattr__(self,name):return getattr(self.publisher,name)
-
-
 def candidate_snapshot(info):
     """Detach a candidate now: the vendor reuses its mutable info dictionary."""
     if info is None:return None
@@ -73,55 +36,6 @@ def candidate_snapshot(info):
         if hasattr(value,'detach'):value=value.detach().cpu().numpy()
         result['vel_tensor']=np.asarray(value,float).copy()
     return result
-
-
-def continuous_solution(action,info,robot,dt,policy,now):
-    """Reintegrate bounded first action and whole horizon; caller rechecks ALL.
-
-    The previous command is NOT a measurement of actual vehicle motion. Does
-    not replace actuator feedback, physical braking or final input-age checks.
-    """
-    if robot.kinematics!='acker' or info.get('arrive'):return action,info
-    controls=info['vel_tensor']
-    if hasattr(controls,'detach'):controls=controls.detach().cpu().numpy()
-    controls=np.asarray(controls,float).copy()
-    controls[0]=np.clip(controls[0],-policy.cap,policy.cap)
-    history=getattr(policy,'history',None)
-    last,previous_stamp=history if history is not None else (policy.last,policy.stamp)
-    limits=np.asarray(robot.max_acce,float).reshape(2)
-    feedback=policy.feedback_provider() if policy.feedback_provider is not None else None
-    policy.feedback_snapshot=feedback
-    hard_cap=min(float(info.get('speed_cap_mps',math.inf)),float(np.asarray(robot.max_speed).reshape(2)[0]))
-    for i in range(controls.shape[1]):
-        lower,upper=np.full(2,-math.inf),np.full(2,math.inf)
-        if last is not None:
-            duration=max(0.,min(.5,now-previous_stamp)) if i==0 else dt
-            lower,upper=last-limits*duration,last+limits*duration
-        if i==0 and feedback:
-            for dimension,key in enumerate(('speed_mps','steering_rad')):
-                value=feedback.get(key)
-                if value is not None:
-                    # Intersect, not overwrite, command and measured-motion
-                    # bounds. Disagreement cannot silently create a hard jump.
-                    age_key='age_ms' if dimension==0 else 'steering_age_ms'
-                    horizon=dt+max(0.,float(feedback.get(age_key) or 0.))/1000
-                    lower[dimension]=max(lower[dimension],value-limits[dimension]*horizon)
-                    upper[dimension]=min(upper[dimension],value+limits[dimension]*horizon)
-        if np.any(lower>upper+1.e-9):
-            raise CandidateRejected('motion feedback disagrees with command continuity',dict(feedback=feedback))
-        controls[:,i]=np.clip(controls[:,i],lower,upper)
-        if abs(controls[0,i])>hard_cap+1.e-9:
-            raise CandidateRejected('hard authorized speed cap conflicts with motion continuity')
-        last=controls[:,i]
-    projected=dict(info,vel_tensor=controls)
-    # Persistent obstacle cap is a target reached through physically bounded
-    # deceleration. An explicit camera/vehicle hard authorization is NEVER
-    # exceeded; if incompatible we reject instead of clipping the first action.
-    result_action,result=cap_solution_speed(action,projected,robot,dt,hard_cap)
-    result.update(command_continuity=True,continuity_source=(
-        'wheel_motion_and_command' if feedback and feedback.get('speed_mps') is not None
-        else 'last_sent_command_not_actuator_feedback'),motion_feedback=feedback)
-    return result_action,result
 
 
 def planner_obstacle_input(planner, points):
@@ -145,30 +59,6 @@ def planner_obstacle_input(planner, points):
     return None
 
 
-def check_motion_feedback(policy,action,robot,dt):
-    """Recheck feedback after expensive solve/sweep, immediately before send."""
-    if policy is None or policy.feedback_provider is None:return
-    current=policy.feedback_provider()
-    used=policy.feedback_snapshot or {}
-    policy.publication_feedback=current
-    policy.feedback_degraded_at_publication=[]
-    limits=np.asarray(robot.max_acce,float).reshape(2)
-    command=np.asarray(action,float).reshape(2)
-    for i,key in enumerate(('speed_mps','steering_rad')):
-        value=current.get(key)
-        if used.get(key) is not None and value is None:
-            # Optional motion estimates are not the mandatory scan/pose input.
-            # Expiry/low-rate averaging degrades to already checked command
-            # continuity; it must not manufacture another stop/recovery window.
-            policy.feedback_degraded_at_publication.append(key)
-            continue
-        if value is not None:
-            age_key='age_ms' if i==0 else 'steering_age_ms'
-            horizon=dt+max(0.,float(current.get(age_key) or 0.))/1000
-            if abs(command[i]-value)>limits[i]*horizon+.01:
-                raise AuthorizationChanged('new motion feedback rejects previously prepared action')
-
-
 def pose_snapshot(listener, target, source):
     stamp=listener.getLatestCommonTime(target,source)
     if stamp.to_nsec()<=0:
@@ -189,31 +79,6 @@ class StopRegistry:
     def clear(self,key):
         if key in self.reasons and not self.reasons[key]['latched']:self.reasons.pop(key)
     def snapshot(self):return {k:dict(v) for k,v in self.reasons.items()}
-
-
-def cap_solution_speed(action, info, robot, dt, cap):
-    """Hard post-solve control bound, then reintegrate and recheck ALL motion.
-
-    This is not a change of optimizer weights/ref_speed. Collision/freshness and
-    execution-domain checks MUST run after this function, before publication.
-    """
-    if not math.isfinite(cap) or cap<0:raise InputUnavailable('invalid path speed authorization')
-    if robot.kinematics!='acker':raise ValueError('camera speed contract requires Ackermann model')
-    result=dict(info)
-    velocities=info['vel_tensor']
-    if hasattr(velocities,'detach'):velocities=velocities.detach().cpu().numpy()
-    velocities=np.asarray(velocities,float).copy()
-    velocities[0]=np.clip(velocities[0],-cap,cap)
-    states=[np.asarray(info['opt_state_list'][0],float).copy()]
-    for v,steer in velocities.T:
-        pose=states[-1].copy();yaw=float(pose[2,0])
-        pose[:,0]+=np.array([v*math.cos(yaw)*dt,v*math.sin(yaw)*dt,v*math.tan(steer)/robot.L*dt])
-        states.append(pose)
-    result.update(opt_state_list=states,vel_tensor=velocities,speed_cap_mps=float(cap),speed_retimed=True,
-                  optimizer_action=np.asarray(action,float).reshape(-1).tolist())
-    bounded=np.asarray(action,float).copy()
-    if not info.get('stop') and not info.get('arrive'):bounded=velocities[:,:1].copy()
-    return bounded,result
 
 
 def checked_input_ages(snapshot, now_ns, now_mono, timeout, state_stamp_ns=None):
@@ -270,18 +135,6 @@ def validate_solution(action, info, robot, dt):
             raise ValueError('planner stop returned nonzero action')
     elif robot.kinematics != 'omni' and not np.allclose(action,velocities[:,:1],atol=1.e-4,rtol=0):
         raise ValueError('published action differs from checked trajectory')
-    acceleration = np.asarray(robot.max_acce, float).reshape(2)*dt
-    if np.any(np.abs(np.diff(velocities, axis=1)) > acceleration[:, None]+1.e-4):
-        raise ValueError('optimized control continuity constraint violated')
-    if robot.kinematics == 'acker':
-        predicted = states[:, :-1].copy()
-        predicted[0] += velocities[0]*np.cos(states[2, :-1])*dt
-        predicted[1] += velocities[0]*np.sin(states[2, :-1])*dt
-        predicted[2] += velocities[0]*np.tan(velocities[1])/robot.L*dt
-        residual = states[:, 1:]-predicted
-        residual[2] = np.arctan2(np.sin(residual[2]), np.cos(residual[2]))
-        if np.max(np.abs(residual)) > .05:
-            raise ValueError('optimized kinematic residual exceeds 0.05')
 
 
 def trajectory_clearance(states, points, vertices, margin=.05, spatial_step=.05):
