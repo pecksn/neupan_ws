@@ -2623,7 +2623,8 @@ sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
 
 roslaunch neupan_ros full_system_run.launch outdoor_mode:=true \
   enable_camera_right_path:=true enable_camera_right_control:=true \
-  camera_right_strategy:=segment_cache camera_right_camera_clearance_m:=2.0 \
+  camera_right_strategy:=segment_reference camera_right_camera_clearance_m:=2.0 \
+  camera_right_clearance_min_m:=1.0 camera_right_clearance_max_m:=3.0 \
   camera_right_base_link_height_m:=0.20 \
   enable_hybridnets_overlay:=false enable_rviz:=false
 ```
@@ -2633,7 +2634,8 @@ roslaunch neupan_ros full_system_run.launch outdoor_mode:=true \
 ```bash
 roslaunch neupan_ros full_system_run.launch outdoor_mode:=true \
   enable_camera_right_path:=true enable_camera_right_control:=false \
-  camera_right_strategy:=segment_cache camera_right_camera_clearance_m:=2.0 \
+  camera_right_strategy:=segment_reference camera_right_camera_clearance_m:=2.0 \
+  camera_right_clearance_min_m:=1.0 camera_right_clearance_max_m:=3.0 \
   camera_right_base_link_height_m:=0.20 \
   enable_hybridnets_overlay:=false enable_rviz:=false
 ```
@@ -2650,20 +2652,28 @@ rostopic echo /camera_right/status
 
 ### 核心条件与回退
 
+**2026-10-28当前默认：`segment_reference`粗略稳定参考，约1–3 m内不追2 m。** 参考冻结在OSM的map坐标中；道路观测证据独立保存在odom、随对齐一致重投影。连续确认偏出范围后只生成一次满足转弯/空间变化率限制的过渡，未驶完入段时不因仍未到目标而逐帧改路。路口/转弯评估平顺回OSM，新任务重新评估。普通视觉断流/静态缓存失效不新增危险锁存，保留地图建议不代表续长旧观测或证明未观测道路安全。真实边界危险、定位/扫描时效、完整扫掠及恢复复位不变。以下10月27日合同/逐周期变形说明只适用于兼容`segment_cache`，不能套用为当前普通参考必须满足的许可条件。
+
+三项复核已修：采样间隔与年龄独立，当前1Hz轮里程计仅记区间均速，不当瞬时约束；反馈不足不新增停车。靠右按当前进度/方向选择前方约2–8m证据，不用大量车后缓存压过当前路段，危险检查不缩小。拒绝证据逐轮清空并绑定`cycle_id`，文件名增加轮次，缺数据记`missing_fields`，不取上一轮轨迹。Noetic完整回归663通过、8可选跳过，两个功能包构建通过；需重启原节点生效，仍待实车验收。[本轮报告](videos/neupan_review_three_fixes_20261028/report.md)。
+
+室外规划加入渐进限速保持、首步命令连续性及合格高频位置差分估计，发布前再检查；当前1Hz轮里程计只记录区间均速，真实转角编码器尚未接通，`/odom.twist`固定零或指令回显不能当实际反馈。工作区适配层在PAN每次迭代对完整扫描作车体几何选点，成对重排DUNE特征/障碍点；外部库文件、模型及目标函数未改。两档降速失败最多一次真实重求解。真实旧危险只在连续运动、当前扫描、剩余路线及最终预测都证明不再进入时临时排除，记录保留，返回/失效重新阻塞。拒绝证据写`tracker_logs/neupan_candidate_会话_轮次_序号.json/.npz`，上限64份/会话、1份/秒、队列2份，包含选点、反馈和轮次绑定。[当前状态](PROJECT_ISSUES_CN.md)。
+
+10月28日ROS控制衔接：`neupan_execution.py`只管理同一份原生解的版本、期限、进度和发布，不增加预测器或规划器。求解阻塞时独立线程约10Hz复核最新扫描/位姿并推进剩余控制，不反复重发首步或续期旧解；任务变化、人工切换和显式停车均可撤销。本次复查过期最多完整重绑重查一次；两次仍过期而当前输入健康时可零速立即重算，但不误加断流恢复等待。真实断流保留原窗口。可选远端冲突例外已用含正倒车及转角执行不确定性的方向性占用替代全向圆域，必须有完整实测制动/延迟/转向边界；目前未填，不能用测试夹具上线，整段合格候选不新增门槛。原0.5s超时、原生停车及内部故障保护不放宽。原`/neupan/runtime`及JSONL增加重绑次数/年龄、冲突分类和`reference_receipt`路径装载回执，区分生产、消费与实际跟踪。需重启原规划节点，GPU不改；完整结果和仍待实测项只维护在[问题文档](PROJECT_ISSUES_CN.md)。
+
 检查顺序补充：准备阶段即使耗时550 ms，只要队列里已有可转换的合格新扫描，会在健康检查和输入恢复判断前先刷新扫描及位姿，不因入口旧快照额外停车；求解前同快照绑定和发布最终时效检查保留。原0.5 s时效、恢复窗口、独立故障保持不变。需重启原规划节点加载；[验证报告](videos/neupan_precheck_order_20261027/report.md)不代表动态闭环已验收。
 
 空扫描/扫描绑定补充（2026-10-27）：合法无障碍集通过ROS适配层转为实际库支持的`None`，退役上一帧障碍最小距离/显示点缓存，完整安全扫描及原时间仍保留；NaN、非法扫描及真实断流不作无障碍。准备结束后再刷新队列，从同一快照绑定规划点和完整扫描，再读取求解位姿。`timing.solve_input_ages`与`solve_queued_frames`给出求解绑定状态，最终时效检查不换扫描给旧结果续期。启动命令及0.5 s门限不变，重启原规划节点加载；[验证报告](videos/neupan_scan_binding_20261027/report.md)不替代实车验收。
 
 2026-10-27发布协议：授权版本绑定路线、路径摘要及执行限制，普通心跳续期不替换授权。发布前以最新限速/道路检查真实预测，冲突先零速、下周期重算；重型检查之后，在短锁内复核版本、实际扫描与同历元位姿年龄、授权期限并发布，不借新扫描给旧计算续期。普通缓存失效保留固定odom复查锚点，但不延长旧观测；新鲜观测覆盖原范围后仅允许规划，实际预测及最终时效通过才确认解除。未知范围须人工核查。状态新增`recovery_pending`及已检查授权身份，运行日志区分求解授权和发布检查授权；[离线报告](videos/neupan_publication_fix_20261027/report.md)不替代实车验收。需重启规划与靠右节点，GPU命令不变。
 
-- 新校正需定位安全、JSON和接收器valid信号新鲜。按区段保留真实左约束；左边界短或不交叠的部分可按单右边界处理，但须有真实有效可行驶多边形覆盖车体扫掠，不能外推/伪造左侧，也不能丢弃已知的窄路冲突。控制使用segment_cache，realtime仅作影子对照；GPU整体valid仍须为true。图像保持标定时1920×1080旋转后坐标。
-- GPU/NUC时钟需同步，采集时间不可改成接收时间。segment_cache默认采集年龄不超过800 ms、源龄500 ms；realtime为500/300 ms，未来容差50 ms。接收端另有门控，两端均需满足。
-- 每个路线点需3个不同帧的一致观察，静态道路缓存最多30 s；短暂丢失可复用合法缓存，无缓存回退OSM。新路线/定位异常清理普通缓存；地图校正按实际固定odom道路点位移、角度、变化速率与窗口判断，不直接使用TF原始平移分量。独立危险记录不随这些清理丢失。
-- NeuPAN独立监督心跳，普通超时默认3 s回退OSM，无原路线则停。已知危险区不因断流、缓存重建、新目标编号自动解锁，须新鲜复查原区域及交付路径并由消费者确认。求解中发生的新危险会撤销旧授权。状态看`/neupan/camera_path_guard`，核心停车原因看`/neupan/runtime.stop_reasons`；mux/定位/MCU保护独立保留。
-- 相机中心间距优先2 m，允许1–2 m可行目标并带滞回（`camera_right_clearance_min_m/max_m`）；相对OSM横移仍最多1.5 m、逐周期不超过0.15 m/s，默认5 Hz。取消任意4 m过渡封顶，分开检查最终目标和当步方案；参考点走廊净距0.80 m外加2.5 cm采样量，车体另作完整雷达/区域检查。
-- 慢速过渡绑定路径摘要、odom执行区段和0.5 s有效期；参考速度随授权降低，输出硬限速后重积分整条预测并重新检查。授权终点之外的参考延伸不得执行，预测车体端点余量0.2 m。停车距离估算尚需实车验证，不能据离线激活直接上路。
+- 新校正需定位安全、JSON和接收器valid信号新鲜。按区段保留真实左约束；左边界短或不交叠的部分可按单右边界处理，但须有真实可行驶多边形，不能伪造左侧或丢弃已知窄路冲突。当前使用segment_reference，realtime仅作影子对照；图像保持标定时1920×1080旋转后坐标。
+- GPU/NUC时钟需同步，采集时间不可改成接收时间。segment_reference及兼容segment_cache新观测准入仍为800 ms采集龄/500 ms源龄，未来容差50 ms；30 s静态缓存不是新观测，冻结参考不续期视觉证据。接收端门控独立。
+- 每个路线点需3个不同帧的一致观察，静态道路缓存最多30 s；过期不能获新视觉执行合同。新路线/定位异常清理普通缓存，独立真实危险不丢失。每轮绑定一份TF样本、按TF测量时间计算对齐变化率；约2 s处理间隔不再单独把3.6 cm平滑变化判跳变。
+- 普通参考建议不因相机心跳丢失锁停；原路线不存在则停。已知真实危险不因断流、换任务编号或新候选自动解锁；相应恢复合同仍需消费者实际预测复核。状态看`/neupan/camera_path_guard`，停车原因看`/neupan/runtime.stop_reasons`；mux/定位/MCU保护独立保留。
+- 相机中心间距约1–3 m内保持，不排序追求最近2 m；带0.10 m判断滞回，偏出需连续不同帧确认。相对OSM横移最多1.5 m，默认5 Hz观察，不按每帧几厘米移动参考。空间过渡按8/12/16/24/32 m候选完整检查并保持，长度不可行则保留合格参考，真实危险另行处理。
+- 只有显式视觉执行能力/真实危险恢复才使用0.5 s合同及观测终点限制；有效期不能越过其依赖证据TTL。普通地图建议不受该终点约束，但也不保证未观测区域可通行；后续持续由定位、扫描和规划检查。
 
-OSM 优先处理路口/转弯：读取同一 `osm_map_file` 的道路连接点，检查前方约 8 m 路线转向；处于路口附近或路线转角超过约 20° 时清空视觉缓存、沿原 OSM 路线行驶，不强制保持相机中心 2 m。右边界暂时不清晰只允许复用有效的已观察缓存，没有缓存就回到 OSM。
+OSM优先处理路口/转弯：仍读取同一地图并检查前方约8 m、约20°路线变化；停止新增不相干靠右段并评估空间衔接，不强制2 m。暂时无边界可以保持普通地图建议，不能把旧观测改成新证据。真实危险不因该策略自动解除。
 
 返程掉头（2026-10-16）：室外 OSM 直连默认启用 `enable_outdoor_start_connector:=true`、`outdoor_connection_planner:=hybrid_astar`。只有新路线接入处的行驶方向与车头夹角 ≥135°、需要掉头时，才用共享 C++ Hybrid A* 在 16×16 m、0.1 m 分辨率的局部图中搜索仅前进连接段，再接回原路线并保留终点。距离按连续路线段计算，仅作诊断，不再触发搜索。其他路线保持原 NeuPAN 跟踪、局部避障及扫描/定位保护，不新增距离、道路或掉头观测准入门槛；普通起步、同向偏移、90° 转弯不受影响。已移除先前的 20°/2 m 普通接回扩展及两个参数。掉头搜索预算 1 s、最多 12000 次迭代；等待期间停车，返回后用最新且采集 TF 对齐的扫描复查完整路径。正常路段仍走原 OSM A*，不是整段栅格重规划；不要打开旧 `outdoor_use_hybrid_astar` 分支。旧方案对照可设置 `outdoor_connection_planner:=dubins`，失败不会自动切换方案。
 

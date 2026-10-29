@@ -7,7 +7,7 @@
   <arg name="tire_width_m" default="0.08" doc="胎宽暂取仿真估计，实车需确认" />
   <arg name="right_wheel_lateral_offset_m" default="-1" doc="中心到右轮外沿覆盖值；-1按轮距和胎宽计算" />
   <arg name="wheel_geometry_verified" default="false" />
-  <arg name="strategy" default="segment_cache" />
+  <arg name="strategy" default="segment_reference" />
   <arg name="processing_rate_hz" default="5.0" />
   <arg name="vehicle_config_file" default="" />
   <arg name="min_confidence" default="0.60" />
@@ -17,7 +17,7 @@
   <arg name="distance_reference" default="camera_center" />
   <arg name="camera_clearance_m" default="2.0" />
   <arg name="camera_clearance_min_m" default="1.0" />
-  <arg name="camera_clearance_max_m" default="2.0" />
+  <arg name="camera_clearance_max_m" default="3.0" />
   <arg name="base_link_height_m" default="0.20" />
   <arg name="osm_file" default="/home/nuc/lxw/ros_maps/map.osm" />
   <arg name="map_origin_lat" default="23.0398" />

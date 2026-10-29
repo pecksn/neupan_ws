@@ -22,7 +22,7 @@
     <arg name="camera_right_tire_width_m" default="0.08" doc="轮胎宽度暂取仿真值，需实车确认" />
     <arg name="camera_right_wheel_offset_m" default="-1" doc="中心至右轮外沿覆盖值；-1按轮距及胎宽换算" />
     <arg name="camera_right_wheel_geometry_verified" default="false" />
-    <arg name="camera_right_strategy" default="segment_cache" doc="segment_cache: 道路段确认后缓存；realtime: 第一种实时修正" />
+    <arg name="camera_right_strategy" default="segment_reference" doc="segment_reference: 稳定粗略参考建议；segment_cache: 旧显式视觉执行合同" />
     <arg name="camera_right_processing_rate_hz" default="5.0" />
     <arg name="camera_right_min_confidence" default="0.60" />
     <arg name="camera_right_timeout_sec" default="-1" />
@@ -31,7 +31,7 @@
     <arg name="camera_right_distance_reference" default="camera_center" doc="默认按相机光学中心的道路横向间距" />
     <arg name="camera_right_camera_clearance_m" default="2.0" doc="相机光学中心到右边界的平面横向目标间距" />
     <arg name="camera_right_clearance_min_m" default="1.0" />
-    <arg name="camera_right_clearance_max_m" default="2.0" />
+    <arg name="camera_right_clearance_max_m" default="3.0" />
     <arg name="camera_right_base_link_height_m" default="0.20" doc="用户确认base_link离地约20cm；不改变传感器安装TF" />
     <arg name="enable_lidar_curb_log" default="true" doc="路缘启用时持续写入独立JSONL日志"/>
     <arg name="enable_hybridnets_receiver" default="true" doc="随全系统启动GPU推理JSON接收；原视频由独立服务接收"/>
@@ -171,6 +171,10 @@
     <arg name="neupan_scan_transform_timeout" default="0.5" />
     <arg name="neupan_scan_recovery_stable_sec" default="0.5" />
     <arg name="neupan_scan_filtered_empty_timeout" default="2.0" />
+    <arg name="neupan_geometric_obstacle_selection" default="true" doc="室外车体几何风险选点；false用于旧抽点对照，完整扫描复查始终保留" />
+    <arg name="neupan_steering_feedback_topic" default="" doc="可选真实转角编码器JointState话题；当前没有此反馈，不可填指令回显" />
+    <arg name="neupan_checked_execution" default="true" doc="独立复核/派发同一份NeuPAN有限执行段；不增加规划器" />
+    <arg name="neupan_execution_stopping_calibration_file" default="" doc="可选实测停车余量YAML，空值保持完整扫掠；禁止用测试夹具上线" />
 
     <!-- ==================== 2. 底盘驱动 & 状态估计 (EKF) ==================== -->
     <include file="$(find robot_base_driver)/launch/navigation_core.launch">
@@ -510,6 +514,23 @@
         <group unless="$(arg outdoor_use_hybrid_astar)">
             <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
                 <param name="outdoor_reference_spacing_m" value="0.50" />
+                <param name="geometric_obstacle_selection" value="$(arg neupan_geometric_obstacle_selection)" />
+                <param name="motion_feedback_odom_topic" value="/odom" />
+                <!-- 1Hz位置差分仅作区间均速诊断，不是0.1s瞬时执行反馈。 -->
+                <param name="motion_feedback_timeout_sec" value="1.5" />
+                <param name="motion_feedback_max_sample_interval_sec" value="1.5" />
+                <param name="motion_feedback_instant_max_window_sec" value="0.2" />
+                <param name="motion_feedback_instant_timeout_sec" value="0.2" />
+                <!-- 仅分离已接受NeuPAN解的复核/执行，不增加规划器；mux仍为0.5s。 -->
+                <param name="checked_execution_enabled" value="$(arg neupan_checked_execution)" />
+                <rosparam if="$(eval arg('neupan_execution_stopping_calibration_file') != '')"
+                          command="load" file="$(arg neupan_execution_stopping_calibration_file)"
+                          param="execution_stopping_calibration" />
+                <!-- MCU目前没有转角编码器；不得把指令回显当作测量。 -->
+                <param name="steering_feedback_topic" value="$(arg neupan_steering_feedback_topic)" />
+                <!-- 未标定前只保留完整预测检查，不凭空填制动参数。 -->
+                <param name="stopping_shadow_delay_sec" value="0.0" />
+                <param name="stopping_shadow_deceleration_mps2" value="0.0" />
                 <param name="outdoor_start_connector_enabled" value="$(eval arg('enable_outdoor_start_connector') and arg('outdoor_initial_path_topic') == '/osm_global_path')" />
                 <param name="outdoor_connection_planner" value="$(arg outdoor_connection_planner)" />
                 <param name="outdoor_connection_budget_sec" value="$(arg outdoor_connection_budget_sec)" />

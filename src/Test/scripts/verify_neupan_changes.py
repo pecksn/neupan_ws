@@ -312,6 +312,7 @@ def main():
     parser.add_argument('--update-snapshots',action='store_true')
     parser.add_argument('--recorded-videos',action='store_true')
     parser.add_argument('--unit-tests',action='store_true')
+    parser.add_argument('--test-pattern',default='test_*.py',help='unit-test discovery pattern; full suite by default')
     parser.add_argument('--publication-regression',action='store_true')
     parser.add_argument('--bags',action='store_true');args=parser.parse_args()
     if args.publication_regression:
@@ -352,10 +353,12 @@ def main():
     if args.unit_tests:
         import unittest
         sys.path.append('/usr/lib/python3/dist-packages')
-        result=unittest.TextTestRunner(verbosity=0).run(unittest.defaultTestLoader.discover(str(ROOT/'src/Test/tests'),pattern='test_*.py'))
-        files=[ROOT/'src/neupan_ros/src'/name for name in ('neupan_core.py','neupan_safety.py','neupan_diagnostics.py')]
+        result=unittest.TextTestRunner(verbosity=0).run(unittest.defaultTestLoader.discover(str(ROOT/'src/Test/tests'),pattern=args.test_pattern))
+        files=[ROOT/'src/neupan_ros/src'/name for name in ('neupan_core.py','neupan_safety.py','neupan_diagnostics.py','neupan_navigation.py','neupan_execution.py')]
         files += [ROOT/'src/osm_map_handler/src'/name for name in ('osm_camera_path_refinement.py','osm_camera_path_guard.py')]
         record=dict(tests=result.testsRun,passed=result.testsRun-len(result.skipped)-len(result.failures)-len(result.errors),
+            test_pattern=args.test_pattern,
+            environment=dict(executable=sys.executable,python=sys.version,ros_distro=__import__('os').environ.get('ROS_DISTRO')),
             successful=result.wasSuccessful(),skipped=[dict(test=str(test),reason=reason) for test,reason in result.skipped],
             failures=[str(test) for test,_ in result.failures],errors=[str(test) for test,_ in result.errors],
             implementation_sha256={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files},

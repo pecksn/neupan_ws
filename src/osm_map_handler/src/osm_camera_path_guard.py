@@ -38,6 +38,8 @@ def authorization_identity(status):
         'active','control_path_digest','corridor_stop_required','corridor_verified')}
     fields['contract']={key:value for key,value in contract.items() if key!='expires_ns'}
     fields['hazards']=status.get('hazard_regions') or detail.get('hazard_regions') or {}
+    fields['reference_role']=detail.get('reference_role','visual_execution')
+    fields['reference_version']=detail.get('reference_version')
     try:return hashlib.sha256(json.dumps(fields,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
     except (TypeError,ValueError):return None
 
@@ -60,6 +62,85 @@ class CameraPathGuard:
         self.authorization_generation=0
         self.authorization_id=None
         self.pending_recovery=None
+        self.scoped_hazards={}
+        self.scope_trace=None
+        self.scope_valid_until_ns=0
+        self.scoped_prediction_generation=None
+
+    def invalidate_hazard_scope(self):
+        with self.lock:
+            if self.scoped_hazards:self.authorization_generation+=1
+            self.scoped_hazards={};self.scope_trace=None;self.scope_valid_until_ns=0
+            self.scoped_prediction_generation=None
+
+    def update_hazard_scope(self,pose,paths,stamp_ns,now_ns,radius=4.):
+        """Temporarily exclude *disjoint* historical regions, never delete them.
+
+        Caller independently checks the current full scan/body and exact TF
+        epoch first. Requires continuous measured travel plus ALL remaining
+        candidate and OSM segments to stay outside a conservative region.
+        Route change/re-entry, odom discontinuity or expiry reactivates it.
+        """
+        with self.lock:
+            old_scope=set(self.scoped_hazards)
+            self.scoped_hazards={};self.scope_valid_until_ns=0
+            self.scoped_prediction_generation=None
+            pose=np.asarray(pose,float)
+            if (pose.shape!=(3,) or not np.isfinite(pose).all() or radius<4.
+                    or not 0<=now_ns-stamp_ns<=500000000 or len(paths)!=2):
+                self.scope_trace=None;return
+            old=self.scope_trace
+            distance=duration=0.
+            if old is not None:
+                elapsed=(stamp_ns-old['stamp_ns'])/1.e9
+                step=float(np.linalg.norm(pose[:2]-old['pose'][:2]))
+                yaw_step=abs(math.atan2(math.sin(pose[2]-old['pose'][2]),math.cos(pose[2]-old['pose'][2])))
+                if (0<=elapsed<=.5 and step<=2.*elapsed+.01 and yaw_step<=math.radians(90)*elapsed+.001
+                        and old['route']==self.original_key):
+                    distance=old['distance']+step;duration=old['duration']+elapsed
+            self.scope_trace=dict(pose=pose.copy(),stamp_ns=stamp_ns,distance=distance,duration=duration,route=self.original_key)
+            remaining=[]
+            for path in paths:
+                path=np.asarray(path,float)
+                if path.ndim!=2 or path.shape[1]!=2 or len(path)<2 or not np.isfinite(path).all():return
+                near=int(np.argmin(np.linalg.norm(path-pose[:2],axis=1)))
+                if np.linalg.norm(path[near]-pose[:2])>2.:return
+                # A crossing/returning route has ambiguous nearest progress;
+                # do not retire anything from geometric nearest alone.
+                close=np.flatnonzero(np.linalg.norm(path-pose[:2],axis=1)<2.)
+                if len(close)>1 and np.any(np.diff(close)>1):return
+                remaining.append(path[max(0,near-2):])
+            if distance>=1. and duration>=1.:
+                forward=np.array([math.cos(pose[2]),math.sin(pose[2])])
+                for identity,region in self.hazard_regions.items():
+                    if region.get('kind')!='boundary':continue
+                    point=np.asarray(region.get('region_odom'),float)
+                    if point.shape!=(2,) or not np.isfinite(point).all():continue
+                    if float((point-pose[:2])@forward)>=-radius:continue
+                    minimum=min(polyline_distance(point,path) for path in remaining)
+                    if minimum>radius:
+                        self.scoped_hazards[identity]=dict(radius_m=radius,min_remaining_route_distance_m=minimum,
+                            measured_travel_m=distance,continuous_duration_sec=duration,
+                            checked_at_ns=stamp_ns,reason='past_region_disjoint_from_both_remaining_routes')
+                self.scope_valid_until_ns=stamp_ns+500000000
+            if old_scope!=set(self.scoped_hazards):self.authorization_generation+=1
+
+    def scope_allows_route(self,now_ns):
+        detail=(self.status or {}).get('inference_diagnostics') or {}
+        return bool(detail.get('reference_role')=='advisory' and self.hazard_regions
+            and set(self.scoped_hazards)==set(self.hazard_regions)
+            and now_ns is not None and 0<=self.scope_valid_until_ns-now_ns<=500000000
+            and not detail.get('recovery_unlocated_required') and not detail.get('hazard_capacity_exceeded'))
+
+    def check_scoped_prediction(self,states_odom,now_ns):
+        """Independent final actual-prediction check; no history is removed."""
+        with self.lock:
+            if not self.scope_allows_route(now_ns):return False
+            points=np.asarray(states_odom,float)[:,:2]
+            clear=all(polyline_distance(np.asarray(self.hazard_regions[k]['region_odom']),points)>v['radius_m']
+                      for k,v in self.scoped_hazards.items())
+            self.scoped_prediction_generation=self.authorization_generation if clear else None
+            return clear
 
     def original_cb(self, path):
         with self.lock:
@@ -69,6 +150,7 @@ class CameraPathGuard:
             self.original = path if self.original_key else None
             self.original_digest = path_digest(path) if self.original_key else None
             if old!=(self.original_key,self.original_digest):self.authorization_generation+=1
+            if old!=(self.original_key,self.original_digest):self.invalidate_hazard_scope()
 
     def candidate_cb(self, path):
         with self.lock:
@@ -112,6 +194,7 @@ class CameraPathGuard:
             age = None if self.received is None else now-self.received
             status = self.status or {}
             detail=status.get('inference_diagnostics') or {}
+            advisory=detail.get('reference_role')=='advisory'
             matches=(self.original_key is not None and status.get('control_enabled') is True
                 and status.get('route_stamp_ns')==self.original_key[1]
                 and status.get('route_frame_id')==self.original_key[0])
@@ -154,12 +237,16 @@ class CameraPathGuard:
             source, reason = 'osm', 'camera_heartbeat_missing'
             if self.original is None:
                 source, reason = 'stop', 'original_route_missing_or_invalid'
-            elif self.corridor_hold_key is not None and self.pending_recovery is None:
+            elif (self.corridor_hold_key is not None and self.pending_recovery is None
+                  and not self.scope_allows_route(now_ns)):
                 source, reason = 'stop', ('camera_recovery_scope_unknown_manual_check' if detail.get('recovery_unlocated_required')
                                           else 'camera_hazard_capacity_exceeded' if detail.get('hazard_capacity_exceeded')
                                           else 'camera_corridor_or_transition_unsafe')
             elif age is None or not 0 <= age <= self.timeout:
-                reason = 'camera_heartbeat_stale'
+                if (advisory and matches and self.candidate_key==self.original_key
+                        and status.get('control_path_digest')==self.candidate_digest):
+                    source,reason='camera','advisory_reference_held_without_live_vision'
+                else:reason = 'camera_heartbeat_stale'
             elif status.get('control_enabled') is not True:
                 reason = 'camera_control_not_ready'
             elif (self.candidate_key != self.original_key or
@@ -170,7 +257,8 @@ class CameraPathGuard:
                 reason = 'camera_path_not_confirmed_by_heartbeat'
             else:
                 source, reason = 'camera', ('camera_recovery_pending_execution' if self.pending_recovery else 'ok')
-            needs_contract=bool(status.get('active') or self.pending_recovery)
+            needs_contract=bool((status.get('active') and not advisory) or self.pending_recovery
+                or (advisory and detail.get('execution_contract')))
             contract=detail.get('execution_contract') if source=='camera' and needs_contract else None
             if source=='camera' and needs_contract and not valid_contract(contract,status.get('control_path_digest')):
                 source,reason='stop','camera_execution_contract_missing_or_invalid'
@@ -178,12 +266,16 @@ class CameraPathGuard:
             path = None if source=='stop' else self.candidate if source == 'camera' else self.original
             digest = self.candidate_digest if source == 'camera' else self.original_digest
             state = {'source': source, 'reason': reason, 'heartbeat_age_sec': age,
+                     'reference_role':'advisory' if advisory else 'visual_execution',
+                     'reference_version':detail.get('reference_version'),
                      'authorization_generation':self.authorization_generation,
                      'authorization_id':self.authorization_id,
                      'original_path_digest':self.original_digest,
                      'timeout_sec': self.timeout,
                      'execution_contract':contract,
                      'hazard_regions':dict(self.hazard_regions),
+                     'hazards_outside_current_route':copy.deepcopy(self.scoped_hazards),
+                     'hazard_history_retained':bool(self.scoped_hazards),
                      'released_hazard_ids':list(self.released_hazard_ids),
                      'recovery_pending':self.pending_recovery is not None,
                      'safety_generation':self.safety_generation,
@@ -200,6 +292,7 @@ class CameraPathGuard:
         """Called under publication lock AFTER actual prediction/age checks."""
         with self.lock:
             if self.corridor_hold_key is None:return True
+            if self.scope_allows_route(now_ns):return self.scoped_prediction_generation==generation==self.authorization_generation
             pending=self.pending_recovery
             if (not pending or generation!=self.authorization_generation or safety_generation!=self.safety_generation
                     or pending['generation']!=generation or pending['safety_generation']!=safety_generation
@@ -207,6 +300,14 @@ class CameraPathGuard:
             self.released_hazard_ids=list(self.hazard_regions)
             self.hazard_regions.clear();self.corridor_hold_key=None;self.pending_recovery=None
             return True
+
+
+def polyline_distance(point,path):
+    path=np.asarray(path,float)
+    if len(path)<2 or not np.isfinite(path).all():return -math.inf
+    edges=np.diff(path,axis=0);delta=np.asarray(point)-path[:-1]
+    t=np.clip(np.sum(delta*edges,axis=1)/np.maximum(np.sum(edges**2,axis=1),1.e-12),0,1)
+    return float(np.linalg.norm(delta-t[:,None]*edges,axis=1).min())
 
 
 def valid_contract(contract,digest):

@@ -1,4 +1,9 @@
-"""Pure numeric post-solve checks; never publishes or modifies solver output."""
+"""ROS post-solve checks, detached-control corrections and publication helpers.
+
+continuous_solution/cap_solution_speed modify control COPIES and reintegrate
+them for verification; ZeroAwarePublisher tracks real zero publications. This
+is neither a read-only utility nor another NeuPAN optimiser.
+"""
 import math
 import numpy as np
 
@@ -7,12 +12,116 @@ class InputUnavailable(ValueError):
     """Temporary input freshness failure; never releases other stop reasons."""
 
 
+class ResultExpired(InputUnavailable):
+    """A bound input aged out; current live input health is checked separately."""
+
+
 class AuthorizationChanged(ValueError):
     """Healthy inputs, but the solved command no longer has current authority."""
 
 
 class CandidateRejected(ValueError):
     """A well-formed prediction is unsafe; retry, do not latch an internal fault."""
+    def __init__(self,message,details=None):
+        super().__init__(message);self.details=details or {}
+
+
+class MotionContinuity:
+    """Persistent cap and LAST SENT command continuity, not actuator feedback."""
+    def __init__(self):
+        self.cap=math.inf;self.good=0;self.last=None;self.stamp=None
+        self.history=None
+        self.feedback_provider=None
+        self.feedback_snapshot=None
+    def restrict(self,speed):
+        self.cap=min(self.cap,max(0.,float(speed)));self.good=0
+    def record(self,command,now):
+        value=np.asarray(command,float).reshape(2).copy()
+        self.last=value;self.stamp=now
+        self.history=(value,float(now))  # One atomic last-SENT command/time pair.
+    def accepted(self,now,acceleration,nominal,clearance=None):
+        # Release hysteresis only, NOT a new collision/STOP threshold. A valid
+        # empty scan has clearance=None under the existing no-obstacle contract.
+        if clearance is not None and clearance<.15:
+            self.good=0;return
+        self.good+=1
+        if self.good>=3 and math.isfinite(self.cap):
+            elapsed=0. if self.stamp is None else max(0.,min(.25,now-self.stamp))
+            self.cap=min(nominal,self.cap+acceleration*elapsed)
+            if self.cap>=nominal-1.e-6:self.cap=math.inf
+
+
+class ZeroAwarePublisher:
+    """Retain zero commands from EVERY stop branch as command-space history."""
+    def __init__(self,publisher,policy,clock):self.publisher=publisher;self.policy=policy;self.clock=clock
+    def publish(self,message):
+        self.publisher.publish(message)
+        if abs(message.linear.x)<1.e-9 and abs(message.angular.z)<1.e-9:
+            self.policy.record([0.,0.],self.clock())
+    def __getattr__(self,name):return getattr(self.publisher,name)
+
+
+def candidate_snapshot(info):
+    """Detach a candidate now: the vendor reuses its mutable info dictionary."""
+    if info is None:return None
+    result=dict(info)
+    for name in ('opt_state_list','ref_state_list'):
+        if info.get(name) is not None:
+            result[name]=[np.asarray(value,float).copy() for value in info[name]]
+    if info.get('vel_tensor') is not None:
+        value=info['vel_tensor']
+        if hasattr(value,'detach'):value=value.detach().cpu().numpy()
+        result['vel_tensor']=np.asarray(value,float).copy()
+    return result
+
+
+def continuous_solution(action,info,robot,dt,policy,now):
+    """Reintegrate bounded first action and whole horizon; caller rechecks ALL.
+
+    The previous command is NOT a measurement of actual vehicle motion. Does
+    not replace actuator feedback, physical braking or final input-age checks.
+    """
+    if robot.kinematics!='acker' or info.get('arrive'):return action,info
+    controls=info['vel_tensor']
+    if hasattr(controls,'detach'):controls=controls.detach().cpu().numpy()
+    controls=np.asarray(controls,float).copy()
+    controls[0]=np.clip(controls[0],-policy.cap,policy.cap)
+    history=getattr(policy,'history',None)
+    last,previous_stamp=history if history is not None else (policy.last,policy.stamp)
+    limits=np.asarray(robot.max_acce,float).reshape(2)
+    feedback=policy.feedback_provider() if policy.feedback_provider is not None else None
+    policy.feedback_snapshot=feedback
+    hard_cap=min(float(info.get('speed_cap_mps',math.inf)),float(np.asarray(robot.max_speed).reshape(2)[0]))
+    for i in range(controls.shape[1]):
+        lower,upper=np.full(2,-math.inf),np.full(2,math.inf)
+        if last is not None:
+            duration=max(0.,min(.5,now-previous_stamp)) if i==0 else dt
+            lower,upper=last-limits*duration,last+limits*duration
+        if i==0 and feedback:
+            for dimension,key in enumerate(('speed_mps','steering_rad')):
+                value=feedback.get(key)
+                if value is not None:
+                    # Intersect, not overwrite, command and measured-motion
+                    # bounds. Disagreement cannot silently create a hard jump.
+                    age_key='age_ms' if dimension==0 else 'steering_age_ms'
+                    horizon=dt+max(0.,float(feedback.get(age_key) or 0.))/1000
+                    lower[dimension]=max(lower[dimension],value-limits[dimension]*horizon)
+                    upper[dimension]=min(upper[dimension],value+limits[dimension]*horizon)
+        if np.any(lower>upper+1.e-9):
+            raise CandidateRejected('motion feedback disagrees with command continuity',dict(feedback=feedback))
+        controls[:,i]=np.clip(controls[:,i],lower,upper)
+        if abs(controls[0,i])>hard_cap+1.e-9:
+            raise CandidateRejected('hard authorized speed cap conflicts with motion continuity')
+        last=controls[:,i]
+    projected=dict(info,vel_tensor=controls)
+    # Persistent obstacle cap is a target reached through physically bounded
+    # deceleration. An explicit camera/vehicle hard authorization is NEVER
+    # exceeded; if incompatible we reject instead of clipping the first action.
+    result_action,result=cap_solution_speed(action,projected,robot,dt,hard_cap)
+    result.update(command_continuity=True,continuity_source=(
+        'wheel_motion_and_command' if feedback and feedback.get('speed_mps') is not None
+        else 'last_sent_command_not_actuator_feedback'),motion_feedback=feedback)
+    return result_action,result
 
 
 def planner_obstacle_input(planner, points):
@@ -34,6 +143,30 @@ def planner_obstacle_input(planner, points):
     nrmp=getattr(pan,'nrmp_layer',None)
     if nrmp is not None:nrmp.obstacle_points=None
     return None
+
+
+def check_motion_feedback(policy,action,robot,dt):
+    """Recheck feedback after expensive solve/sweep, immediately before send."""
+    if policy is None or policy.feedback_provider is None:return
+    current=policy.feedback_provider()
+    used=policy.feedback_snapshot or {}
+    policy.publication_feedback=current
+    policy.feedback_degraded_at_publication=[]
+    limits=np.asarray(robot.max_acce,float).reshape(2)
+    command=np.asarray(action,float).reshape(2)
+    for i,key in enumerate(('speed_mps','steering_rad')):
+        value=current.get(key)
+        if used.get(key) is not None and value is None:
+            # Optional motion estimates are not the mandatory scan/pose input.
+            # Expiry/low-rate averaging degrades to already checked command
+            # continuity; it must not manufacture another stop/recovery window.
+            policy.feedback_degraded_at_publication.append(key)
+            continue
+        if value is not None:
+            age_key='age_ms' if i==0 else 'steering_age_ms'
+            horizon=dt+max(0.,float(current.get(age_key) or 0.))/1000
+            if abs(command[i]-value)>limits[i]*horizon+.01:
+                raise AuthorizationChanged('new motion feedback rejects previously prepared action')
 
 
 def pose_snapshot(listener, target, source):
@@ -92,7 +225,7 @@ def checked_input_ages(snapshot, now_ns, now_mono, timeout, state_stamp_ns=None)
     state_age=None if state_stamp_ns is None else (now_ns-state_stamp_ns)/1.e9
     values=(measurement_age,receive_age) if state_age is None else (measurement_age,receive_age,state_age)
     if not all(math.isfinite(v) and 0 <= v <= timeout for v in values):
-        raise InputUnavailable('checked inputs expired at publication: scan=%.6fs receive=%.6fs state=%s' % (
+        raise ResultExpired('checked inputs expired at publication: scan=%.6fs receive=%.6fs state=%s' % (
             measurement_age,receive_age,str(state_age)))
     return dict(scan_measurement_age_ms=measurement_age*1000,scan_receive_age_ms=receive_age*1000,
                 state_age_ms=None if state_age is None else state_age*1000,scan_stamp_ns=int(snapshot[1]))
@@ -191,5 +324,8 @@ def trajectory_clearance(states, points, vertices, margin=.05, spatial_step=.05)
             clearance = float(distance.min())-spatial_step/2
             minimum = min(minimum, clearance); checked += 1
             if clearance < margin:
-                raise CandidateRejected('trajectory unsafe: clearance %.4fm at step %d fraction %.3f' % (clearance, index, fraction))
+                collision=int(np.argmin(distance))
+                raise CandidateRejected('trajectory unsafe: clearance %.4fm at step %d fraction %.3f' % (clearance, index, fraction),
+                    dict(clearance_m=clearance,step=index,fraction=float(fraction),
+                         point_map=points[:,collision].tolist(),point_body=local[:,collision].tolist(),body_pose=pose.tolist()))
     return dict(min_clearance_m=minimum, checked_points=points.shape[1], checked_poses=checked)

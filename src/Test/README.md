@@ -1,5 +1,40 @@
 # test_motion_tools
 
+最新文档方案跟进：复查过期最多完整重绑复查一次，方向性停车占用覆盖正倒车/转角误差与变化率，靠右回放关联生产、消费与已有跟踪记录。当前专项51项，完整Noetic回归及实测缺口统一见[问题文档](../../PROJECT_ISSUES_CN.md#本节软件验证与证据)；不另建日期版整改说明。`verify_stable_navigation.py`支持重复`--camera-bag`和`--json-only`，按录制开始时间排序分片，输出JSON/NPZ而非控制话题。
+
+2026-10-28控制衔接专项：`tests/test_checked_execution.py`覆盖结果过期不插零速、真实断流、有限解进度/到期、新障碍、手动切换、原生停车、版本并发、新解接管、最终年龄复查、测量约束及真实部署模型接口；均为离线假发布器。原生求解器保持唯一，制动参数夹具不是车辆标定。完整结果见[本轮报告](../../videos/neupan_checked_execution_20261028/report.md)。
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests \
+  --output-dir videos/neupan_checked_execution_20261028/noetic
+```
+
+2026-10-28三项复核整改：`tests/test_issue_review_followups.py`新增16项（1Hz平均/瞬时分离、局部前方证据、两轮拒绝上下文及缺失数据），完整Noetic回归671项：663通过、8可选跳过；两个功能包构建通过。原322条轮里程计296条可生成区间均速，瞬时反馈仍为0，不能当高频硬件测量。相机原包154轮无新增危险锁停，但没有新横向修正。见[本轮报告](../../videos/neupan_review_three_fixes_20261028/report.md)。
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests \
+  --output-dir videos/neupan_review_three_fixes_20261028/noetic
+python3 src/Test/scripts/verify_stable_navigation.py --camera --feedback \
+  --output-dir videos/neupan_review_three_fixes_20261028/recorded
+```
+
+2026-10-28前轮续改：`tests/test_navigation_completion.py`覆盖几何选点/特征配对、真实库模型接口、轮里程计运动估计、反馈发布前复查、减速目标与硬合同区分、历史危险范围及实际run最终确认。真实转角和制动标定仍缺。该轮主机报告保留[当时限制](../../videos/neupan_navigation_completion_host_20261028/report.md)；最终Noetic构建/全回归已在上方本轮补齐。
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests \
+  --test-pattern test_navigation_completion.py \
+  --output-dir videos/neupan_navigation_completion专项
+```
+
+省略`--test-pattern`才是完整回归。JSON记录具体模式、Python解释器/环境及源码指纹。
+
+2026-10-28稳定参考/连续限速：新增`tests/test_stable_reference_policy.py`28项，完整625项：617通过、8项可选跳过。覆盖1–3 m保持、空间过渡冻结/路宽变化、缓存过期不生成假危险、真实危险保护、对齐TF采样、建议/合同消费者分离、连续命令/限速保持、真实重求解、计算过期分类及异步有界证据。今天8个原始分片重算输出到`videos/neupan_stable_reference_20261028`；相机为实际生产/消费原位姿回放，遇障碍是静态真实优化器重算，不是缺失原解/热启动的精确重演或车辆闭环。
+
+```bash
+python3 src/Test/scripts/verify_neupan_changes.py --unit-tests --output-dir videos/neupan_stable_reference_20261028
+python3 src/Test/scripts/verify_stable_navigation.py --camera --obstacles --output-dir videos/neupan_stable_reference_20261028
+```
+
 2026-10-27检查顺序补充：扫描绑定专项增加4项550 ms准备、健康前刷新及输入恢复分支测试，共14项；完整597项：589通过、8项可选跳过。最新报告独立放在`videos/neupan_precheck_order_20261027/`，不覆盖前轮报告；以下旧条目为各自版本结果。
 
 ```bash

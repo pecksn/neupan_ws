@@ -15,7 +15,8 @@ from test_camera_right_refinement import namespace as n
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT/'src/neupan_ros/src'))
 from neupan_safety import (checked_input_ages, validate_solution, trajectory_clearance,
-    pose_snapshot, StopRegistry, InputUnavailable,AuthorizationChanged,CandidateRejected,cap_solution_speed,planner_obstacle_input)
+    pose_snapshot, StopRegistry, InputUnavailable,ResultExpired,AuthorizationChanged,CandidateRejected,cap_solution_speed,planner_obstacle_input,MotionContinuity,continuous_solution,check_motion_feedback,candidate_snapshot,reference_offsets)
+from neupan_navigation import braking_envelope
 sys.path.insert(0,str(ROOT/'src/osm_map_handler/src'))
 from osm_camera_path_guard import CameraPathGuard, path_digest,check_execution_contract
 
@@ -24,7 +25,7 @@ class CommandBoundaryTests(unittest.TestCase):
     def run_loop(self, empty_error=False, delay=0., delay_at='check', newer_scan=False, disk_error=False,contract=None,recover=False,setup_hook=None):
         source=ROOT/'src/neupan_ros/src/neupan_core.py'
         original=next(x for x in ast.parse(source.read_text()).body if isinstance(x,ast.ClassDef) and x.name=='neupan_core')
-        body=[x for x in original.body if isinstance(x,ast.FunctionDef) and x.name in ('run','generate_twist_msg','hold_planner_fault','temporary_input_stop','check_camera_execution','publish_stop_snapshot','cycle_metrics','candidate_stop')]
+        body=[x for x in original.body if isinstance(x,ast.FunctionDef) and x.name in ('run','generate_twist_msg','hold_planner_fault','temporary_input_stop','check_camera_execution','publish_stop_snapshot','cycle_metrics','candidate_stop','capture_candidate_rejection','stopping_shadow','refresh_camera_hazard_scope','continue_checked_execution','trajectory_execution_check','final_execution_input_check')]
         selected=ast.fix_missing_locations(ast.Module(body=[ast.ClassDef(name='Run',bases=[],keywords=[],body=body,decorator_list=[])],type_ignores=[]))
         clock=NS(value=1000.,loops=0)
         class Stamp:
@@ -59,6 +60,11 @@ class CommandBoundaryTests(unittest.TestCase):
             pose_snapshot=pose_snapshot,StopRegistry=StopRegistry,InputUnavailable=InputUnavailable,AuthorizationChanged=AuthorizationChanged,CandidateRejected=CandidateRejected,threading=threading,
             cap_solution_speed=cap_solution_speed,check_execution_contract=check_execution_contract,
             planner_obstacle_input=planner_obstacle_input,
+            MotionContinuity=MotionContinuity,continuous_solution=continuous_solution,ResultExpired=ResultExpired,math=math,
+            reference_offsets=reference_offsets,
+            braking_envelope=braking_envelope,
+            check_motion_feedback=check_motion_feedback,
+            candidate_snapshot=candidate_snapshot,
             json=json,degrees=math.degrees,sin=math.sin,cos=math.cos,atan2=math.atan2,
             yellow_terminal_text=lambda x:x,red_terminal_text=lambda x:x)
         exec(compile(selected,str(source),'exec'),ns)
