@@ -1229,7 +1229,25 @@ class neupan_core:
         kind, data, path_key = update
         if kind == "path" and path_key[1] < self.minimum_path_stamp:
             return
+        if (kind=='path' and getattr(self,'goal_arrived_state',False)
+                and path_key==self.arrival_path_key):
+            return # A queued/late advisory replacement cannot restart completion.
         spacing = getattr(self, 'outdoor_reference_spacing', 0.)
+        selected=getattr(self,'camera_guard_selected_state',None) or {}
+        source_endpoint=np.asarray(data[-1])[:2].reshape(-1).tolist() if kind=='path' else None
+        advisory_update=(kind=='path' and selected.get('reference_role')=='advisory'
+            and path_key==self.arrival_path_key)
+        connection=selected.get('reference_connection')
+        previous_pose_connection=(getattr(self,'reference_receipt',None) or {}).get('connection_kind')=='measured_pose_c2'
+        pose_connected=False
+        if (kind=='path' and selected.get('source')=='camera' and selected.get('reference_role')=='advisory'
+                and isinstance(connection,dict) and connection.get('kind')=='measured_pose_c2'):
+            first=connection.get('start_index')
+            if (isinstance(first,int) and not isinstance(first,bool) and 0<=first<len(data)-2
+                    and connection.get('prefix_not_for_tracking') is True):
+                # Original prefix was never driven. Load the checked connected
+                # suffix, not its old arc-length progress or a kink behind it.
+                data=data[first:];pose_connected=True
         if kind == 'path' and spacing:
             # Before connector admission: its prefix/progress indices must
             # refer to the final sampling, not an independently resampled turn.
@@ -1282,7 +1300,7 @@ class neupan_core:
             reseed = self.start_connector.reseed
             self.start_connector.reseed = False
         progress = None
-        if (not reseed and self.camera_guard is not None and kind == 'path' and
+        if (not advisory_update and not reseed and not pose_connected and not previous_pose_connection and self.camera_guard is not None and kind == 'path' and
                 path_key == self.arrival_path_key):
             ipath = self.neupan_planner.ipath
             if ipath.curve_index == 0 and ipath.curve_number == 1:
@@ -1300,7 +1318,7 @@ class neupan_core:
         if (getattr(self, 'outdoor_tracking_guard', None) is not None and
                 path_key != self.arrival_path_key):
             self.outdoor_tracking_guard.reset()
-        if reseed:
+        if reseed or pose_connected or previous_pose_connection or advisory_update:
             xy = np.array([p[:2, 0] for p in data])
             self.neupan_planner.ipath.point_index = int(np.argmin(
                 np.linalg.norm(xy-self.robot_state[:2, 0], axis=1)))
@@ -1317,9 +1335,14 @@ class neupan_core:
         # separately from the /neupan_initial_path geometry already recorded.
         selected=getattr(self,'camera_guard_selected_state',None) or {}
         self.reference_receipt=dict(route_kind=kind,route_key=path_key,
+            connection_kind='measured_pose_c2' if pose_connected else None,
             selected_source=selected.get('source','direct'),
             selected_reference_version=selected.get('reference_version') if selected.get('source')=='camera' else None,
             source_path_digest=selected.get('matched_path_digest'),
+            original_path_digest=selected.get('original_path_digest'),
+            original_endpoint_map=selected.get('original_endpoint_map'),
+            selected_endpoint_map=source_endpoint,
+            loaded_endpoint_map=np.asarray(data[-1])[:2].reshape(-1).tolist() if kind=='path' else None,
             loaded_at_mono=time.monotonic(),coordinate_reprojection_only=False)
         self.stop = False
         self.arrive = False
@@ -1391,6 +1414,10 @@ class neupan_core:
                         self.camera_advisory_xy=xy;self.camera_guard_signature=signature
                         receipt=dict(getattr(self,'reference_receipt',None) or {})
                         receipt.update(source_path_digest=state.get('matched_path_digest'),
+                            original_path_digest=state.get('original_path_digest'),
+                            original_endpoint_map=state.get('original_endpoint_map'),
+                            selected_endpoint_map=xy[-1].tolist(),
+                            loaded_endpoint_map=self.neupan_planner.ipath.initial_path[-1][:2,0].tolist(),
                             selected_source=state.get('source'),selected_reference_version=state.get('reference_version')
                                 if state.get('source')=='camera' else None,coordinate_reprojection_only=True)
                         self.reference_receipt=receipt
@@ -1486,8 +1513,15 @@ class neupan_core:
             path_stamp = path.header.stamp.to_nsec()
             path_key = (path_frame, path_stamp)
             if path_stamp == 0:
-                path_key += (round(float(initial_point_list[-1][0, 0]), 4),
-                             round(float(initial_point_list[-1][1, 0]), 4))
+                selected=getattr(self,'camera_guard_selected_state',None) or {}
+                identity=selected.get('matched_route_identity')
+                if (selected.get('source')=='camera' and selected.get('reference_role')=='advisory'
+                        and identity is not None and tuple(identity[:2])==path_key):
+                    endpoint=selected.get('original_endpoint_map') or identity[2:]
+                    path_key+=tuple(round(float(value),4) for value in endpoint)
+                else:
+                    path_key += (round(float(initial_point_list[-1][0, 0]), 4),
+                                 round(float(initial_point_list[-1][1, 0]), 4))
             self.queue_route_update("path", initial_point_list, path_key)
         return True
     

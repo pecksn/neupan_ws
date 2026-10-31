@@ -10,6 +10,7 @@ from unittest.mock import patch
 import numpy as np
 import test_followup_safety as fixture
 import test_camera_publication_protocol as protocol
+from test_startup_recovery import Stamp
 from test_camera_right_refinement import namespace as n
 from neupan_navigation import MotionFeedback
 from neupan_safety import CandidateRejected,candidate_snapshot
@@ -71,7 +72,7 @@ class LocalReferenceTests(unittest.TestCase):
         node.osm_exit_requested=False;node.osm_junctions=[];node.cache_geometry=geometry
         node.cache.committed={i:(0.,clock[0]) for i in geometry}
         node.cache_pose=lambda now,force=False:([20.,0.,0.],0.)
-        with patch.dict(n,time=NS(monotonic=lambda:clock[0])):
+        with patch.dict(n,time=NS(monotonic=lambda:clock[0]),rospy=NS(Time=NS(now=lambda:Stamp(clock[0])))):
             for seq in range(1,4):
                 node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
         self.assertGreater(node.reference_version,0)
@@ -85,15 +86,15 @@ class LocalReferenceTests(unittest.TestCase):
         candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[20.,0.])
         np.testing.assert_array_equal(candidate,points);self.assertEqual(report['reason'],'hold_in_band')
 
-    def test_historical_real_danger_scope_is_not_trimmed(self):
+    def test_historical_cache_does_not_veto_forward_reference(self):
         points,geometry=history_road();geometry[2]['points_odom'][2,1]=-.1
-        with self.assertRaises(n['CorridorUnsafe']):
-            n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[20.,0.])
+        candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[20.,0.])
+        self.assertTrue(report['changed']);self.assertLess(candidate[80,1],-.7)
 
-    def test_no_forward_statistics_cannot_skip_real_danger_check(self):
+    def test_no_forward_statistics_holds_without_promoting_cache_to_danger(self):
         points,geometry=history_road();geometry={2:geometry[2]};geometry[2]['points_odom'][2,1]=-.1
-        with self.assertRaises(n['CorridorUnsafe']):
-            n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[20.,0.])
+        candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[20.,0.])
+        np.testing.assert_array_equal(candidate,points);self.assertFalse(report['changed'])
 
     def test_return_road_heading_and_progress_do_not_merge(self):
         forward=np.column_stack((np.arange(0.,31.),np.zeros(31)))

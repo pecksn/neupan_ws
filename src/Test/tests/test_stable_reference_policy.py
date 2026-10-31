@@ -50,12 +50,12 @@ class StableReferenceTests(unittest.TestCase):
         self.assertFalse(initial['ok']);self.assertFalse(initial['boundary_unsafe'])
         candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.],limits)
         self.assertTrue(report['changed']);self.assertTrue(report['corridor']['ok'])
-        self.assertEqual(report['area_evidence_state'],'valid_current_reference_not_covered')
+        self.assertNotIn('area_evidence_state',report)
         self.assertAlmostEqual(report['offset_change_m'],-.6)
         self.assertGreaterEqual(report['corridor']['min_right_m'],.8)
         self.assertLessEqual(report['shape']['max_steering_rad'],.350001)
         self.assertLessEqual(report['shape']['max_spatial_steer_rate'],.080001)
-        np.testing.assert_array_equal(candidate[0],points[0]);np.testing.assert_array_equal(candidate[-1],points[-1])
+        np.testing.assert_array_equal(candidate[0],points[0]);self.assertAlmostEqual(candidate[-1,1],-.6)
 
     def test_single_right_repaired_reference_confirmed_consumed_then_frozen(self):
         node,guard,clock,_,_=self.repair_node(3.6)
@@ -79,18 +79,15 @@ class StableReferenceTests(unittest.TestCase):
             self.assertEqual(node.reference_version,1)
             self.assertEqual(node.final_path_diagnostics['reason'],'hold_spatial_entry_until_traversed')
 
-    def test_unparseable_single_side_area_holds_without_search_or_danger(self):
+    def test_unparseable_single_side_area_does_not_veto_reference(self):
         for broken in ({},dict(matrix=[[1,0],[0,1]]),dict(origin=[math.nan,0,1]),
                        dict(rotation=np.zeros((3,3)).tolist()),dict(polygon=[[0,0]])):
             points,geometry,area=single_side_road()
             invalid={} if not broken else dict(area,**broken)
             for item in geometry.values():item['area']=invalid
-            with patch.dict(n,shape_report=Mock(side_effect=AssertionError('invalid evidence must not search'))):
-                candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
-            np.testing.assert_array_equal(candidate,points)
-            self.assertEqual(report['reason'],'hold_insufficient_observation_area')
-            self.assertEqual(report['area_evidence_state'],'missing_or_invalid')
-            self.assertNotIn('search_attempts',report)
+            candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+            self.assertTrue(report['changed']);self.assertTrue(report['shape']['ok'])
+            self.assertLess(candidate[70,1],-.4)
 
     def test_valid_area_with_no_feasible_repair_holds_without_creating_hazard(self):
         points,geometry,_=single_side_road(3.6,upper_y=-1.8)
@@ -110,15 +107,15 @@ class StableReferenceTests(unittest.TestCase):
         self.assertFalse(report['corridor']['boundary_unsafe']);self.assertFalse(report['corridor']['ok'])
         self.assertNotIn('search_attempts',report)
 
-    def test_advisory_outside_band_missing_area_holds_without_new_danger(self):
+    def test_advisory_outside_band_missing_area_repairs_without_new_danger(self):
         node,_,clock,points,geometry=self.repair_node(3.6)
         for item in geometry.values():item['mode']='right_only'
         with self.repair_context(clock):
             for seq in range(1,5):
                 node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
-        np.testing.assert_array_equal(node.frozen_reference_map,points)
+        self.assertLess(node.frozen_reference_map[70,1],-.4)
         self.assertFalse(node.hazards.regions);self.assertFalse(node.corridor_stop_required)
-        self.assertEqual(node.final_path_diagnostics['reason'],'hold_insufficient_observation_area')
+        self.assertEqual(node.reference_version,1)
 
     def test_160_frame_straight_sequences_keep_zero_or_one_correction(self):
         for gap,expected in ((2.4,0),(3.6,1)):
@@ -174,21 +171,21 @@ class StableReferenceTests(unittest.TestCase):
         self.assertEqual(node.final_path_diagnostics['reason'],'hold_reference_heading_deviation')
         self.assertEqual(node.reference_outside_count,0)
 
-    def test_junction_exit_is_confirmed_once_then_frozen_across_straight_frames(self):
+    def test_junction_preserves_accepted_offset_across_straight_frames(self):
         node,_,clock,_,_,adopted=self.adopted_reference()
         with self.repair_context(clock):
             for frame in range(3):
                 clock[0]+=.2;node.osm_junctions=np.array([[4.,0.]])
                 node.stable_result(copy.deepcopy(node.path),clock[0],.2)
                 if frame<2:np.testing.assert_array_equal(node.frozen_reference_map,adopted)
-            self.assertTrue(node.reference_exit_frozen);self.assertEqual(node.reference_version,2)
+            self.assertFalse(getattr(node,'reference_exit_frozen',False));self.assertEqual(node.reference_version,1)
             exiting=node.frozen_reference_map.copy()
             for frame in range(20):
                 clock[0]+=.2
                 node.osm_junctions=np.array([[4.,0.]]) if frame%2 else np.empty((0,2))
                 node.stable_result(copy.deepcopy(node.path),clock[0],.2)
                 np.testing.assert_array_equal(node.frozen_reference_map,exiting)
-            self.assertEqual(node.reference_version,2)
+            self.assertEqual(node.reference_version,1)
 
     def test_single_frame_junction_does_not_exit(self):
         node,_,clock,_,_,adopted=self.adopted_reference()
@@ -200,27 +197,23 @@ class StableReferenceTests(unittest.TestCase):
         np.testing.assert_array_equal(node.frozen_reference_map,adopted)
         self.assertEqual(node.reference_version,1)
 
-    def test_exit_rearms_only_after_traversal_and_three_straight_ticks(self):
-        node,_,clock,_,_,_=self.adopted_reference()
+    def test_junction_does_not_create_an_exit_or_clear_entry_state(self):
+        node,_,clock,_,_,adopted=self.adopted_reference()
+        old_end=node.reference_transition_end_odom.copy()
         with self.repair_context(clock):
             node.osm_junctions=np.array([[4.,0.]])
             for frame in range(3):
                 clock[0]+=.2;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
-            end=node.reference_exit_end_s;self.assertTrue(node.reference_exit_frozen)
-            node.osm_junctions=np.empty((0,2))
-            node.cache_pose=lambda now,force=False:([end+1.,0.,0.],0.)
-            # Avoid manufacturing an old-progress motion jump in this fixture.
-            node.reference_progress_s=end
-            for frame in range(3):
-                clock[0]+=.2;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
-                self.assertEqual(node.reference_exit_frozen,frame<2)
+            self.assertFalse(getattr(node,'reference_exit_frozen',False))
+            np.testing.assert_array_equal(node.frozen_reference_map,adopted)
+            np.testing.assert_array_equal(node.reference_transition_end_odom,old_end)
 
-    def test_yaw_debounce_does_not_suppress_real_boundary_hazard(self):
+    def test_yaw_hold_does_not_upgrade_reference_conflict_to_vehicle_hazard(self):
         node,_,clock,_,_=self.repair_node(.3)
         node.cache_pose=lambda now,force=False:([0.,0.,0.],math.radians(30))
         node.current_proof_geometry={}
         with self.repair_context(clock):node.stable_result(copy.deepcopy(node.path),clock[0],.2)
-        self.assertTrue(node.hazards.regions);self.assertTrue(node.corridor_stop_required)
+        self.assertFalse(node.hazards.regions);self.assertFalse(node.corridor_stop_required)
 
     def test_same_task_republish_preserves_exit_state(self):
         node,_,_,_,_=self.repair_node()
@@ -231,7 +224,7 @@ class StableReferenceTests(unittest.TestCase):
         node.path_cb(copy.deepcopy(msg))
         self.assertTrue(node.reference_exit_frozen);self.assertEqual(node.reference_exit_end_s,20.)
 
-    def test_true_route_bend_still_exits_even_when_vehicle_yaw_matches(self):
+    def test_route_bend_does_not_request_zero_offset_exit(self):
         node,_,clock,_,_=self.repair_node()
         points=np.array([[0.,0.],[2.,0.],[4.,0.],[4.,2.],[4.,4.]])
         node.path.poses=[NS(pose=NS(position=NS(x=float(x),y=float(y)))) for x,y in points]
@@ -240,7 +233,7 @@ class StableReferenceTests(unittest.TestCase):
             for frame in range(3):
                 clock[0]+=.2;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
         self.assertEqual(node.guidance_diagnostics['context'],'osm_turn')
-        self.assertTrue(node.reference_exit_frozen)
+        self.assertFalse(getattr(node,'reference_exit_frozen',False))
         np.testing.assert_array_equal(node.frozen_reference_map,points)
 
     def test_completion_expiry_does_not_latch_unaccepted_exit(self):
@@ -269,6 +262,7 @@ class StableReferenceTests(unittest.TestCase):
         node.path.poses=[NS(pose=NS(position=NS(x=float(x),y=float(y),z=0.),
             orientation=NS(x=0.,y=0.,z=0.,w=1.))) for x,y in points]
         guard.original_cb(node.path)
+        node.original_path_digest=path_digest(node.path)
         node.strategy='segment_reference';node.clearance_min=1.;node.clearance_max=3.;node.max_shift=1.5
         node.last_seq=0;node.osm_exit_requested=False;node.cache_geometry=geometry
         node.lock=n['threading'].RLock()
@@ -284,12 +278,12 @@ class StableReferenceTests(unittest.TestCase):
         node,_,_,points,geometry=self.repair_node()
         candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,
             [0.,0.],node.vehicle_limits)
-        self.assertTrue(report['changed']);self.assertTrue(report['shape']['ok']);self.assertTrue(report['corridor']['ok'])
+        self.assertTrue(report['changed']);self.assertTrue(report['shape']['ok'])
         self.assertEqual(report['transition_start_m'],0.)
         self.assertLessEqual(report['shape']['max_spatial_steer_rate'],.080001)
         self.assertLessEqual(report['shape']['max_steering_rad'],.350001)
-        self.assertGreaterEqual(report['corridor']['min_right_m'],.8)
-        np.testing.assert_array_equal(candidate[0],points[0]);np.testing.assert_array_equal(candidate[-1],points[-1])
+        self.assertGreater(report['corridor']['min_right_m'],0.)
+        np.testing.assert_array_equal(candidate[0],points[0]);self.assertAlmostEqual(candidate[-1,1],.24)
 
     def test_repair_preserves_executed_prefix_at_nonzero_progress(self):
         points,geometry=road(.76)
@@ -300,26 +294,25 @@ class StableReferenceTests(unittest.TestCase):
         self.assertTrue(report['changed']);self.assertGreaterEqual(report['transition_start_m'],10.)
         np.testing.assert_array_equal(candidate[:21],points[:21])
 
-    def test_short_remaining_route_does_not_force_unsafe_repair(self):
+    def test_short_remaining_route_can_use_single_entry_without_return_ramp(self):
         points,geometry=road(.76);points=points[:21]
-        with self.assertRaises(n['CorridorUnsafe']):
-            n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+        candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+        self.assertTrue(report['changed']);self.assertTrue(report['shape']['ok'])
+        np.testing.assert_array_equal(candidate[0],points[0]);self.assertAlmostEqual(candidate[-1,1],.24)
 
-    def test_single_right_repair_still_requires_measured_area(self):
+    def test_single_right_repair_does_not_require_visible_area(self):
         points,geometry=road(.76)
         for item in geometry.values():item['mode']='right_only'
-        with self.assertRaises(n['CorridorUnsafe']):
-            n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
-        with patch.dict(n,observed_area_contains=Mock(return_value=True)):
-            _,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
-            self.assertTrue(report['changed']);self.assertGreater(report['corridor']['area_checks'],0)
+        _,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+        self.assertTrue(report['changed']);self.assertTrue(report['shape']['ok'])
 
     def test_search_budget_keeps_real_danger_held(self):
         points,geometry=road(.76);clock=iter((0.,1.))
-        with patch.dict(n,time=NS(monotonic=lambda:next(clock))),self.assertRaises(n['CorridorUnsafe']):
-            n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+        with patch.dict(n,time=NS(monotonic=lambda:next(clock))):
+            candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+        np.testing.assert_array_equal(candidate,points);self.assertTrue(report['search_budget_exhausted'])
 
-    def test_held_danger_accepts_corrected_reference_but_requires_prediction_ack(self):
+    def test_reference_conflict_repair_does_not_enter_legacy_execution_recovery(self):
         node,guard,clock,points,geometry=self.repair_node()
         with self.repair_context(clock):
             for seq in range(1,4):
@@ -330,15 +323,11 @@ class StableReferenceTests(unittest.TestCase):
                 active,count=node.stable_result(result,clock[0],.2)
                 node.publish_result(result,clock[0],'test repair',active,count)
                 state=guard.select(clock[0],round(clock[0]*1.e9))[2]
-                if seq<3:self.assertEqual(state['source'],'stop')
+                self.assertNotEqual(state['source'],'stop')
             self.assertGreater(node.reference_version,0)
-            self.assertTrue(node.hazards.regions);self.assertTrue(guard.hazard_regions)
-            self.assertEqual(state['source'],'camera');self.assertTrue(state['recovery_pending'])
-            self.assertFalse(guard.commit_recovery(guard.authorization_generation-1,guard.safety_generation,round(clock[0]*1.e9)))
-            self.assertTrue(guard.commit_recovery(guard.authorization_generation,guard.safety_generation,round(clock[0]*1.e9)))
-            released=guard.select(clock[0],round(clock[0]*1.e9))[2]
-            node.hazard_ack_cb(NS(data=json.dumps(released)))
-            self.assertFalse(node.hazards.regions)
+            self.assertFalse(node.hazards.regions);self.assertFalse(guard.hazard_regions)
+            self.assertEqual(state['source'],'camera');self.assertFalse(state['recovery_pending'])
+            self.assertIsNone(node.execution_contract);self.assertIsNone(state['execution_contract'])
             frozen=node.frozen_reference_map.copy();version=node.reference_version
             node.last_seq=4;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
             np.testing.assert_array_equal(node.frozen_reference_map,frozen)
@@ -384,11 +373,11 @@ class StableReferenceTests(unittest.TestCase):
             candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,.4,0.])
             np.testing.assert_array_equal(candidate,points);self.assertFalse(report['changed'])
 
-    def test_outside_band_uses_spatial_transition_and_original_goal(self):
+    def test_outside_band_uses_spatial_transition_and_corrected_goal(self):
         points,geometry=road(3.6)
         candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
         self.assertTrue(report['changed']);self.assertTrue(report['shape']['ok'])
-        np.testing.assert_array_equal(candidate[:4],points[:4]);np.testing.assert_array_equal(candidate[-1],points[-1])
+        np.testing.assert_array_equal(candidate[:4],points[:4]);self.assertAlmostEqual(candidate[-1,1],-.6)
         self.assertLess(candidate[70,1],-.4)
 
     def test_missing_support_is_advisory_hold_not_new_danger(self):
@@ -396,10 +385,11 @@ class StableReferenceTests(unittest.TestCase):
         candidate,report=n['stable_segment_reference'](points,current,{},([0.,0.],0.),{},[0.,0.])
         np.testing.assert_array_equal(candidate,current);self.assertFalse(report['changed'])
 
-    def test_actual_boundary_conflict_is_not_ignored(self):
+    def test_right_edge_conflict_is_diagnosed_not_upgraded_to_vehicle_hazard(self):
         points,geometry=road(.3)
-        with self.assertRaises(n['CorridorUnsafe']):
-            n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+        candidate,report=n['stable_segment_reference'](points,points,geometry,([0.,0.],0.),geometry,[0.,0.])
+        self.assertTrue(report['corridor']['boundary_unsafe'])
+        self.assertTrue(np.isfinite(candidate).all())
 
     def test_advisory_gap_never_creates_observation_gap_hazards(self):
         node,_,_=protocol.RecoveryTests().node();node.strategy='segment_reference'
@@ -420,7 +410,7 @@ class StableReferenceTests(unittest.TestCase):
         node.last_seq=1;node.osm_exit_requested=False;node.cache_geometry=geometry
         node.cache.committed={i:(-.6,clock[0]) for i in geometry}
         node.cache_pose=lambda now,force=False:([0.,0.,0.],0.)
-        with patch.dict(n,time=NS(monotonic=lambda:clock[0])):
+        with patch.dict(n,time=NS(monotonic=lambda:clock[0]),rospy=NS(Time=NS(now=lambda:Stamp(clock[0])))):
             for seq in range(1,4):
                 node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
             frozen=node.frozen_reference_map.copy();version=node.reference_version
@@ -458,6 +448,7 @@ class AdvisoryConsumerTests(unittest.TestCase):
     def guard(self):
         route=protocol.path();guard=CameraPathGuard();guard.original_cb(route);guard.candidate_cb(route)
         status=dict(control_enabled=True,active=True,route_stamp_ns=123,route_frame_id='map',
+            original_path_digest=path_digest(route),
             control_path_digest=path_digest(route),corridor_stop_required=False,corridor_verified=True,
             inference_diagnostics=dict(reference_role='advisory',reference_version=1))
         guard.status_cb(status,1000.);return guard,status
@@ -550,10 +541,14 @@ class AlignmentTests(unittest.TestCase):
             node.cache_pose(state.value);state.shift=.07;node.cache_pose(state.value)
         self.assertEqual(state.calls,2);self.assertAlmostEqual(node.map_anchor[0][0],.036)
 
-    def test_real_large_jump_still_invalidates_cache_not_real_hazard_memory(self):
+    def test_unclassified_large_tf_change_refreshes_observations_not_map_reference(self):
         node,state=self.node();state.shift=1.
         node.hazards.regions={'real':dict(kind='boundary')}
-        with self.context(state),self.assertRaises(ValueError):node.cache_pose(state.value)
+        before=np.array([[p.pose.position.x,p.pose.position.y] for p in node.path.poses]);before[:,1]=-.6
+        node.frozen_reference_map=before.copy();node.reference_version=1
+        with self.context(state):node.cache_pose(state.value)
+        np.testing.assert_array_equal(node.frozen_reference_map,before)
+        self.assertEqual(node.reference_version,1)
         self.assertFalse(node.cache.committed);self.assertIn('real',node.hazards.regions)
 
 

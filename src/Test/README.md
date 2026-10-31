@@ -1,5 +1,11 @@
 # test_motion_tools
 
+2026-10-31对齐参考保持：`test_camera_advisory_followup.py`含真实定位桥0.8°合法校正、连续累计校正、真实重新锚定、桥重启/GNSS会话区分、状态过期及事件去重。全回归706项：698通过、8可选跳过；相机文件25项全通过。见[最新完整报告](../../videos/camera_alignment_hold_20261031/unit_regression.json)、[专项报告](../../videos/camera_alignment_hold_20261031/focused/unit_regression.json)与[旧包生产/消费重算](../../videos/camera_alignment_hold_20261031/recorded/recorded_input_checks.json)。不启动实车控制；正常对齐不清参考，真实故障不抹掉独立危险。
+
+2026-10-30末端修正：`test_camera_advisory_followup.py`增加原摘要/移动末点、12 m短路线、不同道路段、异步替换、零时间戳身份及迟到参考测试；真实库核对修正末点与原生0.5 m到达判断。完整700项：692通过、8可选跳过。见[当前报告](../../videos/camera_terminal_reference_20261030/unit_regression.json)及[旧包生产/消费重算](../../videos/camera_terminal_reference_20261030/recorded/recorded_input_checks.json)。未启动实车控制，原输入重算不是新车闭环。
+
+2026-10-30最新靠右保持：普通视觉走廊不再否决建议参考，遮挡/候选失败/普通弯道不默认回原OSM；实际任务/定位重置仍显式失效。`test_camera_advisory_followup.py`覆盖左右曲线法向偏移、左轮廓/旧缓存保持、消息配对、状态同步、实际位姿连接、真实库装载及异常诊断；接收端补充无多边形但右边界有效的协议测试。完整回归及源码指纹见[最新报告](../../videos/camera_reference_hold_20261030/unit_regression.json)，三组旧包重算见[原输入结果](../../videos/camera_reference_hold_20261030/recorded/recorded_input_checks.json)。旧位姿重算不是新车闭环，健康回放时钟也不代表CPU耗时。
+
 2026-10-29当前主线：NeuPAN原生首动作直发，撤出独立派发、持续限速、整段改写、外加全预测硬否决及几何选点hook。旧`test_checked_execution.py`及对应实现已删除；`test_followup_safety.py`包含原生输出/任务/人工切换回归，`test_stable_reference_policy.py`覆盖带内区域不足不搜索。当前完整回归见[报告](../../videos/neupan_native_restore_20261029/unit_regression.json)，未完成实车闭环验收。
 
 下方按日期保留的是历史报告说明，旧控制层的用例数量、参数与输出含义不代表当前实现。统一入口仍为：

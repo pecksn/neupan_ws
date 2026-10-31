@@ -66,7 +66,7 @@ def camera_replay(directory=None):
     if not files:raise FileNotFoundError('Oct28 camera bag missing')
     with rosbag.Bag(str(files[0])) as bag:start=bag.get_start_time()
     clock=NS(ns=round(start*1.e9));listener,feed,Time=tf_environment(clock)
-    guard=CameraPathGuard();rows=[];route_changes=[];last_digest=[None];recorded_runtime=[None,None]
+    guard=CameraPathGuard();rows=[];health_rows=[];route_changes=[];last_digest=[None];recorded_runtime=[None,None]
     params={'~strategy':'segment_reference','~control_enabled':True,
         '~camera_info_file':str(ROOT/'src/usb_camera/config/usb_camera.yaml'),
         '~extrinsics_file':str(ROOT/'src/usb_camera/config/livox_camera_extrinsics.yaml'),
@@ -91,6 +91,10 @@ def camera_replay(directory=None):
                 else 'held_or_reprojected_geometry_consumer_selected' if changed_geometry and matched
                 else 'held_or_reprojected_geometry_consumer_not_selected' if changed_geometry else 'producer_kept_reference',
             original_digest=original_digest,producer_digest=payload.get('control_path_digest'),
+            producer_original_digest=payload.get('original_path_digest'),
+            original_endpoint_map=payload.get('original_endpoint_map'),
+            producer_endpoint_map=payload.get('reference_endpoint_map'),
+            consumer_endpoint_map=state.get('reference_endpoint_map'),
             consumer_digest=state.get('matched_path_digest'),consumer_matches_producer=matched,
             observation={key:detail.get(key) for key in ('confidence','source_age_ms','capture_age_ms_clock_dependent',
                 'producer_session_id','camera_time_epoch','last_json_rejection','observation_geometry','osm_guidance_context')},
@@ -101,6 +105,7 @@ def camera_replay(directory=None):
         def publish(self,message):
             if self.topic=='/camera_right/control_path':output(message)
             elif self.topic=='/camera_right/status':status(message)
+            elif self.topic=='/camera_right/processing_health':health_rows.append(json.loads(message.data))
     original=(module.rospy,module.tf,module.time)
     module.rospy=NS(get_param=lambda key,default=None:params.get(key,default),Publisher=Publisher,
         Subscriber=lambda *a,**kw:None,Timer=lambda *a,**kw:None,Duration=rospy.Duration,Time=Time,
@@ -113,7 +118,7 @@ def camera_replay(directory=None):
             with rosbag.Bag(str(file)) as bag:
                 for topic,msg,stamp in bag.read_messages(topics=['/tf','/tf_static','/osm_global_path',
                         '/hybridnets/result_json','/hybridnets/observations_json','/hybridnets/valid',
-                        '/hybridnets/timing_diagnostics','/localization_safe','/neupan/runtime']):
+                        '/hybridnets/timing_diagnostics','/localization_safe','/neupan/runtime','/gps_guard/status','/gps_guard/local_fault_event']):
                     while next_tick<stamp.to_nsec():
                         clock.ns=next_tick;node.tick(None);next_tick+=200000000
                     clock.ns=stamp.to_nsec()
@@ -124,6 +129,8 @@ def camera_replay(directory=None):
                     elif topic=='/hybridnets/valid':node.valid_cb(msg)
                     elif topic=='/hybridnets/timing_diagnostics':node.receiver_health_cb(msg)
                     elif topic=='/localization_safe':node.safe_cb(msg)
+                    elif topic=='/gps_guard/status':node.alignment_status_cb(msg)
+                    elif topic=='/gps_guard/local_fault_event':node.alignment_fault_cb(msg)
                     elif topic=='/neupan/runtime':
                         runtime=json.loads(msg.data)
                         recorded_runtime[:]=[{key:runtime.get(key) for key in ('cycle_id','command_source','linear_x',
@@ -137,6 +144,7 @@ def camera_replay(directory=None):
             producer_reasons=dict(Counter(r['producer_reason'] for r in rows)),
             reference_geometry_changes=len(route_changes),reference_versions=sorted(set(r['version'] for r in rows if r['version'] is not None)),
             max_hazards=max((r['hazards'] for r in rows),default=0),timeline=rows,
+            processing_health_events=len(health_rows),processing_health=health_rows,
             limitation='Actual producer and consumer selection only; no planner, no simulated vehicle or recovery ACK without prediction verification.')
     finally:module.rospy,module.tf,module.time=original
 
@@ -259,10 +267,10 @@ def main():
             for directory in args.camera_bag:
                 row=camera_replay(directory);result['camera_sessions'].append(row)
                 checkpoint()
-                print(json.dumps({k:v for k,v in row.items() if k!='timeline'}),flush=True)
+                print(json.dumps({k:v for k,v in row.items() if k not in ('timeline','processing_health')}),flush=True)
         else:
             result['camera']=camera_replay()
-            print(json.dumps({k:v for k,v in result['camera'].items() if k!='timeline'}),flush=True)
+            print(json.dumps({k:v for k,v in result['camera'].items() if k not in ('timeline','processing_health')}),flush=True)
     if args.obstacles:result['obstacles']=obstacle_probes(args.output_dir,args.obstacle_bag)
     if args.feedback:
         result['feedback']=feedback_replay()

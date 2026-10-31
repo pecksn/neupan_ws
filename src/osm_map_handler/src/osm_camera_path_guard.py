@@ -34,12 +34,13 @@ def authorization_identity(status):
     detail=status.get('inference_diagnostics') or {}
     contract=detail.get('execution_contract') or {}
     if not isinstance(contract,dict):contract={'invalid_contract':str(contract)}
-    fields={key:status.get(key) for key in ('route_stamp_ns','route_frame_id','control_enabled',
+    fields={key:status.get(key) for key in ('route_stamp_ns','route_frame_id','original_path_digest','control_enabled',
         'active','control_path_digest','corridor_stop_required','corridor_verified')}
     fields['contract']={key:value for key,value in contract.items() if key!='expires_ns'}
     fields['hazards']=status.get('hazard_regions') or detail.get('hazard_regions') or {}
     fields['reference_role']=detail.get('reference_role','visual_execution')
     fields['reference_version']=detail.get('reference_version')
+    fields['reference_connection']=(detail.get('final_path') or {}).get('reference_connection')
     try:return hashlib.sha256(json.dumps(fields,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
     except (TypeError,ValueError):return None
 
@@ -66,6 +67,7 @@ class CameraPathGuard:
         self.scope_trace=None
         self.scope_valid_until_ns=0
         self.scoped_prediction_generation=None
+        self.accepted_advisory=None
 
     def invalidate_hazard_scope(self):
         with self.lock:
@@ -151,6 +153,7 @@ class CameraPathGuard:
             self.original_digest = path_digest(path) if self.original_key else None
             if old!=(self.original_key,self.original_digest):self.authorization_generation+=1
             if old!=(self.original_key,self.original_digest):self.invalidate_hazard_scope()
+            if old!=(self.original_key,self.original_digest):self.accepted_advisory=None
 
     def candidate_cb(self, path):
         with self.lock:
@@ -170,6 +173,7 @@ class CameraPathGuard:
             # polls. A STOP followed by a valid release must still invalidate
             # commands computed before that hazard generation.
             status=self.status or {};detail=status.get('inference_diagnostics') or {}
+            if detail.get('reference_frame_invalidated') is True:self.accepted_advisory=None
             identity=authorization_identity(status)
             new_contract=detail.get('execution_contract') or {}
             if not isinstance(new_contract,dict):new_contract={}
@@ -198,6 +202,12 @@ class CameraPathGuard:
             matches=(self.original_key is not None and status.get('control_enabled') is True
                 and status.get('route_stamp_ns')==self.original_key[1]
                 and status.get('route_frame_id')==self.original_key[0])
+            bound_task=bool(matches and (not advisory or status.get('original_path_digest')==self.original_digest))
+            version=detail.get('reference_version')
+            candidate_matches=bool(self.candidate_key is not None and self.original_key is not None
+                and (self.candidate_key==self.original_key if not advisory else
+                     self.candidate_key[:2]==self.original_key[:2] and bound_task
+                     and isinstance(version,int) and not isinstance(version,bool) and version>=0))
             fresh=age is not None and 0<=age<=self.timeout
             if fresh and matches and status.get('corridor_stop_required') is True:
                 incoming=status.get('hazard_regions') or detail.get('hazard_regions') or {}
@@ -207,7 +217,7 @@ class CameraPathGuard:
                 self.hazard_regions.update(status.get('hazard_regions') or detail.get('hazard_regions') or {})
             elif (fresh and matches and status.get('corridor_verified') is True
                   and status.get('corridor_stop_required') is False
-                  and self.candidate_key==self.original_key
+                  and candidate_matches
                   and status.get('control_path_digest')==self.candidate_digest):
                 proof=detail.get('hazard_proof',{})
                 verification=detail.get('hazard_verification') or {}
@@ -243,13 +253,13 @@ class CameraPathGuard:
                                           else 'camera_hazard_capacity_exceeded' if detail.get('hazard_capacity_exceeded')
                                           else 'camera_corridor_or_transition_unsafe')
             elif age is None or not 0 <= age <= self.timeout:
-                if (advisory and matches and self.candidate_key==self.original_key
+                if (advisory and bound_task and candidate_matches
                         and status.get('control_path_digest')==self.candidate_digest):
                     source,reason='camera','advisory_reference_held_without_live_vision'
                 else:reason = 'camera_heartbeat_stale'
             elif status.get('control_enabled') is not True:
                 reason = 'camera_control_not_ready'
-            elif (self.candidate_key != self.original_key or
+            elif (not candidate_matches or not bound_task or
                   status.get('route_stamp_ns') != self.original_key[1] or
                   status.get('route_frame_id') != self.original_key[0]):
                 reason = 'camera_route_mismatch'
@@ -257,20 +267,34 @@ class CameraPathGuard:
                 reason = 'camera_path_not_confirmed_by_heartbeat'
             else:
                 source, reason = 'camera', ('camera_recovery_pending_execution' if self.pending_recovery else 'ok')
+            held=None
+            if (source=='osm' and advisory and bound_task and self.accepted_advisory is not None
+                    and self.accepted_advisory[0]==self.original_key):
+                # Path and heartbeat arrive on separate topics. Do not expose
+                # offset OSM during a replacement's partially received pair.
+                held=self.accepted_advisory
+                source,reason='camera','advisory_reference_held_pending_replacement'
+                status=held[3];detail=status.get('inference_diagnostics') or {}
             needs_contract=bool((status.get('active') and not advisory) or self.pending_recovery
                 or (advisory and detail.get('execution_contract')))
             contract=detail.get('execution_contract') if source=='camera' and needs_contract else None
             if source=='camera' and needs_contract and not valid_contract(contract,status.get('control_path_digest')):
                 source,reason='stop','camera_execution_contract_missing_or_invalid'
                 self.pending_recovery=None
+            if source=='camera' and advisory and matches and held is None and not needs_contract:
+                self.accepted_advisory=(self.original_key,copy.deepcopy(self.candidate),self.candidate_digest,copy.deepcopy(status))
             path = None if source=='stop' else self.candidate if source == 'camera' else self.original
             digest = self.candidate_digest if source == 'camera' else self.original_digest
+            if held is not None and source=='camera':path,digest=held[1],held[2]
             state = {'source': source, 'reason': reason, 'heartbeat_age_sec': age,
                      'reference_role':'advisory' if advisory else 'visual_execution',
                      'reference_version':detail.get('reference_version'),
+                     'reference_connection':(detail.get('final_path') or {}).get('reference_connection') if advisory else None,
                      'authorization_generation':self.authorization_generation,
                      'authorization_id':self.authorization_id,
                      'original_path_digest':self.original_digest,
+                     'original_endpoint_map':[self.original.poses[-1].pose.position.x,self.original.poses[-1].pose.position.y] if self.original is not None else None,
+                     'reference_endpoint_map':[path.poses[-1].pose.position.x,path.poses[-1].pose.position.y] if path is not None else None,
                      'timeout_sec': self.timeout,
                      'execution_contract':contract,
                      'hazard_regions':dict(self.hazard_regions),
@@ -286,7 +310,12 @@ class CameraPathGuard:
                      'matched_path_digest': digest, 'matched_route_identity': self.original_key,
                      'near_field_visual_modified': bool(source == 'camera' and status.get('near_field_modified_points',0)>0),
                      'near_field_max_offset_m': status.get('near_field_max_offset_m',0.) if source == 'camera' else 0.}
-            return path, (source, self.original_key, digest), state
+            signature=(source,self.original_key,digest)
+            if advisory:signature+=(detail.get('reference_version'),self.original_digest)
+            connection=state.get('reference_connection')
+            if source=='camera' and isinstance(connection,dict):
+                signature+=(json.dumps(connection,sort_keys=True,separators=(',',':')),)
+            return path, signature, state
 
     def commit_recovery(self,generation,safety_generation,now_ns):
         """Called under publication lock AFTER actual prediction/age checks."""

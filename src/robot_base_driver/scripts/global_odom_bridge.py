@@ -6,6 +6,7 @@ import math
 import statistics
 import threading
 import time
+import uuid
 from collections import deque
 
 import rospy
@@ -380,6 +381,11 @@ class GlobalOdomBridge:
         self.source_stamp_watermarks = {}
         self.last_correction_time = rospy.Time.now()
         self.last_status_publish = rospy.Time(0)
+        # Coordinate continuity, NOT a GNSS message/session identity. Only the
+        # existing local-fault/re-anchor branch advances this generation.
+        self.reference_frame_instance=uuid.uuid4().hex
+        self.reference_frame_epoch=0
+        self.reference_frame_reset=None
         self.last_position_error = None
         self.last_yaw_error_deg = None
         self.last_tracking_candidate = None
@@ -545,6 +551,9 @@ class GlobalOdomBridge:
             self.remember_observation('gga', msg, self.last_gga_recv)
 
     def handle_local_fault(self, now, new_local_odom, reason):
+        self.reference_frame_epoch=getattr(self,'reference_frame_epoch',0)+1
+        self.reference_frame_reset=dict(stamp=now.to_sec(),reason=reason,
+            local_stamp=new_local_odom.header.stamp.to_sec())
         self.local_bad_until = now + rospy.Duration(self.local_fault_hold_sec)
         self.local_fault_reason = reason
         self.stable_since = None
@@ -1697,6 +1706,8 @@ class GlobalOdomBridge:
         localization_safe = self.localization_is_safe(now)
         payload = {
             "stamp": now.to_sec(),
+            "reference_frame": {"instance_id": self.reference_frame_instance,
+                "odom_epoch": self.reference_frame_epoch,"last_reset": self.reference_frame_reset},
             "timebase_contract": {'mode': self.gnss_timebase.mode,
                 'fault': self.gnss_timebase.fault, 'session': self.gnss_timebase.session,
                 'clock_ready': self.gnss_timebase.clock_ready, 'wait_reason': self.gnss_timebase.wait_reason,

@@ -103,6 +103,7 @@ class SystemRunLogger:
             "localization_safe": None,
             "motor": None,
             "camera_right": None,
+            "camera_right_processing": None,
             "hybridnets_timing": None,
             "neupan_failure": None,
             "neupan_reference_path": None,
@@ -162,6 +163,8 @@ class SystemRunLogger:
         rospy.Subscriber("/neupan_initial_path", Path, self.neupan_reference_path_cb, queue_size=1)
         rospy.Subscriber("/camera_right/status", String,
                          lambda msg: self.update("camera_right", self.parse_status(msg)), queue_size=10)
+        rospy.Subscriber("/camera_right/processing_health", String,
+                         lambda msg: self.update("camera_right_processing", self.parse_status(msg)), queue_size=10)
         rospy.Subscriber("/hybridnets/timing_diagnostics", String,
                          self.hybridnets_timing_cb, queue_size=200)
         rospy.Subscriber(self.global_path_topic, Path, self.global_path_cb, queue_size=2)
@@ -219,6 +222,7 @@ class SystemRunLogger:
             "safety": self.safety_topic,
             "motor": self.motor_status_topic,
             "camera_right": "/camera_right/status",
+            "camera_right_processing": "/camera_right/processing_health",
             "hybridnets_timing": "/hybridnets/timing_diagnostics",
             "neupan_failure": "/neupan/failure",
             "neupan_reference_path": "/neupan_initial_path",

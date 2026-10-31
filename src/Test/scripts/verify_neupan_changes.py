@@ -356,6 +356,10 @@ def main():
         result=unittest.TextTestRunner(verbosity=0).run(unittest.defaultTestLoader.discover(str(ROOT/'src/Test/tests'),pattern=args.test_pattern))
         files=[ROOT/'src/neupan_ros/src'/name for name in ('neupan_core.py','neupan_safety.py','neupan_diagnostics.py','neupan_navigation.py')]
         files += [ROOT/'src/osm_map_handler/src'/name for name in ('osm_camera_path_refinement.py','osm_camera_path_guard.py')]
+        files += [ROOT/'src/robot_base_driver/scripts/system_run_logger.py']
+        files += [ROOT/'src/robot_base_driver/scripts/global_odom_bridge.py']
+        files += [ROOT/'src/hybridnets_receiver/scripts/hybridnets_json_receiver.py']
+        files += [ROOT/'src/vehicle_bag_recorder/config'/name for name in ('camera_right_test.yaml','hybridnets_data.yaml','vehicle_data.yaml')]
         record=dict(tests=result.testsRun,passed=result.testsRun-len(result.skipped)-len(result.failures)-len(result.errors),
             test_pattern=args.test_pattern,
             environment=dict(executable=sys.executable,python=sys.version,ros_distro=__import__('os').environ.get('ROS_DISTRO')),

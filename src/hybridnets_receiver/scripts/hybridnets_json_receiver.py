@@ -182,8 +182,13 @@ class HybridNetsJsonReceiver:
                     not math.isfinite(value) or value < 0.0):
                 raise ValueError("%s must be finite and non-negative" % name)
         if result["valid"]:
-            if not road_valid or len(result["road_polygon_px"]) < self.min_road_polygon_points:
+            if road_valid and len(result["road_polygon_px"]) < self.min_road_polygon_points:
                 raise ValueError("valid result has too few road-polygon points")
+            if not road_valid and not right_valid:
+                raise ValueError("valid result has neither road polygon nor right boundary")
+            # Independently valid right-edge evidence can feed advisory map
+            # refinement even if an occlusion broke the visible road polygon.
+            # Do not change a producer's valid=False or invent missing edges.
             if left_valid and len(result["left_boundary_px"]) < self.min_left_points:
                 raise ValueError("valid result has too few left-boundary points")
             if right_valid and len(result["right_boundary_px"]) < self.min_right_points:

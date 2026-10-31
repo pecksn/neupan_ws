@@ -154,7 +154,7 @@ def path_steering(points, wheelbase=.67):
 
 
 def shape_report(points, original, previous=None, dt=.2, speed=.8,
-                 wheelbase=.67, max_steer=.35, max_steer_rate=.08,start_index=0,end_index=None):
+                 wheelbase=.67, max_steer=.35, max_steer_rate=.08,start_index=0,end_index=None,terminal_continuation=False):
     """Finite sampled curvature, spatial steer slew, and temporal slew gates."""
     points,original=np.asarray(points,float),np.asarray(original,float)
     if points.shape!=original.shape or len(points)<3 or not np.isfinite(points).all():
@@ -170,6 +170,11 @@ def shape_report(points, original, previous=None, dt=.2, speed=.8,
     lengths=np.linalg.norm(np.diff(points,axis=0),axis=1)
     if np.any((lengths<1.e-6)&(domain[:-1]|domain[1:])): raise ValueError('degenerate reference segments')
     edge_mask=affected[:-1]|affected[1:]
+    if terminal_continuation and len(edge_mask):
+        # path_steering pads a synthetic zero AFTER the last measured bend.
+        # A road-aligned goal is not a demand to straighten the wheels in the
+        # final sample. All real sampled steering/slew limits remain checked.
+        edge_mask[-1]=False
     spatial=np.abs(np.diff(steering))*max(abs(speed),.1)/np.maximum(lengths,1.e-9)
     temporal=np.zeros(len(points))
     if previous is not None:
@@ -546,7 +551,7 @@ def lane_target(left, right, clearance, left_margin=None):
     return x, target, ly, ry
 
 
-def boundary_samples(left,right,minimum_clearance,left_margin=.80):
+def boundary_samples(left,right,minimum_clearance,left_margin=.80,advisory=False):
     """Keep measured left constraints where present, never invent missing ones."""
     lower=max(2.,right[0,0]);upper=min(6.,right[-1,0])
     if upper-lower<2:raise ValueError('insufficient continuous right boundary range')
@@ -557,7 +562,7 @@ def boundary_samples(left,right,minimum_clearance,left_margin=.80):
         known=(x>=left[0,0])&(x<=left[-1,0])
         ly[known]=np.interp(x[known],left[:,0],left[:,1])
         width=ly[known]-ry[known]
-        if np.any(width<minimum_clearance+left_margin) or np.any(width>12):
+        if not advisory and (np.any(width<minimum_clearance+left_margin) or np.any(width>12)):
             raise ValueError('crossed, narrow or implausible road')
     return x,ly,ry
 
@@ -717,12 +722,69 @@ def reference_evidence_window(points,geometry,indices,position,progress=None,hea
     return keys,report
 
 
+def pose_connected_reference(points,current,arc,normals,position,heading,progress,length,target,max_shift,segment_end=None):
+    """Advisory C2 lateral connection from the vehicle, not an unused OSM point.
+
+    The prefix is retained for route identity/debug only. Consumers must load
+    the suffix starting at start_index; it starts at the actual measured pose.
+    This does not generate a velocity or grant motion permission.
+    """
+    if heading is None:return None
+    near=max(0,min(len(points)-2,int(np.searchsorted(arc,progress,side='right')-1)))
+    edge=points[near+1]-points[near];direction=edge/max(np.linalg.norm(edge),1.e-9)
+    base=points[near]+direction*(progress-arc[near])
+    position=np.asarray(position,float)[:2]
+    lateral=float((position-base)@normals[near])
+    relative=math.atan2(math.sin(heading-math.atan2(direction[1],direction[0])),
+                        math.cos(heading-math.atan2(direction[1],direction[0])))
+    if (abs(relative)>math.radians(20) or abs(lateral)>max_shift
+            or np.linalg.norm(position-current[near])<.2):return None
+    u=np.clip((arc-progress)/length,0,1)
+    blend=u**3*(10-15*u+6*u*u)
+    tangent=u-6*u**3+8*u**4-3*u**5
+    offsets=lateral*(1-blend)+length*math.tan(relative)*tangent+target*blend
+    if segment_end is not None and segment_end<arc[-1]-1.e-6:
+        # Only this observed road segment is being adjusted. Join the prior
+        # downstream reference, not a blanket offset on every future road.
+        v=np.clip((segment_end-arc)/length,0,1);blend_out=v**3*(10-15*v+6*v*v)
+        previous=np.sum((current-points)*normals,axis=1)
+        offsets=previous+(offsets-previous)*blend_out
+    candidate=current.copy()
+    candidate[near:]=points[near:]+normals[near:]*offsets[near:,None]
+    candidate[near]=position
+    if np.max(np.linalg.norm(candidate-points,axis=1))>max_shift+1.e-6:return None
+    chord=candidate[near+1]-candidate[near]
+    angle=math.atan2(chord[1],chord[0])-heading
+    if np.linalg.norm(chord)<1.e-6 or abs(math.atan2(math.sin(angle),math.cos(angle)))>math.radians(5):return None
+    return candidate,dict(kind='measured_pose_c2',start_index=near,start_map=position.tolist(),
+        heading_rad=float(heading),progress_s=float(progress),prefix_not_for_tracking=True)
+
+
+def advisory_geometry_ok(candidate,original):
+    """Reject folds/new crossings without treating visible masks as obstacles."""
+    edges=np.diff(candidate,axis=0);old=np.diff(original,axis=0)
+    if not np.isfinite(candidate).all() or np.any(np.sum(edges*old,axis=1)<=1.e-9):return False
+    direction=original[-1]-original[0]
+    if np.all(edges@direction>1.e-9):return True # Globally monotone: no crossing.
+    def crossings(path,start,end):
+        a=path[start:end,None,:];b=path[start+1:end+1,None,:]
+        c=path[None,:-1,:];d=path[None,1:,:]
+        def cross(u,v):return u[...,0]*v[...,1]-u[...,1]*v[...,0]
+        return ((cross(b-a,c-a)*cross(b-a,d-a)<-1.e-10)
+            &(cross(d-c,a-c)*cross(d-c,b-c)<-1.e-10))
+    # Bounded memory for long outdoor routes, not an N-by-N allocation.
+    for start in range(0,len(edges),32):
+        end=min(start+32,len(edges))
+        if np.any(crossings(candidate,start,end)&~crossings(original,start,end)):return False
+    return True
+
+
 def stable_segment_reference(points, current, geometry, anchor, indices, position,
                              limits=None, camera_y=0., clearance=(1.,3.), max_shift=1.5,
-                             progress=None,heading=None):
+                             progress=None,heading=None,segment_end=None):
     """Event-driven advisory geometry; never a free-space/execution permission.
 
-    Keep a feasible in-band reference exactly. Otherwise search a bounded set
+    Keep an in-band reference exactly. Otherwise search a bounded set
     of spatial C2 transitions, not a centimetre-per-callback moving reference.
     Unseen continuation remains an ordinary map suggestion checked by NeuPAN.
     """
@@ -731,33 +793,27 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
     keys,window=reference_evidence_window(points,geometry,all_keys,position,progress,heading)
     report=dict(changed=False,reference_role='advisory',evidence_points=len(keys),decision_window=window,
                 corridor_evidence_points=len(all_keys),reason='hold_without_new_evidence')
-    corridor=corridor_report(current,geometry,anchor,all_keys)
+    corridor=corridor_report(current,geometry,anchor,keys)
     report['corridor']=corridor
     if not keys:
-        if not corridor['ok'] and corridor.get('boundary_unsafe'):
-            raise CorridorUnsafe('confirmed boundary contradicts current reference: '+str(corridor))
         return current.copy(),report
     tangent=np.vstack((np.diff(points,axis=0),points[-1]-points[-2]))
     normals=np.column_stack((-tangent[:,1],tangent[:,0]))/np.maximum(np.linalg.norm(tangent,axis=1)[:,None],1.e-9)
     gaps=[float((current[i]-planar_transform([geometry[i]['points_odom'][2]],anchor)[0])@normals[i]+camera_y) for i in keys]
-    # The adjustment statistic is LOCAL. Real boundary checks and danger
-    # history keep their previous scope and are not trimmed to this window.
+    # Ordinary reference decisions use forward right-edge evidence only.
+    # Independently recorded danger retains its separate scope/lifetime.
     report.update(reference_gap_m=float(np.median(gaps)),reference_gap_range_m=[float(min(gaps)),float(max(gaps))],corridor=corridor)
     lo,hi=clearance
-    if not corridor.get('boundary_unsafe') and lo-.10<=np.median(gaps)<=hi+.10:
+    if lo-.10<=np.median(gaps)<=hi+.10:
         report['reason']='hold_in_band';return current.copy(),report
-    if not corridor['ok'] and not corridor.get('boundary_unsafe'):
-        single_keys=[i for i in all_keys if geometry[i].get('mode')=='right_only']
-        unavailable=[i for i in single_keys if not observation_area_valid(geometry[i].get('area'))]
-        if unavailable:
-            report.update(reason='hold_insufficient_observation_area',
-                area_evidence_state='missing_or_invalid',unavailable_area_indices=unavailable)
-            return current.copy(),report
-        # The evidence exists; only the CURRENT reference fails its coverage.
-        # Let the original bounded search test replacement footprints against
-        # the same measured area. This is no permission to execute a candidate.
-        report['area_evidence_state']='valid_current_reference_not_covered'
     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(points,axis=0),axis=1))]
+    # A discontinuous map corner starts another road segment. Continuous
+    # ordinary bends keep the same scalar offset and changing local normal.
+    direction=np.arctan2(tangent[:,1],tangent[:,0])
+    turns=np.abs(np.arctan2(np.sin(np.diff(direction)),np.cos(np.diff(direction))))
+    boundaries=[float(arc[i+1]) for i in np.flatnonzero(turns>math.radians(30)) if arc[i+1]>window['progress_s']+1.]
+    if boundaries:segment_end=min(boundaries+([segment_end] if segment_end is not None else []))
+    segment_end=float(arc[-1] if segment_end is None else min(segment_end,arc[-1]))
     previous=np.sum((current-points)*normals,axis=1)
     delta=float(np.clip(np.median(gaps),lo,hi)-np.median(gaps))
     # Keep the executed prefix and its tangent unchanged. A C2 entry may start
@@ -767,20 +823,17 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
     first_conflict=min((arc[i] for i in rejected if arc[i]>=progress_s),default=progress_s+4.)
     starts=sorted(set((progress_s,progress_s+1.,min(progress_s+2.,max(progress_s,first_conflict-2.)))))
     if corridor['ok']:starts=sorted(starts,reverse=True)
-    # Bounded amplitude lattice, in both directions (a left constraint may be
-    # decisive). Small corrections win; never weaken the original checkers.
+    # Small bounded lateral corrections win; do not chase visible left masks.
     amplitudes={round(delta,6),round(delta+.2,6),round(delta-.2,6)}
     amplitudes.update(round(sign*value,6) for sign in (-1,1)
                       for value in np.arange(.2,2*max_shift+.001,.2))
     amplitudes=sorted((a for a in amplitudes if abs(a)>=max(.01,abs(delta)-1.e-6)),
                       key=lambda a:(abs(a),abs(a-delta),a))
-    # Necessary vertex checks only prune the lattice. Accepted candidates
-    # still pass the full interpolated/observed-area production checker.
-    evidence_world=np.asarray([planar_transform(geometry[i]['points_odom'],anchor) for i in all_keys])
-    right_only=np.asarray([geometry[i].get('mode')=='right_only' for i in all_keys])
+    # Only forward right-edge evidence constrains ordinary suggestions.
+    evidence_world=np.asarray([planar_transform(geometry[i]['points_odom'],anchor) for i in keys])
     constraint_normals=np.asarray([planar_transform([geometry[i]['normal_odom']],([0.,0.],anchor[1]))[0]
-        if geometry[i].get('mode')=='right_only' else world[1]-world[2]
-        for i,world in zip(all_keys,evidence_world)])
+        if geometry[i].get('normal_odom') is not None else normals[i]
+        for i,world in zip(keys,evidence_world)])
     constraint_normals/=np.maximum(np.linalg.norm(constraint_normals,axis=1)[:,None],1.e-9)
     began=time.monotonic();attempts=0;budget_exhausted=False
     for target_delta in amplitudes:
@@ -788,29 +841,40 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
             for start in starts:
                 if attempts>=384 or time.monotonic()-began>.20:
                     budget_exhausted=True;break
-                if arc[-1]-start<2*length:continue
+                if segment_end-start<length:continue
                 attempts+=1
-                u=np.clip((arc-start)/length,0,1);v=np.clip((arc[-1]-arc)/length,0,1)
-                ramp=u**3*(10-15*u+6*u*u)*v**3*(10-15*v+6*v*v)
+                u=np.clip((arc-start)/length,0,1)
+                ramp=u**3*(10-15*u+6*u*u)
+                if segment_end<arc[-1]-1.e-6:
+                    v=np.clip((segment_end-arc)/length,0,1)
+                    ramp*=v**3*(10-15*v+6*v*v)
                 offsets=previous+target_delta*ramp
-                if np.max(abs(offsets))>max_shift+1.e-9:continue
-                candidate=current+normals*(target_delta*ramp)[:,None]
-                right_gap=np.sum((candidate[all_keys]-evidence_world[:,2])*constraint_normals,axis=1)-.025
-                left_gap=np.sum((evidence_world[:,1]-candidate[all_keys])*constraint_normals,axis=1)-.025
-                if np.any(right_gap<corridor['required_minimum_m']) or np.any(left_gap[~right_only]<corridor['required_minimum_m']):continue
-                shape=shape_report(candidate,points,**(limits or {}))
-                if not shape['ok']:continue
-                checked=corridor_report(candidate,geometry,anchor,all_keys)
-                if checked['ok']:
+                choices=[]
+                if np.max(abs(offsets))<=max_shift+1.e-9:
+                    choices.append((current+normals*(target_delta*ramp)[:,None],None))
+                if start==starts[0]:
+                    connected=pose_connected_reference(points,current,arc,normals,position,heading,progress_s,
+                        length,float(np.median(previous[keys]))+target_delta,max_shift,segment_end)
+                    if connected is not None:choices.insert(0,connected)
+                for candidate,connection in choices:
+                    right_gap=np.sum((candidate[keys]-evidence_world[:,2])*constraint_normals,axis=1)
+                    # A reference is not a visible-free-space certificate.
+                    # Only current forward right-edge evidence constrains it;
+                    # left masks, holes and past observations are diagnostics.
+                    if np.any(right_gap<.05):continue
+                    first=0 if connection is None else connection['start_index']
+                    if not advisory_geometry_ok(candidate[first:],points[first:]):continue
+                    shape=shape_report(candidate[first:],points[first:],terminal_continuation=True,**(limits or {}))
+                    if not shape['ok']:continue
+                    checked=corridor_report(candidate,geometry,anchor,keys)
                     report.update(changed=True,reason='new_spatial_segment',shape=shape,corridor=checked,
-                        transition_start_m=start,transition_length_m=length,offset_change_m=target_delta,
-                        search_attempts=attempts,search_budget_exhausted=False)
+                        transition_start_m=progress_s if connection else start,transition_length_m=length,offset_change_m=target_delta,
+                        search_attempts=attempts,search_budget_exhausted=False,reference_connection=connection,
+                        corrected_segment_end_s=segment_end,terminal_offset_m=float((candidate[-1]-points[-1])@normals[-1]))
                     return candidate,report
             if budget_exhausted:break
         if budget_exhausted:break
     report.update(search_attempts=attempts,search_budget_exhausted=budget_exhausted)
-    if not corridor['ok'] and corridor.get('boundary_unsafe'):
-        raise CorridorUnsafe('confirmed boundary contradicts current reference: '+str(corridor))
     report['reason']='hold_no_feasible_spatial_change'
     return current.copy(),report
 
@@ -970,6 +1034,8 @@ class CameraRightPath:
         self.receiver_health = None
         rospy.Subscriber('/hybridnets/timing_diagnostics', String, self.receiver_health_cb, queue_size=10)
         rospy.Subscriber('/localization_safe', Bool, self.safe_cb, queue_size=1)
+        rospy.Subscriber('/gps_guard/status', String, self.alignment_status_cb, queue_size=10)
+        rospy.Subscriber('/gps_guard/local_fault_event', String, self.alignment_fault_cb, queue_size=10)
         rospy.Subscriber('/neupan/camera_path_guard', String, self.hazard_ack_cb, queue_size=1)
         self.geometry_diagnostics = {}
         self.cache_geometry = {}
@@ -977,7 +1043,12 @@ class CameraRightPath:
         rate = float(rospy.get_param('~processing_rate_hz', 5.))
         if not math.isfinite(rate) or not 2 <= rate <= 10:
             raise ValueError('processing_rate_hz must be within [2,10]')
-        rospy.Timer(rospy.Duration(1./rate), self.tick)
+        self.processing_health={}
+        self.processing_health_pub=rospy.Publisher('/camera_right/processing_health',String,queue_size=1)
+        self.processing_timer=rospy.Timer(rospy.Duration(1./rate), self.tick)
+        # Independent timer: it must report lock/compute stalls without taking
+        # the reference-processing lock or altering any motion authority.
+        self.processing_watchdog=rospy.Timer(rospy.Duration(1.),self.publish_processing_health)
 
     def path_cb(self, msg):
         with self.lock:
@@ -987,6 +1058,10 @@ class CameraRightPath:
             if signature == self.route_signature:
                 return
             self.route_signature = signature
+            # Bind to the incoming ORIGINAL OSM before densification. Its
+            # digest must use exactly the consumer's path_digest convention.
+            self.original_path_digest=hashlib.sha256(json.dumps([(round(p.pose.position.x,3),round(p.pose.position.y,3))
+                for p in msg.poses],separators=(',',':')).encode()).hexdigest()
             self.frozen_reference_odom=None
             self.frozen_reference_map=None
             self.reference_version=0
@@ -1000,6 +1075,8 @@ class CameraRightPath:
             self.reference_transition_end_odom=None
             self.reference_road_evidence={}
             self.reference_progress_s=None
+            self.reference_connection=None
+            self.reference_frame_invalidated=False
             self.path = copy.deepcopy(msg)
             dense=[]
             for a,b in zip(msg.poses[:-1],msg.poses[1:]):
@@ -1270,10 +1347,12 @@ class CameraRightPath:
         mount, mount_q = self.listener.lookupTransform('base_link', 'livox_frame', rospy.Time(0))
         if not np.allclose(mount, self.lidar_origin, atol=.005) or abs(mount_q[3]) < .99999:
             raise ValueError('LiDAR mount TF differs from projection configuration')
-        if not all(p.get(k) is True for k in ('valid','road_polygon_valid','right_boundary_valid')):
+        advisory=getattr(self,'strategy',None)=='segment_reference'
+        required=('valid','right_boundary_valid') if advisory else ('valid','road_polygon_valid','right_boundary_valid')
+        if not all(p.get(k) is True for k in required):
             raise ValueError('reliable right boundary and measured road area required')
         single=p.get('left_boundary_valid') is not True
-        if single and len(p.get('road_polygon_px',[]))<3:
+        if single and not advisory and len(p.get('road_polygon_px',[]))<3:
             raise ValueError('single-side drivable area missing')
         if p.get('coordinate_space') != 'rotated_image_pixels' or (p.get('image_width'), p.get('image_height')) != self.resolution:
             raise ValueError('image coordinates mismatch')
@@ -1314,7 +1393,7 @@ class CameraRightPath:
         self.observe_verification(curves,capture,now)
         if p.get('scene_type') in ('intersection','open_area'):
             raise ValueError('junction or open area')
-        x,ly,ry=boundary_samples(curves[0],curves[1],getattr(self,'clearance_min',1.)-float(self.origin[1]))
+        x,ly,ry=boundary_samples(curves[0],curves[1],getattr(self,'clearance_min',1.)-float(self.origin[1]),advisory=advisory)
         known=np.isfinite(ly);single=not known.all();y=ry+self.clearance
         if known.any():
             width=(ly-ry)[known]
@@ -1334,7 +1413,7 @@ class CameraRightPath:
             capture_time = rospy.Time(capture//1000000000, capture%1000000000)
             anchor, quaternion = self.listener.lookupTransform('map','odom',capture_time)
             self.capture_map_anchor = (anchor[:2],tf.transformations.euler_from_quaternion(quaternion)[2])
-            if single:
+            if single and p.get('road_polygon_valid') is True and len(p.get('road_polygon_px',[]))>=3:
                 odom_position=planar_transform([position[:2]],self.capture_map_anchor,True)[0]
                 angle=yaw-self.capture_map_anchor[1];co,so=math.cos(angle),math.sin(angle)
                 rz=np.array([[co,-so,0.],[so,co,0.],[0.,0.,1.]])
@@ -1354,12 +1433,79 @@ class CameraRightPath:
         headings = np.arctan2(np.diff(points[:, 1]), np.diff(points[:, 0]))
         headings = np.r_[headings, headings[-1]]
         angles = np.arctan2(np.sin(headings-yaw), np.cos(headings-yaw))
-        if np.any(np.abs(angles[usable]) > math.radians(15)):
+        if not advisory and np.any(np.abs(angles[usable]) > math.radians(15)):
             raise ValueError('global route turning; retain junction guidance')
+        if advisory:
+            # Exclude distant sideways branches, but allow a continuous normal
+            # road bend; a vehicle-relative angle is not a turn-exit command.
+            usable &= np.abs(angles)<math.radians(60)
+            if not usable.any():raise ValueError('no forward road evidence')
         desired = np.interp(bx[usable], x, y)-by[usable]
         if np.all(np.abs(desired) > self.max_shift+1.):
             raise ValueError('camera route differs too far from global route')
         return points, bx, by, x, y, ly, ry, c, s, usable, float(np.median(desired))
+
+    def invalidate_reference_frame(self,reason,event_stamp):
+        """Explicit localization re-anchor only; retain independent dangers."""
+        self.cache.clear();getattr(self,'cache_geometry',{}).clear()
+        proof=getattr(self,'proof_cache',None)
+        if proof is not None:proof.clear()
+        self.current_proof_geometry={};self.hazard_proof={}
+        self.execution_contract=None;self.corridor_verified=False
+        self.last_hazard_verified_digest=None
+        getattr(self,'reference_road_evidence',{}).clear()
+        getattr(self,'anchor_history',deque()).clear()
+        self.frozen_reference_map=None;self.frozen_reference_odom=None
+        self.reference_transition_end_odom=None;self.reference_connection=None
+        self.reference_progress_s=None;self.reference_outside_count=0
+        self.reference_exit_frozen=False;self.reference_exit_end_s=None
+        self.reference_frame_invalidated=True
+        self.reference_version=getattr(self,'reference_version',0)+1
+        self.map_anchor=None;self.applied=None
+        self.pose_tick_snapshot=None
+        self.reference_frame_reset_diagnostics=dict(reason=reason,stamp=event_stamp)
+
+    def alignment_fault_cb(self,msg):
+        """Use the bridge's accepted local fault, never a stale reason string."""
+        try:
+            data=json.loads(msg.data);stamp=float(data['stamp'])
+            if (data.get('accepted') is not True or data.get('fault_triggered') is not True
+                    or not data.get('fault') or not math.isfinite(stamp)):return
+            if not -.05<=rospy.Time.now().to_sec()-stamp<=1.5:return
+            with self.lock:
+                if stamp<=getattr(self,'alignment_fault_stamp',-math.inf):return
+                self.alignment_fault_stamp=stamp
+                if self.strategy=='segment_reference':self.invalidate_reference_frame('local_odom_reanchor: '+str(data['fault']),stamp)
+        except (ValueError,TypeError,KeyError):return
+
+    def alignment_status_cb(self,msg):
+        try:
+            data=json.loads(msg.data);stamp=float(data['stamp'])
+            if not math.isfinite(stamp) or not -.05<=rospy.Time.now().to_sec()-stamp<=1.5:return
+            with self.lock:
+                if stamp<=getattr(self,'alignment_status_stamp',-math.inf):return
+                self.alignment_status_stamp=stamp
+                self.alignment_status=data
+                frame=data.get('reference_frame') or {}
+                instance=frame.get('instance_id');epoch=frame.get('odom_epoch')
+                if (isinstance(instance,str) and instance and isinstance(epoch,int)
+                        and not isinstance(epoch,bool) and epoch>=0):
+                    key=(instance,epoch);old=getattr(self,'alignment_frame_key',None)
+                    reset=frame.get('last_reset') or {}
+                    reset_stamp=reset.get('stamp',-math.inf)
+                    if (old is None and reset_stamp>getattr(self,'reference_accepted_stamp',math.inf)
+                            and reset_stamp>getattr(self,'alignment_fault_stamp',-math.inf)
+                            and self.strategy=='segment_reference'):
+                        self.invalidate_reference_frame('localization_reanchor_after_reference_acceptance',stamp)
+                    if old is not None and old!=key and self.strategy=='segment_reference':
+                        # The immediate fault event and persistent status may
+                        # describe the SAME re-anchor. Invalidate only once.
+                        if (old[0]!=instance or reset_stamp>getattr(self,'alignment_fault_stamp',-math.inf)):
+                            self.invalidate_reference_frame('localization_coordinate_generation_changed',stamp)
+                        self.alignment_fault_stamp=max(getattr(self,'alignment_fault_stamp',-math.inf),reset_stamp)
+                    self.alignment_frame_key=key
+                    self.alignment_fault_stamp=max(getattr(self,'alignment_fault_stamp',-math.inf),reset_stamp)
+        except (ValueError,TypeError,KeyError):return
 
     def cache_pose(self,now,force=False):
         if getattr(self,'pose_tick_open',False) and not force and getattr(self,'pose_tick_snapshot',None) is not None:
@@ -1413,7 +1559,7 @@ class CameraRightPath:
                 window_yaw_deg=math.degrees(window_yaw),smooth_classification=bool(smooth),
                 distance_limit_m=min(.20,.50*elapsed+.01),
                 yaw_limit_deg=math.degrees(min(math.radians(2),math.radians(5)*elapsed+math.radians(.1))))
-            if (shift>1.e-6 or angle>1.e-6) and not smooth:
+            if (shift>1.e-6 or angle>1.e-6) and not smooth and getattr(self,'strategy',None)!='segment_reference':
                 if getattr(self,'last_verified_scope',None):self.remember_observation_gap('map alignment invalidated camera support')
                 self.cache.clear()
                 getattr(self,'cache_geometry',{}).clear()
@@ -1425,6 +1571,33 @@ class CameraRightPath:
                 remap_cache_geometry(self.cache,getattr(self,'cache_geometry',{}),points,(anchor[:2],anchor_yaw),self.max_shift,
                     getattr(self,'clearance_min',1.),getattr(self,'clearance_max',2.),float(getattr(self,'origin',np.zeros(3))[1]))
                 self.cache_alignment_diagnostics['action']='reprojected_fixed_odom'
+                if getattr(self,'strategy',None)=='segment_reference':
+                    # Accepted reference and its entry endpoint live in map;
+                    # measured ROAD evidence remains in continuous local odom.
+                    end=getattr(self,'reference_transition_end_odom',None)
+                    if end is not None:
+                        end_map=planar_transform([end],self.map_anchor)
+                        self.reference_transition_end_odom=planar_transform(end_map,(anchor[:2],anchor_yaw),True)[0]
+                    frozen=getattr(self,'frozen_reference_map',None)
+                    if frozen is not None:self.frozen_reference_odom=planar_transform(frozen,(anchor[:2],anchor_yaw),True)
+                    status=getattr(self,'alignment_status',{})
+                    age=rospy.Time.now().to_sec()-status.get('stamp',-math.inf)
+                    correction=status.get('alignment_correction') or {}
+                    correction_age=status.get('alignment_correction_age_sec')
+                    confirmed=bool(0<=age<=1.5 and correction.get('valid') is True
+                        and isinstance(correction_age,(int,float)) and 0<=correction_age<=1.5)
+                    self.cache_alignment_diagnostics.update(reference_action='held_map_reference',
+                        coordinate_continuity='bridge_generation' if 0<=age<=1.5 and getattr(self,'alignment_frame_key',None) else 'unconfirmed',
+                        correction_source='bridge_alignment_correction' if confirmed else 'unclassified_tf_update',
+                        localization_mode=status.get('mode'),localization_reason=status.get('reason'),
+                        local_fault_reason=status.get('local_fault_reason'),status_age_sec=age if math.isfinite(age) else None,
+                        reference_frame_key=getattr(self,'alignment_frame_key',None),
+                        retained_observations=len(self.cache.committed))
+                    if not smooth and not confirmed and not (0<=age<=1.5 and getattr(self,'alignment_frame_key',None)):
+                        # Unknown continuity is NOT a reset certificate. Drop
+                        # only uncertain odom observations; hold map geometry.
+                        self.cache.clear();getattr(self,'cache_geometry',{}).clear()
+                        self.cache_alignment_diagnostics.update(action='observation_cache_refreshed_reference_held',retained_observations=0)
         self.map_anchor=(anchor[:2],anchor_yaw)
         self.anchor_time=now
         self.anchor_sample_sec=latest.to_sec()
@@ -1451,57 +1624,20 @@ class CameraRightPath:
         if 'progress_s' in window:self.reference_progress_s=window['progress_s']
         elif window.get('reason')=='vehicle_far_from_route':self.reference_progress_s=None
         hazards=getattr(self,'hazards',None)
-        # A held danger must not divert advisory repairs into the legacy
-        # three-amplitude cache generator. Generate here, then use the SAME
-        # spatial proof/consumer prediction ACK as cached recovery below.
+        # Retained independent danger does not send advisory generation into
+        # the legacy execution-contract channel.
         context_points=points[max(0,window['progress_index']-1):] if 'progress_index' in window else points
         context=osm_guidance_context(context_points,position[:2],yaw,self.osm_junctions)
-        self.guidance_diagnostics=dict(context=context,lookahead_m=8.,skip_new_cache=context!='straight')
+        self.guidance_diagnostics=dict(context=context,lookahead_m=8.,skip_new_cache=context not in ('straight','osm_turn'))
         candidate=current.copy();diagnostic=dict(changed=False,reason='hold_advisory_reference');new_transition_end=None
-        # Measured danger is checked even while heading/exit events debounce.
-        checked=corridor_report(current,geometry,anchor,values)
-        if not checked['ok'] and checked.get('boundary_rejected_indices'):
-            self.hazards.remember(geometry,checked['boundary_rejected_indices'])
-            self.corridor_stop_required=True
-        arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(points,axis=0),axis=1))]
-        near=window.get('progress_index',int(np.argmin(np.linalg.norm(points-np.asarray(position[:2]),axis=1))))
-        progress_s=window.get('progress_s',float(arc[near]))
-        real_exit=context in ('osm_turn','osm_junction')
-        event=context if real_exit else ('explicit_exit' if self.osm_exit_requested else None)
-        sample=getattr(self,'last_tick',now)
-        if sample!=getattr(self,'reference_exit_sample',None):
-            self.reference_exit_sample=sample
-            self.reference_exit_count=(getattr(self,'reference_exit_count',0)+1
-                if event is not None and event==getattr(self,'reference_exit_event',None) else int(event is not None))
-            self.reference_exit_event=event
-            completed=(getattr(self,'reference_exit_end_s',None) is not None
-                and progress_s>=self.reference_exit_end_s)
-            self.reference_exit_clear_count=(getattr(self,'reference_exit_clear_count',0)+1
-                if completed and context=='straight' and event is None else 0)
-            if self.reference_exit_clear_count>=3:
-                self.reference_exit_frozen=False
-                self.reference_exit_end_s=None
-        pending_exit=None
-        if event is not None or getattr(self,'reference_exit_frozen',False):
-            self.reference_outside_count=0
-        if getattr(self,'reference_exit_frozen',False):
-            diagnostic=dict(changed=False,reason='hold_spatial_exit_until_traversed')
-        elif event is not None:
-            diagnostic=dict(changed=False,reason='confirming_osm_exit')
-            if self.reference_exit_count>=3:
-                for length in (8.,12.,16.,24.,32.):
-                    u=np.clip((arc-arc[near]-2.)/length,0,1);ramp=u**3*(10-15*u+6*u*u)
-                    proposed=current+(points-current)*ramp[:,None]
-                    if (shape_report(proposed,points,**self.vehicle_limits)['ok']
-                            and corridor_report(proposed,geometry,anchor,values)['ok']):
-                        candidate=proposed
-                        pending_exit=min(float(arc[-1]),float(arc[near])+2.+length)
-                        diagnostic=dict(changed=bool(np.max(abs(candidate-current))>.001),reason='spatial_return_to_osm');break
-        elif context!='straight':
+        # Reference feasibility is NOT evidence of vehicle-motion danger.
+        # Existing independently sourced hazards remain separate and retained.
+        checked=corridor_report(current,geometry,anchor,local_keys)
+        if context in ('heading_deviation','osm_invalid_geometry','osm_junction'):
             # A temporary vehicle yaw error is not a road turn. Hold geometry
             # and let the existing NeuPAN controller follow/avoid obstacles.
             self.reference_outside_count=0
-            diagnostic=dict(changed=False,reason='hold_reference_heading_deviation')
+            diagnostic=dict(changed=False,reason='hold_reference_'+context)
         else:
             transitioning=False
             if getattr(self,'reference_transition_end_odom',None) is not None:
@@ -1512,28 +1648,34 @@ class CameraRightPath:
             road_changed=bool(len(common)>=3 and np.median([
                 np.linalg.norm(np.asarray(geometry[i]['points_odom'])[2]-old_road[i]) for i in common])>.5)
             try:
-                checked=corridor_report(current,geometry,anchor,values)
-                if transitioning and not road_changed and checked['ok']:
+                if transitioning and not road_changed:
                     proposed=current;diagnostic=dict(changed=False,reason='hold_spatial_entry_until_traversed')
                 else:
+                    segment_end=None
+                    if local_keys:
+                        arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(points,axis=0),axis=1))]
+                        for junction in self.osm_junctions:
+                            nearest=int(np.argmin(np.linalg.norm(points-np.asarray(junction),axis=1)))
+                            if (np.linalg.norm(points[nearest]-junction)<=1.
+                                    and arc[nearest]>arc[local_keys[-1]]+1.):
+                                segment_end=min(segment_end or float(arc[-1]),float(arc[nearest]))
                     proposed,diagnostic=stable_segment_reference(points,current,geometry,anchor,values,position,
                         self.vehicle_limits,float(self.origin[1]),(self.clearance_min,self.clearance_max),self.max_shift,
-                        getattr(self,'reference_progress_s',None),yaw)
-            except CorridorUnsafe:
-                checked=corridor_report(current,geometry,anchor,values)
-                if checked.get('boundary_rejected_indices'):
-                    self.hazards.remember(geometry,checked['boundary_rejected_indices'])
-                    self.corridor_stop_required=True
-                raise
+                        getattr(self,'reference_progress_s',None),yaw,segment_end)
+            except CorridorUnsafe as error:
+                proposed=current
+                candidate=current.copy()
+                diagnostic=dict(changed=False,reason='advisory_candidate_rejected_hold_reference',
+                    reference_failure=str(error),corridor=checked)
+                self.reference_outside_count=0
             # Three DIFFERENT accepted frames confirm an out-of-band event.
-            if diagnostic['changed']:
+            if diagnostic['changed'] and diagnostic.get('reason')=='new_spatial_segment':
                 if self.last_seq!=getattr(self,'reference_event_seq',None):
                     self.reference_event_seq=self.last_seq
                     self.reference_outside_count=getattr(self,'reference_outside_count',0)+1
                 if self.reference_outside_count>=3:
                     candidate=proposed;self.reference_outside_count=0
                     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(points,axis=0),axis=1))]
-                    near=window.get('progress_index',int(np.argmin(np.linalg.norm(points-np.asarray(position[:2]),axis=1))))
                     end=min(len(points)-1,int(np.searchsorted(arc,diagnostic['transition_start_m']+diagnostic['transition_length_m'])))
                     new_transition_end=planar_transform([points[end]],anchor,True)[0]
                 else:diagnostic.update(changed=False,reason='confirming_out_of_band_reference')
@@ -1545,30 +1687,35 @@ class CameraRightPath:
             self.cache_pose(finished,force=True)
             if set(values)!=set(self.cache.values(finished)):
                 candidate=current
-                pending_exit=None
+                new_transition_end=None
                 diagnostic=dict(changed=False,reason='evidence_expired_during_reference_search')
             anchor=self.map_anchor
-            fresh_geometry={i:v for i,v in self.cache_geometry.items() if i in self.cache.values(finished)}
-            check=corridor_report(candidate,fresh_geometry,anchor,fresh_geometry)
-            if not check['ok'] and check.get('boundary_rejected_indices'):
-                self.hazards.remember(fresh_geometry,check['boundary_rejected_indices'])
-                self.corridor_stop_required=True
-                raise CorridorUnsafe('completion-time confirmed boundary conflict')
-        if pending_exit is not None:
-            self.reference_exit_frozen=True
-            self.reference_exit_end_s=pending_exit
-            self.reference_outside_count=0
         if diagnostic.get('changed'):
+            self.reference_accepted_stamp=rospy.Time.now().to_sec()
+            self.reference_frame_invalidated=False
             self.reference_version=getattr(self,'reference_version',0)+1
-            if new_transition_end is not None:self.reference_transition_end_odom=new_transition_end
+            # Commit geometry and its complete state together. None explicitly
+            # ends the old entry; it must not silently inherit an obsolete end.
+            self.reference_transition_end_odom=new_transition_end
+            self.reference_exit_frozen=False
+            self.reference_exit_end_s=None
+            self.reference_exit_count=0
+            self.reference_exit_event=None
+            self.reference_exit_clear_count=0
             self.reference_road_evidence={i:np.asarray(item['points_odom'])[2].copy() for i,item in geometry.items()}
+            self.reference_connection=diagnostic.get('reference_connection')
         self.frozen_reference_odom=planar_transform(candidate,anchor,True)
         self.frozen_reference_map=candidate.copy()
-        if hazards and hazards.regions:
-            return self.cached_result(result,finished,dt,advisory_candidate=(candidate,diagnostic))
-        self.execution_contract=None;self.corridor_stop_required=False
-        self.corridor_verified=bool(geometry)
+        # Never enter the legacy 0.3m/s visual-execution recovery channel for
+        # ordinary advisory geometry. Do not clear independent retained danger.
+        self.execution_contract=None
+        self.hazard_proof={}
+        self.corridor_stop_required=bool(hazards and (hazards.regions or hazards.blocked)
+            or getattr(self,'recovery_unlocated_required',False))
+        self.corridor_verified=bool(geometry) and not self.corridor_stop_required
         diagnostic.setdefault('decision_window',window)
+        diagnostic.setdefault('reference_connection',getattr(self,'reference_connection',None))
+        diagnostic['correction_established']=bool(np.max(np.linalg.norm(candidate-points,axis=1))>.001)
         self.final_path_diagnostics=diagnostic
         self.applied=np.linalg.norm(candidate-points,axis=1)
         self.shift=float(np.max(self.applied))
@@ -1729,14 +1876,87 @@ class CameraRightPath:
         self.shift=float(self.applied[np.argmax(np.abs(self.applied))])
         return forward_active,len(values)
 
-    def tick(self, _event):
+    def processing_stage(self,stage,**fields):
+        old=getattr(self,'processing_health',{});now=time.monotonic()
+        durations=dict(old.get('stage_durations_ms',{}))
+        if old.get('stage') and 'stage_at_mono' in old:
+            durations[old['stage']]=max(0.,now-old['stage_at_mono'])*1000
+        state=dict(old,stage=stage,stage_at_mono=now,stage_durations_ms=durations)
+        state.update(fields);self.processing_health=state
+
+    def publish_processing_health(self,_event=None):
+        publisher=getattr(self,'processing_health_pub',None)
+        if publisher is None:return
+        now=time.monotonic();state=dict(getattr(self,'processing_health',{}))
+        packet=getattr(self,'packet',None);packet=packet if isinstance(packet,dict) else {}
+        state.update(reported_at_mono=now,latest_input_frame=packet.get('frame_seq'),
+            stage_age_ms=max(0.,now-state.get('stage_at_mono',now))*1000,
+            active_elapsed_ms=max(0.,now-state.get('started_at_mono',now))*1000 if state.get('active') else None,
+            timer_alive=getattr(getattr(self,'processing_timer',None),'is_alive',lambda:None)())
+        try:publisher.publish(String(data=json.dumps(state,default=str)))
+        except Exception as error:
+            self.processing_health=dict(state,health_publish_error=str(error))
+
+    def advisory_fallback(self,reason,now):
+        """Processing/reference failure only; never clears independent danger."""
+        if self.path is None or len(self.path.poses)<2:return
+        result=copy.deepcopy(self.path)
+        original=np.array([[p.pose.position.x,p.pose.position.y] for p in result.poses])
+        frozen=getattr(self,'frozen_reference_map',None)
+        candidate=original if frozen is None or np.shape(frozen)!=np.shape(original) else np.asarray(frozen,float)
+        if not np.isfinite(candidate).all():candidate=original
+        for pose,point in zip(result.poses,candidate):
+            pose.pose.position.x=float(point[0]);pose.pose.position.y=float(point[1])
+        self.shift=float(np.max(np.linalg.norm(candidate-original,axis=1)))
+        hazards=getattr(self,'hazards',None)
+        self.corridor_stop_required=bool(hazards and (hazards.regions or hazards.blocked)
+            or getattr(self,'recovery_unlocated_required',False))
+        self.execution_contract=None;self.corridor_verified=False
+        self.final_path_diagnostics=dict(changed=False,reason='processing_error_hold_reference',
+            reference_failure=reason,reference_connection=getattr(self,'reference_connection',None),
+            correction_established=bool(self.shift>.001))
+        self.publish_result(result,now,'processing_error_hold_reference: '+reason,self.shift>.001,0)
+
+    def tick(self,event):
+        started=time.monotonic()
+        packet=getattr(self,'packet',None);packet=packet if isinstance(packet,dict) else {}
+        self.processing_stage('waiting_for_lock',active=True,started_at_mono=started,
+            tick_id=getattr(self,'processing_health',{}).get('tick_id',0)+1,
+            input_frame=packet.get('frame_seq'),thread=threading.current_thread().name,
+            stage_durations_ms={},lock_wait_ms=None)
+        error=None
+        try:
+            self._tick_locked(event)
+        except Exception as caught:
+            import traceback
+            error=dict(type=type(caught).__name__,message=str(caught),
+                stage=getattr(self,'processing_health',{}).get('stage'),traceback=traceback.format_exc()[-16000:])
+            self.processing_stage('exception',last_exception=error)
+            try:getattr(rospy,'logerr_throttle',lambda *args:None)(2.,'Camera right processing exception at %s: %s',error['stage'],error['traceback'])
+            except Exception:pass # Console failure must not kill the processing timer.
+            if getattr(self,'strategy',None)=='segment_reference':
+                try:
+                    with self.lock:self.advisory_fallback(str(caught),time.monotonic())
+                except Exception as publish_error:
+                    self.processing_stage('fallback_publish_failed',fallback_exception=str(publish_error))
+        finally:
+            self.pose_tick_open=False;self.pose_tick_snapshot=None
+            finished=time.monotonic()
+            extra=dict(active=False,finished_at_mono=finished,tick_elapsed_ms=(finished-started)*1000)
+            if error is None:extra.update(last_completed_frame=packet.get('frame_seq'),last_completed_at_mono=finished)
+            self.processing_stage('failed' if error else 'idle',**extra)
+            self.publish_processing_health()
+
+    def _tick_locked(self, _event):
         with self.lock:
+            self.processing_stage('lock_acquired',lock_wait_ms=(time.monotonic()-self.processing_health['started_at_mono'])*1000)
             self.pose_tick_open=True
             self.pose_tick_snapshot=None
             now = time.monotonic()
             dt = min(1., now-self.last_tick)
             self.delivery_dt=dt
             self.last_tick = now
+            self.processing_stage('observation_diagnostics')
             self.observation_geometry_diagnostics=self.diagnose_observation(now)
             self.corridor_verified=False
             self.execution_contract=None
@@ -1759,21 +1979,25 @@ class CameraRightPath:
             cached_points=0
             try:
                 if hasattr(self,'osm_junctions'):
+                    self.processing_stage('pose_context')
                     position,yaw=self.cache_pose(now)
                     points=np.array([[p.pose.position.x,p.pose.position.y] for p in result.poses])
                     context=osm_guidance_context(points,position[:2],yaw,self.osm_junctions)
                     self.guidance_diagnostics=dict(context=context,lookahead_m=8.,
                         nearest_junction_distance_m=float(np.linalg.norm(np.asarray(self.osm_junctions)-np.asarray(position[:2]),axis=1).min())
                             if len(self.osm_junctions) else None,
-                        skip_new_cache=context!='straight')
-                    if context in ('osm_turn','osm_junction'):
+                        skip_new_cache=(context not in ('straight','osm_turn') if self.strategy=='segment_reference' else context!='straight'))
+                    if context in ('osm_turn','osm_junction') and self.strategy!='segment_reference':
                         self.osm_exit_requested=True
+                self.processing_stage('refine')
                 data = self.refine(now)
                 if getattr(self,'strategy','realtime') in ('segment_reference','segment_cache'):
                     points,bx,by,x,y,ly,ry,c,s,usable,target=data
                     self.route_usable_observation_points=int(np.count_nonzero(usable))
+                    self.processing_stage('cache_geometry')
                     for i in np.flatnonzero(usable):
-                        if (self.osm_exit_requested or context!='straight') and int(i) not in self.cache.committed and int(i) not in self.cache.pending:
+                        skip_context=context not in ('straight','osm_turn') if self.strategy=='segment_reference' else context!='straight'
+                        if (self.osm_exit_requested or skip_context) and int(i) not in self.cache.committed and int(i) not in self.cache.pending:
                             self.new_cache_skipped_points+=1
                             continue
                         desired=float(np.interp(bx[i],x,y)-by[i])
@@ -1806,6 +2030,7 @@ class CameraRightPath:
                         evidence.update(mode='dual' if np.isfinite(local[1]).all() else 'right_only',area=getattr(self,'capture_area',None),
                             route_point_odom=planar_transform([points[i]],self.capture_map_anchor,True)[0].tolist(),
                             normal_odom=planar_transform([normal],([0.,0.],self.capture_map_anchor[1]),True)[0].tolist())
+                    self.processing_stage('reference_search')
                     active,cached_points=(self.stable_result(result,now,dt) if self.strategy=='segment_reference' else self.cached_result(result,now,dt))
                     reason='cached_segment' if active else (self.final_path_diagnostics.get('rejection',
                         'confirming segment observations') if cached_points else 'confirming segment observations')
@@ -1820,27 +2045,32 @@ class CameraRightPath:
                         reason=self.final_path_diagnostics.get('rejection','no feasible visual correction')
             except (ValueError, TypeError, KeyError, IndexError, OverflowError, cv2.error, tf.Exception) as error:
                 reason = str(error)
-                if isinstance(error,CorridorUnsafe): self.corridor_stop_required=True
+                if isinstance(error,CorridorUnsafe) and self.strategy!='segment_reference': self.corridor_stop_required=True
                 getattr(self,'geometry_diagnostics',{})['first_rejection']=reason
                 if reason != 'confirming geometry':
                     self.confirmations = 0
                 self.shift = 0.
                 if getattr(self,'strategy','realtime') in ('segment_reference','segment_cache'):
                     try:
+                        self.processing_stage('fallback_reference_search')
                         active,cached_points=(self.stable_result(result,now,dt) if self.strategy=='segment_reference' else self.cached_result(result,now,dt))
                         if active:
                             reason='using cached segment; '+reason
                     except (ValueError,tf.Exception) as cache_error:
-                        if isinstance(cache_error,CorridorUnsafe):
+                        if isinstance(cache_error,CorridorUnsafe) and self.strategy!='segment_reference':
                             self.corridor_stop_required=True
                             reason='corridor safety STOP: '+str(cache_error)
+                        if self.strategy=='segment_reference':
+                            self.advisory_fallback(str(cache_error),now)
+                            return
                         if not isinstance(cache_error,CorridorUnsafe):
                             if getattr(self,'last_verified_scope',None):self.remember_observation_gap(str(cache_error))
                             self.cache.clear()
                             self.applied=None
             if (not active and not getattr(self,'corridor_stop_required',False)
                     and getattr(self,'guidance_diagnostics',{}).get('context','straight')!='straight'):
-                reason=self.guidance_diagnostics['context']+'; skip new camera segments; retain OSM; '+reason
+                retained='retain accepted advisory reference' if self.strategy=='segment_reference' else 'retain OSM'
+                reason=self.guidance_diagnostics['context']+'; skip new camera segments; '+retained+'; '+reason
             if any(message in reason for message in (
                     'capture-time vehicle TF unavailable',
                     'non-finite capture-time vehicle TF',
@@ -1850,6 +2080,7 @@ class CameraRightPath:
                     'stale vehicle TF')):
                 rospy.logwarn_throttle(
                     5., '\033[33mCamera right time alignment: %s\033[0m', reason)
+            self.processing_stage('publish_result')
             self.publish_result(result,now,reason,active,cached_points)
             self.pose_tick_open=False
 
@@ -1881,6 +2112,7 @@ class CameraRightPath:
         self.shift=float(offsets[np.argmax(np.abs(offsets))])
 
     def publish_result(self,result,now,reason,active,cached_points):
+        self.processing_stage('build_publication')
         # Diagnostic values only: never alter control gates or route geometry.
         packet = self.packet or {}
         delivered=np.array([[p.pose.position.x,p.pose.position.y] for p in result.poses])
@@ -1958,6 +2190,9 @@ class CameraRightPath:
             'advisory_clearance_band_m':[getattr(self,'clearance_min',1.),getattr(self,'clearance_max',3.)],
             'reference_role':'advisory' if getattr(self,'strategy',None)=='segment_reference' else 'visual_execution',
             'reference_version':getattr(self,'reference_version',0),
+            'reference_frame_invalidated':getattr(self,'reference_frame_invalidated',False),
+            'localization_reference_frame_key':getattr(self,'alignment_frame_key',None),
+            'reference_frame_reset':getattr(self,'reference_frame_reset_diagnostics',None),
             'osm_guidance_context':getattr(self,'guidance_diagnostics',{}),
             'route_usable_observation_points':getattr(self,'route_usable_observation_points',0),
             'new_cache_skipped_points':getattr(self,'new_cache_skipped_points',0),
@@ -2007,6 +2242,9 @@ class CameraRightPath:
         }
         if getattr(self,'strategy',None)=='segment_reference' and not getattr(self,'corridor_stop_required',False):
             inference_diagnostics['phase']='advisory_new_segment' if getattr(self,'final_path_diagnostics',{}).get('changed') else 'advisory_hold'
+            inference_diagnostics['correction_established']=bool(np.max(np.linalg.norm(delivered-original,axis=1))>.001)
+            if not inference_diagnostics['correction_established']:
+                inference_diagnostics['phase']='advisory_not_established'
         # Keep source header/route identity, and retain the complete route and goal.
         for i, pose in enumerate(result.poses):
             if i+1 < len(result.poses):
@@ -2017,6 +2255,7 @@ class CameraRightPath:
                 pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w = q
             elif i:
                 pose.pose.orientation = copy.deepcopy(result.poses[i-1].pose.orientation)
+        self.processing_stage('preview_publish')
         self.preview.publish(result)
         near_count, near_max, coverage = 0, 0., 0.
         original=np.array([[p.pose.position.x,p.pose.position.y] for p in self.path.poses])
@@ -2039,10 +2278,13 @@ class CameraRightPath:
             pass  # Unknown near-field participation is not advertised as active.
         signature = (result.header.seq, result.header.stamp.to_nsec(), tuple((round(q.pose.position.x, 3), round(q.pose.position.y, 3)) for q in result.poses))
         if self.control and signature != self.previous:
+            self.processing_stage('control_path_publish')
             self.output.publish(result)
             self.previous = signature
         strategy=getattr(self,'strategy','realtime')
         payload=dict(route_stamp_ns=result.header.stamp.to_nsec(),route_frame_id=result.header.frame_id,
+            original_path_digest=getattr(self,'original_path_digest',None),
+            original_endpoint_map=original[-1].tolist(),reference_endpoint_map=delivered[-1].tolist(),
             control_path_digest=digest,near_field_modified_points=near_count,near_field_max_offset_m=near_max,
             continuous_committed_coverage_m=coverage,corridor_stop_required=bool(getattr(self,'corridor_stop_required',False)),
             corridor_verified=bool(getattr(self,'corridor_verified',False)),active=active,control_enabled=self.control,
@@ -2055,8 +2297,11 @@ class CameraRightPath:
             camera_height_above_ground_m=float(getattr(self,'origin',np.zeros(3))[2]-getattr(self,'ground_z',-.2)),
             wheel_geometry_verified=getattr(self,'wheel_geometry_verified',False),
             camera_origin_base_m=getattr(self,'origin',np.zeros(3)).tolist(),reason=reason,
-            inference_diagnostics=inference_diagnostics,shift_m=self.shift,json_age_sec=now-self.received if self.received else None)
+            inference_diagnostics=inference_diagnostics,shift_m=self.shift,json_age_sec=now-self.received if self.received else None,
+            processing_health=dict(getattr(self,'processing_health',{})))
+        self.processing_stage('status_publish')
         self.status.publish(String(data=json.dumps(payload)))
+        self.processing_stage('status_published',last_published_frame=packet.get('frame_seq'),last_published_at_mono=time.monotonic())
 
 
 def main():

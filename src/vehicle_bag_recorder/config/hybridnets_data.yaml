@@ -58,6 +58,7 @@ topics:
   - /camera_right/reference_path
   - /camera_right/control_path
   - /camera_right/status
+  - /camera_right/processing_health
   - /cmd_vel/selected
   - /cmd_vel/auto
   - /vehicle/control_mode/status

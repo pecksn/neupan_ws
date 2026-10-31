@@ -239,6 +239,18 @@ class TimingTests(unittest.TestCase):
         self.assertIsNone(diagnostic['result_seq'])
         self.assertEqual(diagnostic['timing_ms'],{})
 
+    def test_valid_right_edge_without_polygon_can_feed_advisory_consumer(self):
+        node=self.receiver()
+        self.receive(node,self.packet(road_polygon_valid=False,road_polygon_px=[],
+            left_boundary_valid=False,left_boundary_px=[]))
+        self.assertTrue(node.valid_pub.messages[-1])
+
+    def test_missing_polygon_does_not_invent_valid_right_edge(self):
+        node=self.receiver()
+        self.receive(node,self.packet(road_polygon_valid=False,road_polygon_px=[],
+            left_boundary_valid=False,left_boundary_px=[],right_boundary_valid=False,right_boundary_px=[]))
+        self.assertFalse(node.valid_pub.messages[-1])
+
     def test_stage_timing_and_sequence_gap_preserved(self):
         node=self.receiver()
         for seq in (1,3):

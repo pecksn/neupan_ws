@@ -376,6 +376,7 @@ class PathBoundaryTests(unittest.TestCase):
         node=NS(packet=None,path=original,delivered_points=baseline.copy(),delivery_dt=.2,
                 corridor_stop_required=False,corridor_verified=True,control=True,status=NS(publish=Mock()))
         node.remember_observation_gap=n['CameraRightPath'].remember_observation_gap.__get__(node)
+        node.processing_stage=Mock()
         namespace['publish_result'](node,candidate,10.,'test',True,1)
         self.assertTrue(node.corridor_stop_required)
         np.testing.assert_array_equal(node.delivered_points,baseline)
