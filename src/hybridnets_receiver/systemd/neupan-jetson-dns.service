@@ -1,0 +1,13 @@
+[Unit]
+Description=NUC15 DNS resolver for the Jetson wired link
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/neupan-jetson-dns.conf
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

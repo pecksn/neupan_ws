@@ -1,5 +1,7 @@
 # 视频独立自启，JSON随NeuPAN启动
 
+nuc15 迁移（2026-11-03）：主机目录是 `/home/nuc15/lxw/neupan_ws`，容器内仍是 `/home/nuc/lxw/neupan_ws`。两项服务已在 nuc15 安装并启用；NUC 视频口为 `192.168.1.10`、GPU 为 `192.168.1.20`。桌面状态终端已使用主机新路径。网络路由、设备及验收情况见 [nuc15设备接入.md](../../nuc15设备接入.md)。
+
 - `neupan-ros-master.service`：只维持共享ROS1 Master，不启动雷达、底盘或规划。
 - `neupan-remote-video.service`：只接收GPU的H.264/RTP UDP 5000，发布`/camera/remote_image_raw`、`/camera/remote_camera_info`，写入`/dev/video0`；无JSON、绘图、录像或弹窗。
 - `full_system_run.launch`：默认`enable_hybridnets_video:=false`，仍启动原JSON接收及按配置启用的靠右逻辑。GPU命令与5000/6000端口不变。

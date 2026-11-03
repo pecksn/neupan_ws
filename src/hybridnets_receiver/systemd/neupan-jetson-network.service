@@ -1,0 +1,15 @@
+[Unit]
+Description=NUC15 internet sharing to Jetson only (Wi-Fi first, cellular fallback)
+Requires=docker.service
+Wants=network-online.target
+After=docker.service network-online.target
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /home/nuc15/lxw/neupan_ws/src/hybridnets_receiver/scripts/nuc15_network_share.sh start
+ExecStop=/bin/bash /home/nuc15/lxw/neupan_ws/src/hybridnets_receiver/scripts/nuc15_network_share.sh stop
+
+[Install]
+WantedBy=multi-user.target

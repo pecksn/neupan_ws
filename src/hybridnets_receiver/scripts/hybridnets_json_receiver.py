@@ -630,7 +630,7 @@ class HybridNetsJsonReceiver:
                 if self.require_control_fields:
                     rospy.logwarn_throttle(5.,
                         '\033[33mHybridNets control unavailable: %s; UDP received=%d rejected_sender=%d; '
-                        'GPU must send inference JSON to NUC 192.168.10.21:6000 (video alone is insufficient)\033[0m',
+                        'GPU must send inference JSON to NUC 192.168.1.10:6000 (video alone is insufficient)\033[0m',
                         self.last_reason, getattr(self, 'received_datagrams', 0),
                         getattr(self, 'rejected_sender_datagrams', 0))
         diagnostic = DiagnosticStatus()

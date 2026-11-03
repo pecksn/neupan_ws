@@ -1,0 +1,2 @@
+# UGREEN AIC8800DC: eject only its factory driver disk to enable Wi-Fi mode.
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd*", ENV{DEVTYPE}=="disk", ATTRS{idVendor}=="a69c", ATTRS{idProduct}=="5722", RUN+="/usr/bin/eject /dev/%k"

@@ -70,7 +70,7 @@ class RobotBaseDriver:
         rospy.init_node('robot_base_driver')
 
         # 参数
-        self.port = rospy.get_param('~port', '/dev/ttyUSB0')
+        self.port = rospy.get_param('~port', '/dev/robot_base')
         self.baudrate = rospy.get_param('~baudrate', 115200)
         self.base_frame = rospy.get_param('~base_frame', 'base_link')
         self.odom_frame = rospy.get_param('~odom_frame', 'odom')

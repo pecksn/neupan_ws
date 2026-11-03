@@ -2,8 +2,8 @@
 video_port: 5000
 result_port: 6000
 management_port: 6001       # NUC actively challenges and leases the GPU identity; no data-driven takeover.
-bind_ip: "0.0.0.0"          # NUC USB NIC is 192.168.10.21; this also permits startup while unplugged.
-allowed_sender_ip: "192.168.10.20"
+bind_ip: "0.0.0.0"          # nuc15 GPU-link NIC is 192.168.1.10; permits startup while unplugged.
+allowed_sender_ip: "192.168.1.20"
 
 image_topic: "/camera/remote_image_raw"
 camera_info_topic: "/camera/remote_camera_info"

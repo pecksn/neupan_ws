@@ -1,0 +1,5 @@
+# Install on the NUC host in /etc/udev/rules.d/, not inside Docker.
+# G90 RTK: bind the device by its unique USB serial number.
+SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", ATTRS{serial}=="5B0A021611", GROUP="dialout", MODE="0660", SYMLINK+="wheeltec_gnss"
+# Vehicle CH340 has no unique USB serial; only use one 1a86:7523 adapter.
+SUBSYSTEM=="tty", KERNEL=="ttyUSB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", GROUP="dialout", MODE="0660", SYMLINK+="robot_base"

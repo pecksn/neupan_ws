@@ -34,6 +34,10 @@
 
 ## 1.1 编译与环境准备
 
+nuc15 已安装原视频接收开机自启动（共享 ROS Master + UDP 5000 → `/camera/remote_image_raw`、`/dev/video0`），不启动整车或 JSON；JSON 仍由全系统启动。登录桌面后会显示接收状态终端，无视频弹窗。宿主机可用 `journalctl -u neupan-remote-video.service -n 20 -f` 查看实际接收 FPS。
+
+nuc15 接口、固定串口别名和迁移检查见 [nuc15设备接入.md](nuc15设备接入.md)。主机目录为 `/home/nuc15/lxw/neupan_ws`，容器内仍映射为 `/home/nuc/lxw/neupan_ws`。底盘默认串口改为 `/dev/robot_base`，RTK 保持 `/dev/wheeltec_gnss`。
+
 NUC 主机输入 `Neupan`、按 `e` 进入容器，以下命令都在 ROS1 Noetic 环境中执行。日常启动无需重新编译；可直接使用 [核心启动指令.md](核心启动指令.md) 中的整段命令。
 
 ```bash
@@ -50,7 +54,7 @@ cd /home/nuc/lxw/neupan_ws
 conda activate lxw
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
-sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
 ```
 
 ## 1.2 三种室外导航模式
@@ -489,7 +493,7 @@ cd src/livox_ros_driver2/
 #nx super
 sudo ifconfig enP8p1s0 192.168.1.100 netmask 255.255.255.0
 #nuc
-sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
 ```
 
 ### 启动 Livox ROS Driver 2
@@ -1098,7 +1102,7 @@ catkin_make -DPYTHON_EXECUTABLE=/root/miniconda3/envs/lxw/bin/python
 conda activate lxw
 cd /home/nuc/lxw/fast_lio_ws
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
-sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
 roslaunch livox_ros_driver2 msg_MID360.launch
 
 #启动 FAST_LIO 建图
@@ -1324,7 +1328,7 @@ savePCDDirectory: "/home/nuc/lxw/lio_sam_ws/src/LIO-SAM-MID360/PCD"
    ```bash
    conda activate lxw
    cd /home/nuc/lxw/neupan_ws
-   sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+   sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
    source devel/setup.bash
    roslaunch livox_ros_driver2 msg_MID360.launch
    ```
@@ -1525,7 +1529,7 @@ conda activate lxw
 cd /home/nuc/lxw/neupan_ws
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
-sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
 # 启动整套（室内）
 roslaunch neupan_ros full_system_run.launch
 # 在 RViz 用 2D Nav Goal 点目标，观察 /sPath 和 /neupan_plan，确认 /neupan_cmd_vel 发出
@@ -1566,7 +1570,7 @@ conda activate lxw
 cd /home/nuc/lxw/neupan_ws
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
-sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
 roslaunch teb_test outdoor_teb_test.launch
 ```
 
@@ -1577,7 +1581,7 @@ conda activate lxw
 cd /home/nuc/lxw/neupan_ws
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
-sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
 roslaunch neupan_ros outdoor_global_only_test.launch direct_tracker_yaw_offset_deg:=0 direct_tracker_projected_goal_stop_tolerance:=1.0
 ```
 
@@ -1588,7 +1592,7 @@ conda activate lxw
 cd /home/nuc/lxw/neupan_ws
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
-sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
 roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
 ```
 
@@ -2205,7 +2209,7 @@ source install/setup.bash
 
 ros2 launch usb_camera hybridnets_stream.launch.py \
   backend:=tensorrt \
-  target_ip:=192.168.10.21 \
+  target_ip:=192.168.1.10 \
   video_port:=5000 \
   result_port:=6000 \
   bitrate:=8000000
@@ -2222,7 +2226,7 @@ source install/setup.bash
 ros2 launch usb_camera hybridnets_video_replay.launch.py \
   video_path:=/home/p/lxw/lxwgdutcar_ai_ws/video/HybridNets/inputs/rosbag20260921_153216/rosbag20260921_153216_camera.mp4 \
   backend:=tensorrt \
-  target_ip:=192.168.10.21 \
+  target_ip:=192.168.1.10 \
   video_port:=5000 \
   result_port:=6000 \
   bitrate:=8000000 \
@@ -2301,24 +2305,24 @@ GPU 当前输出 `normal` / `unknown`，场景字段不决定是否保留边界�
 
 ## 12.7 GPU 板 → NUC 实时视觉传输（已实现）
 
-两板使用 `192.168.10.0/24`，与雷达网段分开：
+nuc15 与 Jetson 当前使用 `192.168.1.0/24`，雷达口也使用该网段但属于另一条独立链路。已通过持久化主机路由区分 `.20/32`（Jetson 口）和 `.183/32`（雷达口），并设置接口 ARP 约束；配置见 [nuc15设备接入.md](nuc15设备接入.md)。
 
 | 设备/接口 | 地址 | 用途 |
 |---|---|---|
-| GPU 板 `eno1` | `192.168.10.20/24` | ROS2 推理与发送 |
-| NUC `enxec1ac30270b6`，连接名 `GPU板通信-千兆` | `192.168.10.21/24` | ROS1 接收，10月21日实机确认的当前千兆网口 |
-| NUC `enp114s0` | `192.168.1.100/24` | MID360 专用 |
+| GPU 板 `eno1` | `192.168.1.20/24` | ROS2 推理与发送 |
+| nuc15 `enxec1ac30270b6`，连接名 `GPU板通信` | `192.168.1.10/24` | ROS1 接收，ASIX USB 千兆网卡 |
+| NUC `enp86s0` | `192.168.1.100/24` | MID360 专用 |
 
 NUC 主机检查网络（不要在 ROS1 容器内修改 NetworkManager）：
 
 ```bash
-sudo nmcli connection up "GPU板通信-千兆"
+sudo nmcli connection up "GPU板通信"
 ip -4 -brief addr
-ip route get 192.168.10.20
-ping 192.168.10.20
+ip route get 192.168.1.20
+ping 192.168.1.20
 ```
 
-当前路由应显示接口 `enxec1ac30270b6`、源地址 `192.168.10.21`。旧百兆连接 `GPU板通信` 对应 `enxec1ac33f2710`，仅换回该网卡时使用，不要同时在两个接口启用同一IP。
+当前路由应显示接口 `enxec1ac30270b6`、源地址 `192.168.1.10`。nuc15 的上网接口为 `enxec1ac30270b0`（DHCP）；雷达与 Jetson 专用口不设置默认网关。
 
 端口约定：
 
@@ -2378,12 +2382,12 @@ rostopic echo -n 1 /hybridnets/result_json
 | `/hybridnets/debug_image` | `sensor_msgs/Image` | NUC 生成的道路/边界叠加图 |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 接收健康状态 |
 
-日志中的 `0.0.0.0:6000` 表示监听所有本地接口；`allowed_sender_ip: "192.168.10.20"` 仍限制发送方。
+日志中的 `0.0.0.0:6000` 表示监听所有本地接口；`allowed_sender_ip: "192.168.1.20"` 仍限制发送方。
 
 接收配置位于 `src/hybridnets_receiver/config/receiver.yaml`。收不到数据时，在 NUC 主机检查：
 
 ```bash
-sudo tcpdump -ni enxec1ac33f2710 udp port 5000 or udp port 6000
+sudo tcpdump -ni enxec1ac30270b6 udp port 5000 or udp port 6000
 ```
 
 结果超时 `0.8 s`、过期 `800 ms`、无效或格式不符时发布 `/hybridnets/valid=false`。两板需用 `chrony` 或 PTP 对时。
@@ -2619,7 +2623,7 @@ cd /home/nuc/lxw/neupan_ws
 conda activate lxw
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
-sudo ifconfig enp114s0 192.168.1.100 netmask 255.255.255.0
+sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
 
 roslaunch neupan_ros full_system_run.launch outdoor_mode:=true \
   enable_camera_right_path:=true enable_camera_right_control:=true \

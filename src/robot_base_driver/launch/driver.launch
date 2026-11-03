@@ -1,6 +1,6 @@
 <launch>
     <!-- 串口参数 -->
-    <arg name="port" default="/dev/ttyUSB0"/>
+    <arg name="port" default="/dev/robot_base"/>
     <arg name="baudrate" default="115200"/>
 
     <!-- 机器人参数 -->

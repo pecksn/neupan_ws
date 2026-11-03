@@ -13,7 +13,7 @@
     <arg name="lio_guard_recovery_stable_sec" default="2.0" />
 
     <!-- 串口&底盘参数 -->
-    <arg name="port" default="/dev/ttyUSB0"/>
+    <arg name="port" default="/dev/robot_base"/>
     <arg name="baudrate" default="115200"/>
     <arg name="base_frame" default="base_link"/>
     <arg name="odom_frame" default="odom"/>
