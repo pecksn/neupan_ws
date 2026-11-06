@@ -8,6 +8,7 @@ import calendar
 import ctypes
 from collections import Counter, deque
 import datetime as dt
+import math
 import re
 import threading
 import uuid
@@ -76,7 +77,8 @@ class ObservationTiming:
     A diagnostic ROS clock jump invalidates date anchors/statistics but never
     touches the navigation bridge, its stable windows or continuation budgets.
     """
-    def __init__(self, mode='shadow', clock_verified=False, clock_probe=None):
+    def __init__(self, mode='shadow', clock_verified=False, clock_probe=None,
+                 pvt_period_sec=.1, gga_period_sec=.1, cadence_margin_sec=.3):
         if mode not in ('host', 'shadow', 'measurement'):
             raise ValueError('time_mode must be host/shadow/measurement')
         if mode == 'measurement' and not clock_verified:
@@ -89,7 +91,12 @@ class ObservationTiming:
         self.clock_probe = clock_probe or kernel_clock_synchronized
         self.host_clock_synced = False
         self.last_clock_probe = None
-        self.auto_samples = {k: deque(maxlen=80) for k in ('GGA', 'PVTSLNA')}
+        self.periods = {'GGA': float(gga_period_sec), 'PVTSLNA': float(pvt_period_sec)}
+        self.cadence_margin = float(cadence_margin_sec)
+        if (any(not math.isfinite(p) or not .01 <= p <= 2 for p in self.periods.values())
+                or not math.isfinite(self.cadence_margin) or not .05 <= self.cadence_margin <= .5):
+            raise ValueError('invalid configured GNSS periods/cadence margin')
+        self.auto_samples = {k: deque(maxlen=1024) for k in ('GGA', 'PVTSLNA')}
         self.auto_failed = False
         self.auto_reason = 'waiting_for_valid_measurement_time' if self.auto_clock else 'explicit_confirmation'
         self.session_id = uuid.uuid4().hex
@@ -142,17 +149,20 @@ class ObservationTiming:
             if family in self.auto_samples:
                 if valid and self.host_clock_synced:
                     samples = self.auto_samples[family]
-                    if samples and mono-samples[-1] > 500000000:
+                    period = self.periods[family]
+                    if samples and mono-samples[-1] > (period+self.cadence_margin)*NS:
                         samples.clear()
                     samples.append(mono)
                     # Only a continuous recent window can qualify startup.
-                    while samples and mono-samples[0] > 3*NS:
+                    while samples and mono-samples[0] > max(3., 2*period+2*self.cadence_margin)*NS:
                         samples.popleft()
                 elif event.get('epoch_order') not in ('duplicate', 'out_of_order'):
                     self.auto_samples[family].clear()
-            histories = self.auto_samples.values()
-            if self.host_clock_synced and all(len(s) >= 10 and
-                    s[-1]-s[0] >= 2*NS and mono-s[-1] <= 500000000 for s in histories):
+            if self.host_clock_synced and all(
+                    len(s) >= max(3, min(10, int(math.ceil(2/self.periods[k]))+1)) and
+                    s[-1]-s[0] >= 2*NS and
+                    mono-s[-1] <= (self.periods[k]+self.cadence_margin)*NS
+                    for k, s in self.auto_samples.items()):
                 self.clock_verified = True
                 self.auto_reason = 'kernel_sync_and_gnss_utc_consistent'
             elif not self.host_clock_synced:
@@ -255,6 +265,7 @@ class ObservationTiming:
                         stats[family][key] = samples[min(len(samples)-1, int((len(samples)-1)*percentile))]
                     stats[family]['max_ms'] = samples[-1]
             return dict(mode=self.mode, clock_epoch=self.clock_epoch, session_id=self.session_id,
+                        expected_period_sec=self.periods, cadence_margin_sec=self.cadence_margin,
                         clock_verified=self.clock_verified, clock_verification='auto' if self.auto_clock else 'explicit',
                         clock_gate_reason=self.auto_reason, host_clock_synchronized=self.host_clock_synced,
                         counts=dict(self.counts), measurement_age=stats)

@@ -350,94 +350,10 @@ class ConnectionTests(unittest.TestCase):
             evidence.range_min, evidence.range_max = lower, upper
             self.assertFalse(evidence.fresh(1., 1.))
 
-    def test_simulation_uses_production_mounts_and_actual_projection_node(self):
-        simulation = ROOT/'src/neupan_ros/example/lxw_car_simulation'
-        spec = importlib.util.spec_from_file_location('outdoor_simulation', simulation/'scripts/outdoor_simulation.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        settings = module.production_sensor_settings()
-        urdf = ET.parse(simulation/'urdf/outdoor_lxwcar.urdf.xacro').getroot()
-        for source, joint in (('base_to_livox', 'livox_joint'), ('base_to_livox', 'laser_joint'),
-                              ('base_to_body', 'body_joint')):
-            expected = list(map(float, settings['mounts'][source].split()[:3]))
-            actual = next(j for j in urdf.findall('joint') if j.get('name') == joint).find('origin').get('xyz')
-            self.assertEqual(list(map(float, actual.split())), expected)
-        launch = ET.parse(simulation/'launch/outdoor_simulation.launch').getroot()
-        projection = next(n for n in launch.iter('node') if n.get('name') == 'production_scan')
-        self.assertEqual(projection.get('pkg'), 'pointcloud_to_laserscan')
-        self.assertIsNotNone(projection.find('rosparam'))
-        self.assertEqual(settings['scan']['range_min'], .4)
-        self.assertEqual(settings['scan']['target_frame'], 'base_link')
-        self.assertEqual(settings['lio_blind_m'], .5)
-
     def test_road_width_includes_body_not_just_center(self):
         corridor = RoadCorridor([[-20, 0, 20, 0, .6, 0]])
         self.assertTrue(corridor.contains([[0, 0, 0]], VERTICES))
         self.assertFalse(corridor.contains([[0, .4, 0]], VERTICES))
-
-    def test_width_comparison_changes_only_generated_osm_and_wall_copies(self):
-        import hashlib
-        import tempfile
-        simulation = ROOT/'src/neupan_ros/example/lxw_car_simulation'
-        spec = importlib.util.spec_from_file_location('outdoor_width_inputs', simulation/'scripts/outdoor_simulation.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        originals = (simulation/'worlds/outdoor_roads.world', simulation/'maps/outdoor_test.osm')
-        before = [hashlib.sha256(path.read_bytes()).hexdigest() for path in originals]
-        with tempfile.TemporaryDirectory(prefix='outdoor_width_inputs_') as temporary:
-            for width in (5., 7.25, 9.):
-                world, osm = module.width_inputs(Path(temporary), width)
-                models = {m.get('name'): m for m in ET.parse(world).getroot().find('world').findall('model')}
-                north = float(models['wide_north'].find('pose').text.split()[1])-.1
-                south = float(models['wide_south'].find('pose').text.split()[1])+.1
-                self.assertAlmostEqual(north-south, width)
-                self.assertAlmostEqual(north, width/2)
-                for name in ('wide_road', 'wide_west', 'wide_east'):
-                    for size in models[name].findall('.//box/size'):
-                        self.assertEqual(float(size.text.split()[1]), width)
-                tags = ET.parse(osm).getroot().find("way[@id='101']").findall('tag')
-                self.assertEqual(float(next(t.get('v') for t in tags if t.get('k') == 'width')), width)
-        self.assertEqual(before, [hashlib.sha256(path.read_bytes()).hexdigest() for path in originals])
-
-    def test_width_comparison_is_opt_in_and_normal_simulation_defaults_stay(self):
-        root = ET.parse(ROOT/'src/neupan_ros/example/lxw_car_simulation/launch/outdoor_simulation.launch').getroot()
-        args = {arg.get('name'): arg.attrib for arg in root.findall('arg')}
-        self.assertEqual(args['turn_only']['default'], 'false')
-        self.assertEqual(args['connection_planner']['default'], 'hybrid_astar')
-        self.assertIn('3.0', args['road_width']['default'])
-        self.assertIn('12.0', args['road_width']['default'])
-        self.assertIn('outdoor_roads.world', args['world_file']['default'])
-
-    def test_width_comparison_does_not_advertise_a_one_off_success_as_stable(self):
-        import json
-        import tempfile
-        simulation = ROOT/'src/neupan_ros/example/lxw_car_simulation'
-        spec = importlib.util.spec_from_file_location('outdoor_width_compare', simulation/'scripts/outdoor_simulation.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        module.production_sensor_settings = lambda: {}
-
-        def fake_run(config):
-            folder = Path(config.output_dir)/'wide'
-            folder.mkdir(parents=True)
-            repeat = int(Path(config.output_dir).name.rsplit('_r', 1)[1])
-            success = config.road_width == 9. or (config.connection_planner == 'hybrid_astar' and
-                                                config.road_width == 8.5 and repeat == 1)
-            module.save_json(folder/'result.json', {'passed': True,
-                'reason': 'turn_completed' if success else 'safe_stop_verified',
-                'min_command_speed_mps': 0., 'min_wall_clearance_m': .2, 'video': None})
-
-        module.run_cases = fake_run
-        with tempfile.TemporaryDirectory(prefix='outdoor_width_compare_') as temporary:
-            root = Path(temporary)/'results'
-            module.compare_widths(SimpleNamespace(output_dir=str(root), widths=[9., 8.],
-                width_step=.5, repeats=2, timeout=100., record_bag=False))
-            data = json.loads((root/'comparison.json').read_text())
-            boundary = data['boundaries']['hybrid_astar']
-            self.assertEqual(boundary['narrowest_completed_m'], 8.5)
-            self.assertFalse(boundary['repeat_consistent'])
-            self.assertEqual(boundary['narrowest_repeat_verified_m'], 9.)
-            self.assertFalse((root/'_work').exists())
 
     def test_wrong_way_oneway_connection_is_rejected(self):
         corridor = RoadCorridor([[-20, 0, 20, 0, 10, 1]])
@@ -1038,7 +954,7 @@ class RosProcessTest(unittest.TestCase):
                 '_dune_checkpoint:='+str(base/'model/acker_robot_default_6/model_5000.pth'),
                 '_refresh_initial_path:=true', '_include_initial_path_direction:=true',
                 '_enable_adaptive_adjust:=false', '_outdoor_start_connector_enabled:=true',
-                '_osm_file:='+str(ROOT/'src/neupan_ros/example/lxw_car_simulation/maps/outdoor_test.osm'), '_map_origin_lat:=23.0398',
+                '_osm_file:='+str(ROOT/'src/Test/fixtures/outdoor_test.osm'), '_map_origin_lat:=23.0398',
                 '_map_origin_lon:=113.39002', '/neupan_cmd_vel:=/connection_test/cmd_vel']
             # Only planner + this fake-sensor process are launched. The private
             # master has no base driver or control mux, and commands are remapped.

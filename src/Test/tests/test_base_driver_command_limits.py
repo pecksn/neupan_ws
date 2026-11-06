@@ -316,7 +316,6 @@ class DriverLaunchLimitTests(unittest.TestCase):
         for path in ('src/neupan_ros/example/lxw_car/launch/neupan_lxwcar.launch',
                      'src/neupan_ros/example/lxw_car/launch/neupan_lxwcar_norviz.launch',
                      'src/neupan_ros/example/lxw_car/launch/outdoor_global_only_test.launch',
-                     'src/teb_test/launch/outdoor_teb_test.launch',
                      'src/Test/launch/open_loop_motion_record.launch'):
             with self.subTest(path=path):
                 config=roslaunch.config.load_config_default([(str(root/path),[])],None,verbose=False)

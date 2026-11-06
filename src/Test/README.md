@@ -117,7 +117,7 @@ python3 -m unittest discover -s src/Test/tests -p 'test_*.py' -v
 
 10月22日接收会话整改后：Neupan容器lxw环境389项，381通过、8项可选测试跳过。覆盖跨epoch/生产进程切换、迟到旧包、重复乱序、心跳断流与路径逐帧确认；实包解析使用假发布器，不发送车辆话题。不包含实车驾驶或GPU主动跳时验收。
 
-Gazebo 整车测试需要显式运行 `scripts/test_command_gate.py` 或 `scripts/test_legacy_entry.py`，并指定 `--output-dir /home/nuc/lxw/neupan_ws/videos/<实验名>`，不混入默认单元测试。仿真模型和规划实现仍留在原仿真包，详见 [仿真报告](../neupan_ros/example/lxw_car_simulation/docs/planner_comparison.md)。
+2026-11-06按用户要求移除了Gazebo/TEB/RVO对照、其专属测试与测试视频。保留定位、相机、路径、控制和录包的主线回归；旧bag相关用例在无录包时按原有条件跳过。OSM隔离测试的小地图保留为 `fixtures/outdoor_test.osm`，不再依赖仿真目录。
 
 2026-10-21 迁移验证：隔离ROS1环境234项（230通过、4项可选测试跳过）；室外路径测试在具备曲线库/Tk依赖的主机验证73项（67通过、6项可选测试跳过）。合计307项、297通过、10跳过。临时ROS1基础镜像缺少曲线库的Tk导入依赖，因此采用分环境验证；不代表完整Gazebo或实车验收。
 

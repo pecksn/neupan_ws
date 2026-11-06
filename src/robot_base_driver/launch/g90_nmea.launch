@@ -8,6 +8,9 @@
     <arg name="use_gnss_time" default="false" />
     <arg name="gps_time_mode" default="shadow" />
     <arg name="gps_time_clock_verified" default="false" />
+    <arg name="gps_pvt_period_sec" default="1.0" />
+    <arg name="gps_gga_period_sec" default="0.05" />
+    <arg name="gps_cadence_margin_sec" default="0.3" />
     <arg name="heading_source_is_north_cw" default="true" />
     <arg name="require_heading_fixed" default="true" />
     <arg name="solution_timeout_sec" default="2.5" />
@@ -21,6 +24,9 @@
         <arg name="use_GNSS_time" value="$(arg use_gnss_time)" />
         <arg name="time_mode" value="$(arg gps_time_mode)" />
         <arg name="time_clock_verified" value="$(arg gps_time_clock_verified)" />
+        <arg name="pvt_period_sec" value="$(arg gps_pvt_period_sec)" />
+        <arg name="gga_period_sec" value="$(arg gps_gga_period_sec)" />
+        <arg name="cadence_margin_sec" value="$(arg gps_cadence_margin_sec)" />
         <arg name="rotation" value="$(arg gps_rotation)" />
         <arg name="heading_source_is_north_cw" value="$(arg heading_source_is_north_cw)" />
         <arg name="require_heading_fixed" value="$(arg require_heading_fixed)" />

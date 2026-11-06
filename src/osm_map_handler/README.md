@@ -60,4 +60,4 @@ python -c 'from osm_outdoor_start_connection import StartRouteConnector; from os
 
 状态看 `/neupan/route_connection`：`searching` 正在停车搜索，`connecting` 执行连接段，`following_route` 正常跟踪，`blocked` 需重新选择安全区域下发目标。`reason: normal_route_tracking` 表示沿原路线跟踪、不调用掉头搜索；`connection_kind: uturn`、`uturn_required: true` 表示该新路线触发掉头处理，阈值见 `uturn_heading_threshold_deg`。`start_gap_m` 为连续路线距离，`nearest_vertex_gap_m` 保留顶点距离供排查。`admission.search` 记录搜索耗时、展开节点与拒绝统计，`completion_scan_stamp_sec` 记录返回后复查扫描的时间。
 
-回归入口：[`src/Test/tests/test_outdoor_start_connection.py`](../Test/tests/test_outdoor_start_connection.py)，覆盖隔离室内入口、室外搜索/取消/超时及扫描复查，不启动实车硬件。目录按 [功能包分类](../README.md) 管理。完整仿真见 [四场景报告](../../videos/outdoor_simulation/20261016_113623/summary.md)：宽路完成返程，窄路/未知/障碍均停车；不代表最小实车掉头宽度或实车验收。结果仍放 `videos/`，不放本包。
+回归入口：[`src/Test/tests/test_outdoor_start_connection.py`](../Test/tests/test_outdoor_start_connection.py)，覆盖隔离室内入口、室外搜索/取消/超时及扫描复查，不启动实车硬件。目录按 [功能包分类](../README.md) 管理。Gazebo对照及其历史视频已移除；主线隔离回归保留，不代表实车验收。结果仍放 `videos/`，不放本包。

@@ -87,6 +87,18 @@ class LoggingRecordsTests(unittest.TestCase):
         self.assertTrue(math.isnan(original['nested'][0]))
         self.assertIsInstance(original['nested'][1], tuple)
 
+    def test_old_failure_is_preserved_but_not_attributed_to_current_run(self):
+        logger = self.logger()
+        payload = dict(stamp=logger.logger_started_unix-86400, traceback='old evidence',
+                       planner_session_id='previous-session', pid=42, snapshot_json='old.json')
+        self.assertTrue(logger.ingest_neupan_failure(payload, source='snapshot_file'))
+        row = self.records(logger)[-1]
+        self.assertEqual(row['data'], payload)
+        self.assertFalse(row['attribution']['current_logger_run'])
+        self.assertEqual(row['attribution']['attribution'], 'historical_collection')
+        self.assertEqual(row['attribution']['source_planner_session'], 'previous-session')
+        self.assertFalse(logger.latest['neupan_failure']['current_logger_run'])
+
     def test_unserializable_record_is_contained_and_next_record_still_saved(self):
         logger = self.logger()
         self.assertFalse(logger.write_record({'bad': object()}))

@@ -1,18 +1,20 @@
 # GDUT 小车室外导航
 
+2026-11-06清理：旧实车bag、历史测试视频和Gazebo/TEB/RVO对照已移除并清空回收站。带旧日期的录包路径仅为历史示例，离线命令需换成新录制文件；主线启动、标定与录制功能保留。
+
 ## 目录
 
 - [一、日常运行速查](#一日常运行速查)
   - [编译与环境准备](#11-编译与环境准备)
-  - [三种室外导航模式](#12-三种室外导航模式)
+  - [室外导航模式](#12-室外导航模式)
   - [Rosbag 一键录制](#13-rosbag-一键录制)
   - [Rosbag 离线路缘测试](#14-rosbag-离线路缘测试)
 - [二、Jetson、Docker 与基础环境](#二jetsondocker-与基础环境)
 - [三、Livox MID360 雷达](#三livox-mid360-雷达)
 - [四、端到端模型概况](#四端到端模型概况)
 - [五、NeuPAN 部署、参数与仿真](#五neupan-部署参数与仿真)
-- [六、TEB 与其他全局算法](#六teb-与其他全局算法)
-- [七、URDF、Gazebo 与 Docker 迁移](#七urdfgazebo-与-docker-迁移)
+- [六、全局算法参考](#六全局算法参考)
+- [七、Docker 迁移](#七docker-迁移)
 - [八、地图、SLAM 与全局规划](#八地图slam-与全局规划)
 - [九、点对点导航](#九点对点导航)
 - [十、跟踪算法与 Nav2](#十跟踪算法与-nav2)
@@ -57,7 +59,7 @@ source /home/nuc/lxw/neupan_ws/devel/setup.bash
 sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
 ```
 
-## 1.2 三种室外导航模式
+## 1.2 室外导航模式
 
 ### OSM A* + 全局路径直接跟踪（不带局部避障）
 
@@ -91,19 +93,12 @@ roslaunch neupan_ros full_system_run.launch \
 
 仅关闭调试叠加图增加 `enable_hybridnets_overlay:=false`，原视频、虚拟摄像头和 JSON 继续接收；`show_hybridnets_overlay:=false` 只是不弹窗，不会停止绘图。关闭绘图后不产生 `/hybridnets/debug_image`，HybridNets 专用录包配置会告警缺少该必录话题；原图、JSON 和雷达仍可录制。
 
-### OSM A* + TEB
-
-```bash
-roslaunch teb_test outdoor_teb_test.launch
-```
-
 对应关系：
 
 | 启动文件 | 全局规划 | 局部控制/避障 | 主要用途 |
 |---|---|---|---|
 | `outdoor_global_only_test.launch` | OSM A* | `global_path_tracker`，无局部避障 | 定位、航向、路径跟踪验证 |
 | `full_system_run.launch outdoor_mode:=true` | OSM A* | NeuPAN | 完整室外自主导航 |
-| `outdoor_teb_test.launch` | OSM A* | TEB | TEB 对照测试 |
 
 ## 1.3 Rosbag 一键录制
 
@@ -794,139 +789,12 @@ cd /home/nuc/lxw/neupan_ws && catkin_make && source devel/setup.bash
 
    `q_s` 是状态误差代价权重，用于提高车辆预测状态与参考路径之间的偏差惩罚。适当增大后，优化器会更重视横向位置和航向误差，减少车辆偏离路径后再大幅反向修正的情况。
 
-## 5.4 NeuPAN Limo Gazebo 仿真配置（Docker/ROS1/本地虚拟机）
+## 5.4 已移除的对照功能
 
+2026-11-06按用户要求清理Gazebo、TEB、RVO及旧实车录包；当前保留NeuPAN实车主线、标定、录制和必要回归。
 
----
+# 六、全局算法参考
 
-### 完整部署流程
-
-#### 第一步：整理目录结构 (修复依赖位置)
-
-确保 `limo_ros` 和 `rvo_ros` 位于 `src` 的根目录下。
-
-```bash
-cd /home/hart2204/RoutePlanning/neupan_ws
-
-# 1. 移动误下载的包到 src 根目录 (根据实际情况调整源路径)
-# 假设之前下在 example 文件夹下:
-mv src/neupan_ros/example/gazebo_limo/limo_ros src/
-mv src/neupan_ros/example/gazebo_limo/rvo_ros src/
-
-# 2. 安装系统依赖
-rosdep install --from-paths src --ignore-src -r -y
-```
-
-#### 第二步：清理环境与编译配置
-
-清理旧缓存，并忽略不需要的真实硬件驱动。
-
-```bash
-cd /home/hart2204/RoutePlanning/neupan_ws
-
-# 1. 彻底清理旧的编译缓存 (关键：解决 CMake 路径错误)
-rm -rf build devel
-
-# 2. 忽略真实雷达驱动 (关键：解决 ROS2 编译报错)
-touch src/livox_ros_driver2/CATKIN_IGNORE
-
-# 3. 开始编译
-catkin_make
-```
-
-*看见 `[100%] Built target ...` 即表示编译成功。*
-
-#### 第三步：配置环境变量 (关键)
-
-为了让 Gazebo 动态障碍物生效，必须设置插件路径；为了解决网络报错，建议绑定 host。
-
-```bash
-# 建议写入 ~/.bashrc 以永久生效
-echo "export GAZEBO_PLUGIN_PATH=\${GAZEBO_PLUGIN_PATH}:/home/hart2204/neupan_ws/devel/lib" >> ~/.bashrc
-
-# [解决 RLException 网络报错] 强制指定主机名
-echo "export ROS_HOSTNAME=localhost" >> ~/.bashrc
-echo "export ROS_MASTER_URI=http://localhost:11311" >> ~/.bashrc
-
-# 刷新配置
-source ~/.bashrc
-```
-
-### 启动仿真
-
-开启两个终端分别运行环境与算法。
-
-#### 终端 1：启动 Gazebo 仿真环境
-
-加载 Limo 小车模型和包含动态障碍物的世界地图
-
-```bash
-cd /home/hart2204/RoutePlanning/neupan_ws
-source devel/setup.bash
-
-# 启动环境 Launch 文件
-roslaunch neupan_ros gazebo_limo_env_complex_20.launch
-```
-
-#### 终端 2：启动 Neupan 算法节点
-
-启动核心规划算法、Rviz 可视化界面。
-
-```bash
-cd /home/hart2204/RoutePlanning/neupan_ws
-source devel/setup.bash
-
-# 启动算法 Launch 文件
-roslaunch neupan_ros neupan_gazebo_limo.launch
-```
-
-### 验证与故障排除
-
-#### 验证步骤
-
-1. **观察 Rviz**：启动成功后，Rviz 界面应显示白色雷达点云、彩色圆柱体障碍物和小车模型。
-2. **发送指令**：点击 Rviz 顶部工具栏的 **"2D Nav Goal"**，在地图空旷处点击并拖动方向。
-3. **结果**：小车应自动规划出路径（红/绿线）并避开障碍物行驶至目标点。
-
-#### 常见报错速查表
-
-| 报错信息                                                     | 原因                          | 解决方案                                              |
-| ------------------------------------------------------------ | ----------------------------- | ----------------------------------------------------- |
-| `RLException: Unable to contact my own server`               | 主机名无法解析                | 执行 `export ROS_HOSTNAME=localhost`                  |
-| `Resource not found: limo_description`                       | 未 source 或包未在 src 根目录 | 检查目录结构并 source                                 |
-| `Could not find a package configuration file provided by "ament_cmake_auto"` | 误编译了 ROS2 包              | `touch src/livox_ros_driver2/CATKIN_IGNORE`           |
-| Gazebo 里的障碍物静止不动                                    | 找不到 RVO 插件               | `export GAZEBO_PLUGIN_PATH=${GAZEBO_PLUGIN_PATH}:...` |
-| **刚启动的时候会有识别没有障碍物产生空张量**                 |                               | **可以添加一个极其远的虚假点来规避这个问题**          |
-
-##### 空张量解决办法：
-
-现在，当 [obstacle_points](vscode-file://vscode-app/d:/Microsoft VS Code/resources/app/out/vs/code/electron-browser/workbench/workbench.html) 为 `None` 时（即没有检测到障碍物时），neupan_core.py代码会使用一个位于 (10000.0, 10000.0) 的虚假障碍物点，而不是一个空数组。这将避免空张量的问题。
-
-```python
-            if self.obstacle_points is None:
-                rospy.logwarn_throttle(
-                    1, "No obstacle points, only path tracking task will be performed"
-                )
-                obs = np.array([[10000.0], [10000.0]])
-            else:
-                obs = self.obstacle_points
-
-            action, info = self.neupan_planner(self.robot_state, obs)
-```
-
-
-# 六、TEB 与其他全局算法
-
-
-## 6.1 TEB 的 ROS1 Noetic 安装
-
-Ubuntu 20.04 + ROS Noetic：
-
-```bash
-sudo apt install ros-noetic-teb-local-planner
-```
-
-或：[rst-tu-dortmund/teb_local_planner: An optimal trajectory planner considering distinctive topologies for mobile robots based on Timed-Elastic-Bands (ROS Package)](https://github.com/rst-tu-dortmund/teb_local_planner?utm_source=chatgpt.com)
 
 ## 6.2 其他全局规划算法
 
@@ -964,7 +832,7 @@ GlobalPlanner:
 使用自己写的a*算法（osm_map_handler/global_astar_node）
 
 
-# 七、URDF、Gazebo 与 Docker 迁移
+# 七、Docker 迁移
 
 
 [solidworks导出urdf文件/导入ros详细教程_solidworks转urdf-CSDN博客](https://blog.csdn.net/hhhon/article/details/148581041)
@@ -978,62 +846,6 @@ GlobalPlanner:
 [阿克曼结构移动机器人的gazebo仿真（一） - 哔哩哔哩](https://www.bilibili.com/opus/625943392648214986)
 
 也可以直接基于现成的模板来修改！！！
-
-## 7.1 Gazebo 仿真
-
-### 虚拟机
-
-[Ubuntu20.04+ROS1+PX4+Gazebo仿真（三）环境配置 - 哔哩哔哩](https://www.bilibili.com/opus/934654041226477571)
-
-[【实战教程】Ubuntu20.04 下 PX4+Gazebo+Mid360+Tare Planner 全流程搭建_px4连gazebo-CSDN博客](https://blog.csdn.net/AresMHT/article/details/157025477)
-
-```bash
-git clone --recurse-submodules --branch v1.12.3 https://github.com/PX4/PX4-Autopilot.git
-
-#进入PX4-Autopilot根目录
-cd PX4-Autopilot
-
-#更新子模块
-git submodule update --init --recursive
-
-cd ..
-
-#安装工具链，依赖包
-bash ./PX4-Autopilot/Tools/setup/ubuntu.sh
-```
-
-### 更新 ROS GPG 密钥
-
-```bash
-# 1. 删除旧的 ROS 源列表（如果存在）
-sudo rm /etc/apt/sources.list.d/ros*.list
-
-# 2. 重新添加 ROS 软件源并更新密钥
-sudo apt update && sudo apt install -y curl
-sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
-
-# 3. 添加 ROS 源到 sources.list
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros1.list
-
-# 4. 更新软件包列表
-sudo apt update
-
-# 5. 重新运行 PX4 安装脚本
-bash ./Tools/setup/ubuntu.sh
-```
-
-### 使用教程
-
-```bash
-#模型下载
-git clone https://gitee.com/bingda-robot/gazebo_models.git
-
-#模型导入，gazebo里面insert
-sudo cp -r /home/hart2204/gazebo_models/* /root/.gazebo/models/
-
-#world文件为机器人的仿真环境
-
-```
 
 ## 7.2 打包 Docker 迁移到 NUC
 
@@ -1563,17 +1375,6 @@ rosrun rqt_graph rqt_graph   # 可视化节点/话题连接（需图形界面）
 
 ## 9.2 OSM + GPS + NeuPAN/A*：室外点到点导航
 
-`TEB` 测试指令是：
-
-```bash
-conda activate lxw
-cd /home/nuc/lxw/neupan_ws
-source /opt/ros/noetic/setup.bash
-source /home/nuc/lxw/neupan_ws/devel/setup.bash
-sudo ifconfig enp86s0 192.168.1.100 netmask 255.255.255.0
-roslaunch teb_test outdoor_teb_test.launch
-```
-
 “不带任何局部规划”的全局直跟测试，也就是你之前一直在跑的 direct tracker，是：
 
 ```bash
@@ -1598,7 +1399,6 @@ roslaunch neupan_ros full_system_run.launch outdoor_mode:=true
 
 简单对应关系是：
 
-- `teb_test/outdoor_teb_test.launch`：`OSM A* + TEB`
 - `neupan_ros/outdoor_global_only_test.launch`：`OSM A* + 不带局部避障，仅直接跟踪`
 - `neupan_ros/full_system_run.launch`：`OSM A* + NeuPAN 局部规划`
 
@@ -2697,19 +2497,19 @@ rostopic echo /neupan/route_connection
 
 已通过几何/路径接入回归与隔离 ROS1 假传感器测试；使用当前模型进行 230 步运动学闭环仿真，完成前进掉头并接回返程路线，未启动车辆。仿真仍有求解精度告警 `Solved/Inaccurate`，结果均为有限值；实车效果、坡道及旧数值异常仍需新日志验证。
 
-地面按 `base_link` 下方 0.20 m 计算（`camera_right_base_link_height_m:=0.20`，默认值），相机离地约 0.468 m；不修改标定外参。视频只投影近处合理视场内的连续路线，排除远处侧向路段，不跨缺口连线；实际导航仍保留完整路线。修正视频：[comparison.mp4](rosbag_videos/rosbag20261008_155045/right_driving_2m_ground20_fixed/comparison.mp4)。离线缓存修正 45/982 个样本，未应用全部实时保护，不代表实车控制已验收。
+地面按 `base_link` 下方 0.20 m 计算（`camera_right_base_link_height_m:=0.20`，默认值），相机离地约 0.468 m；不修改标定外参。视频只投影近处合理视场内的连续路线，排除远处侧向路段，不跨缺口连线；实际导航仍保留完整路线。旧离线修正视频已清理。离线缓存修正 45/982 个样本，未应用全部实时保护，不代表实车控制已验收。
 
 ### 验证与录制
 
-室外往返、窄路停车、观测不足和转弯区障碍的独立 Gazebo 仿真见 [仿真说明](src/neupan_ros/example/lxw_car_simulation/README.md#室外返程测试)。按实车安装及过滤参数生成点云并调用生产扫描节点，可用私有 master 自动测试，视频、日志及 rosbag 统一保存到 `videos/outdoor_simulation/日期_时间/`，不启动实车硬件。
+历史仿真报告及录像已按2026-11-06清理范围移除；不能作为当前实车验收依据。
 
-2026-10-16 共享 Hybrid A* 四场景均通过：[结果与录像](videos/outdoor_simulation/20261016_113623/summary.md)。宽路完成前进掉头返程，终点误差约 0.488 m（阈值 0.5 m），搜索约 26 ms；窄路/未知回波/实体障碍均拒绝并持续零速度。旧 Dubins 对照保留在 [092222 报告](videos/outdoor_simulation/20261016_092222/summary.md)。原实车雷达、标定与室外模型配置未修改；不代表最小实车掉头宽度或实车控制验收。
+历史仿真报告及录像已按2026-11-06清理范围移除；不能作为当前实车验收依据。
 
-同日补充 [21 次同起点窄路对照](videos/outdoor_simulation/20261016_142251_width_comparison/comparison.md)：两者在 9 m 道路均 2/2 完成。新版 8.75 m 仅 1/2 完成（成功时余量约 1.7 cm，另一次包络越界约 1.45 cm），8.5 m 两次均越界；原曲线在这些宽度拒绝并停车。当前没有可靠的更窄实控优势，需先处理紧弯跟踪误差与安全余量，不能按偶发成功宽度进行实车极限掉头。测试只扩展仿真入口，未改变生产规划算法；临时文件及重复录像已清理。
+历史仿真报告及录像已按2026-11-06清理范围移除；不能作为当前实车验收依据。
 
 几何、时间对齐、心跳保护、长路线进度保留及异常诊断已通过单元与隔离 ROS1 故障验证；默认 3 s 心跳超时已验证。尚未完成实车控制验收，平地模型尚不补偿坡道与车身俯仰。先用实时数据完成影子验证，再在封闭场地低速、可随时人工接管的条件下测试控制。
 
-同日按“仅掉头使用混合 A*”收紧触发条件：[验证报告](videos/outdoor_simulation/20261016_normal_rejoin_fix/summary.md)。101 项回归通过，15:37 日志中的四次目标保持原路线跟踪；隔离 ROS1 验证 3 m 偏移、90° 转弯不进入搜索，反向且观测不足仍停车。没有原始扫描，不能将接入回放等同实车避障验收。
+历史仿真报告及录像已按2026-11-06清理范围移除；不能作为当前实车验收依据。
 
 `src/vehicle_bag_recorder/config/hybridnets_data.yaml` 已包含 `/camera_right/reference_path`、`/camera_right/control_path`、`/camera_right/status`，用于后续 bag 检查；旧 bag 超过时效门槛，不能将离线结果当作实时控制验收。
 

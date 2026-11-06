@@ -2,7 +2,7 @@
 
 This is the ROS wrapper for [NeuPAN Planner](https://github.com/hanruihua/neupan). 
 
-本工作区按职责分类：`src/neupan_core.py` 为核心规划控制实现，`src/neupan_diagnostics.py` 为异常诊断模块；可执行入口为 `scripts/neupan_node.py`。车辆和仿真案例仍在 `example/`，无需新增 `python/`。原 ROS 启动命令不变，详见 [功能包分类](../README.md)。
+本工作区按职责分类：`src/neupan_core.py` 为核心规划控制实现，`src/neupan_diagnostics.py` 为异常诊断模块；可执行入口为 `scripts/neupan_node.py`。实车配置和模型保留在 `example/lxw_car/`；Gazebo/TEB/RVO 对照已按用户要求移除。实车 ROS 启动命令不变，详见 [功能包分类](../README.md)。
 
 For ROS2 Wrapper on Limo ros2 platform, please refer to [neupan_ros2](https://github.com/KevinLADLee/neupan_ros2) maintained by [KevinLADLee](https://github.com/KevinLADLee).
 
@@ -30,7 +30,7 @@ sh source_setup.sh && source ~/neupan_ws/devel/setup.sh && rosdep install neupan
 
 ### Dynamic collision avoidance
 
-We provide the dynamic collision avoidance examples in Gazebo shown as follows. To run these examples, please see [example/gazebo_limo](https://github.com/hanruihua/neupan_ros/tree/main/example/gazebo_limo) for detail.
+The upstream Gazebo examples are not included in this real-vehicle workspace.
 
 https://github.com/user-attachments/assets/1d5eb028-0d22-4741-8899-40a3ea7caab4
 

@@ -249,6 +249,8 @@ class neupan_core:
 
         # subscriber
         rospy.Subscriber("/scan", LaserScan, self.scan_callback)
+        self.localization_startup_status = None
+        rospy.Subscriber('/gps_guard/status', String, self.localization_startup_cb, queue_size=1)
 
         # three types of initial path:
         # 1. from given path
@@ -346,24 +348,8 @@ class neupan_core:
             self.camera_checked_authorization_id=None
             self.camera_publication_generation=None
             self.apply_pending_goal_request()
-            if not self.apply_camera_path_guard():
-                self.publish_stop_snapshot('camera_guard')
-                self.vel_pub.publish(Twist())
-                r.sleep()
-                continue
-            with self.route_update_lock:
-                route_pending = self.pending_route_update is not None
             self.stop_registry.clear('authorization')
             self.stop_registry.clear('calculation_retry')
-            if self.waiting_for_new_goal and not route_pending:
-                self.stop_registry.set('goal',time.monotonic(),'new explicit goal/path')
-                self.publish_stop_snapshot('waiting_for_goal')
-                self.vel_pub.publish(Twist())
-                message = ("Goal reached; waiting for a new goal/path" if self.goal_arrived_state
-                           else "Waiting for planned path for the new goal")
-                rospy.loginfo_throttle(2.0, yellow_terminal_text(message))
-                r.sleep()
-                continue
             self.stop_registry.clear('goal')
 
             self.diagnostic_stage = "vehicle_tf"
@@ -377,6 +363,13 @@ class neupan_core:
                 yaw = self.quat_to_yaw_list(rot)
                 x, y = trans[0], trans[1]
                 self.robot_state = np.array([x, y, yaw]).reshape(3, 1)
+                previous_input = self.stop_registry.reasons.get('input', {})
+                if previous_input.get('detail') == 'vehicle TF unavailable':
+                    # Preserve the existing shared recovery gate, but do not
+                    # report a restored TF as a new current outage.
+                    previous_input.update(detail='vehicle TF restored; bound pose/scan recovery pending',
+                                          stage='input_recovery_pending')
+                    self.last_input_wait_reason = None
 
             except (
                 tf.LookupException,
@@ -384,14 +377,6 @@ class neupan_core:
                 tf.ExtrapolationException,
                 InputUnavailable,
             ):
-                rospy.loginfo_throttle(
-                    1,
-                    red_terminal_text(
-                        "waiting for tf for the transform from {} to {}".format(
-                            self.base_frame, self.map_frame
-                        )
-                    ),
-                )
                 self.vel_pub.publish(Twist())
                 self.temporary_input_stop('vehicle TF unavailable')
                 self.publish_scan_health(rospy.Time.now())
@@ -405,10 +390,31 @@ class neupan_core:
                 r.sleep()
                 continue
 
+            # Diagnose upstream localization before a missing camera route can
+            # return early. This changes reporting order, not authorization.
+            if not self.apply_camera_path_guard():
+                self.diagnostic_stage = 'camera_guard'
+                self.publish_stop_snapshot('camera_guard')
+                self.vel_pub.publish(Twist())
+                r.sleep()
+                continue
+            with self.route_update_lock:
+                route_pending = self.pending_route_update is not None
+            if self.waiting_for_new_goal and not route_pending:
+                self.diagnostic_stage = 'waiting_for_goal'
+                self.stop_registry.set('goal',time.monotonic(),'new explicit goal/path')
+                self.publish_stop_snapshot('waiting_for_goal')
+                self.vel_pub.publish(Twist())
+                rospy.loginfo_throttle(8., 'Waiting for new goal/planned path')
+                r.sleep()
+                continue
+
             self.diagnostic_stage = "route_update"
             self.refresh_connection_scan()
             self.apply_pending_route()
             if self.waiting_for_new_goal:
+                self.diagnostic_stage = 'waiting_for_goal'
+                self.publish_stop_snapshot('waiting_for_goal')
                 self.vel_pub.publish(Twist())
                 r.sleep()
                 continue
@@ -425,7 +431,9 @@ class neupan_core:
                 # print('set initial path', self.neupan_planner.initial_path)
 
             if self.neupan_planner.initial_path is None:
-                rospy.logwarn_throttle(1, "waiting for neupan initial path")
+                self.diagnostic_stage = 'waiting_for_initial_path'
+                self.publish_stop_snapshot('waiting_for_initial_path')
+                rospy.logwarn_throttle(8., "waiting for neupan initial path")
                 self.vel_pub.publish(Twist())
                 self.publish_scan_health(rospy.Time.now())
                 r.sleep()
@@ -466,6 +474,7 @@ class neupan_core:
                 if time.monotonic()-self.input_good_since<max(.3,getattr(self,'scan_recovery_stable_sec',.3)):
                     self.vel_pub.publish(Twist());r.sleep();continue
                 self.stop_registry.clear('input')
+                self.last_input_wait_reason = None
 
             self.diagnostic_stage = "outdoor_tracking_guard"
             if self.outdoor_tracking_guard is not None:
@@ -731,6 +740,18 @@ class neupan_core:
         except Exception as diagnostic_error:
             rospy.logerr('NeuPAN fault diagnostics failed; STOP remains latched: %s', diagnostic_error)
 
+    def localization_startup_cb(self, message):
+        try:
+            value = json.loads(message.data)
+            if isinstance(value, dict):
+                summary = {key: value.get(key) for key in ('stamp', 'mode', 'reason', 'initialized', 'timebase_contract')}
+                solution = value.get('gnss_solution') or {}
+                summary['gnss_solution'] = {key: solution.get(key) for key in
+                    ('heading_type', 'receiver_heading_fixed', 'heading_fixed', 'heading_valid', 'clock_gate_reason')}
+                self.localization_startup_status = (time.monotonic(), summary)
+        except (ValueError, TypeError):
+            pass  # Diagnostic-only; never changes localization authorization.
+
     def temporary_input_stop(self, reason,after_result=False):
         # An expired calculation is not a fresh-input outage. Rebind healthy
         # inputs and retry next cycle; never publish/replay an expired action.
@@ -755,8 +776,18 @@ class neupan_core:
         self.stop_registry.reasons['input'].update(detail=reason,stage=getattr(self,'diagnostic_stage','input'))
         self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
             command_source='temporary_input_stop',reason=reason,stop_reasons=self.stop_registry.snapshot(),
+            stage=getattr(self,'diagnostic_stage','input'),
+            localization=getattr(self,'localization_startup_status',None),
             result_expired=bool(after_result),timing=self.cycle_metrics())))
-        rospy.logwarn_throttle(2.,yellow_terminal_text('NeuPAN input STOP: %s; waiting for fresh stable inputs'),reason)
+        now=time.monotonic()
+        if reason!=getattr(self,'last_input_wait_reason',None) or now-getattr(self,'last_input_wait_log',-1.e30)>=8.:
+            status=getattr(self,'localization_startup_status',None)
+            detail='' if status is None else '; localization=%s, clock=%s, receiver_heading=%s, usable=%s (status age %.1fs)' % (
+                status[1].get('reason','unknown'),(status[1].get('timebase_contract') or {}).get('wait_reason','unknown'),
+                (status[1].get('gnss_solution') or {}).get('heading_type','unknown'),
+                (status[1].get('gnss_solution') or {}).get('heading_valid'),now-status[0])
+            rospy.logwarn_throttle(0.,yellow_terminal_text('NeuPAN input STOP: %s%s; waiting for fresh stable inputs'),reason,detail)
+            self.last_input_wait_reason=reason;self.last_input_wait_log=now
 
     def cycle_metrics(self):
         now=time.monotonic()
@@ -776,7 +807,12 @@ class neupan_core:
         now=time.monotonic();signature=(source,tuple(sorted(self.stop_registry.reasons)))
         if signature!=getattr(self,'last_stop_snapshot_signature',None) or now-getattr(self,'last_stop_snapshot_time',-1.e30)>=.5:
             self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
-                command_source=source,stop_reasons=self.stop_registry.snapshot())))
+                command_source=source,stage=getattr(self,'diagnostic_stage',source),
+                state_stamp_ns=getattr(self,'diagnostic_state_stamp_ns',None),
+                startup=dict(localization=getattr(self,'localization_startup_status',None),
+                    camera=getattr(self,'camera_guard_selected_state',None),
+                    waiting_for_goal=getattr(self,'waiting_for_new_goal',None)),
+                stop_reasons=self.stop_registry.snapshot())))
             self.last_stop_snapshot_signature=signature;self.last_stop_snapshot_time=now
 
     def check_camera_execution(self, info, command):

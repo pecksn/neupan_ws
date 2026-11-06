@@ -101,9 +101,16 @@ class RosNMEADriver(object):
         self.last_solution = None
         self.last_solution_recv = None
         self.serial_diagnostics = None  # Attached only by the existing serial reader.
+        self.pvt_period_sec = float(rospy.get_param('~pvt_period_sec', .1))
+        self.gga_period_sec = float(rospy.get_param('~gga_period_sec', .1))
+        self.cadence_margin_sec = float(rospy.get_param('~cadence_margin_sec', .3))
         self.observation_timing = ObservationTiming(
             rospy.get_param('~time_mode', 'shadow'),
-            rospy.get_param('~time_clock_verified', False))
+            rospy.get_param('~time_clock_verified', False),
+            pvt_period_sec=self.pvt_period_sec, gga_period_sec=self.gga_period_sec,
+            cadence_margin_sec=self.cadence_margin_sec)
+        rospy.loginfo('GNSS configured cadence: PVT %.3fs, GGA %.3fs, margin %.3fs; source transport gate unchanged',
+                      self.pvt_period_sec, self.gga_period_sec, self.cadence_margin_sec)
         self.time_diagnostics_pub = rospy.Publisher('/gnss/time_diagnostics', String, queue_size=200)
         self._time_event = None
 
@@ -305,10 +312,11 @@ class RosNMEADriver(object):
                 self.serial_diagnostics.recognized_pvtslna()
             now = rospy.Time.now()
             if (self.require_heading_fixed and self.last_solution_recv is not None
-                    and (now-self.last_solution_recv).to_sec() > .4):
-                rospy.logwarn_throttle(5., 'PVTSLNA host arrival gap exceeds 0.4s; inspect '
+                    and (now-self.last_solution_recv).to_sec() > self.pvt_period_sec+self.cadence_margin_sec):
+                rospy.logwarn_throttle(8., 'PVTSLNA host arrival gap exceeds configured %.3fs; inspect '
                                       '/gnss/serial_diagnostics and actual serial output. '
-                                      'This does not prove the receiver configuration is slow.')
+                                      'This does not prove the receiver configuration is slow.',
+                                      self.pvt_period_sec+self.cadence_margin_sec)
             try:
                 self.last_solution = parse_pvtslna(nmea_string)
                 if self.serial_diagnostics is not None:
@@ -322,6 +330,8 @@ class RosNMEADriver(object):
                     if 'CRC32' in str(exc):
                         self.serial_diagnostics.count('pvtslna_crc_errors')
             self.last_solution_recv = now
+            self.last_solution.update(receiver_heading_fixed=self.last_solution.get('heading_fixed'),
+                                      receiver_heading_valid=self.last_solution.get('heading_valid'))
             source_time = now
             if self.observation_timing.mode == 'measurement':
                 event = self._measurement_event or {}

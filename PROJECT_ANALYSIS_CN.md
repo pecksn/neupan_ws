@@ -1,6 +1,6 @@
 # 阿克曼无人车室外导航项目分析
 
-> 更新日期：2026-10-30。本文保留现有实现的模块职责、运行链路、关键接口及逐程序/上游对照；定位等其他模块沿用此前`704e6fc`基线分析。
+> 更新日期：2026-11-06。本次同步清理范围：移除旧录包及Gazebo/TEB/RVO对照；保留实车主线。逐程序/上游数量对照仍为此前历史审查快照。
 > 待修改事项统一维护在 [PROJECT_ISSUES_CN.md](PROJECT_ISSUES_CN.md)；详细运行与测试证据保存在`tracker_logs/`，不把已完成修复过程留作问题待办。
 > 日常修复bug只更新问题文档；架构、启动方式或接口契约改变时才同步更新本文。不再另外维护日期版复核或整改任务文档。
 
@@ -8,7 +8,7 @@
 
 这是基于ROS1 Noetic的阿克曼无人车室外导航工程：GNSS提供全局位置/航向参考，FAST-LIO与轮式里程计支持本地连续定位，OSM提供道路参考路线，NeuPAN循环计算局部动作，经控制选择器和串口驱动送入MCU。
 
-用户当前采用顺序任务流程：完成当前路线、停车、再下发下一目标。室内导航、TEB对照、Gazebo仿真、开环采集和标定作为独立入口保留，不能默认与实车主线使用相同的配置和控制出口。
+用户当前采用顺序任务流程：完成当前路线、停车、再下发下一目标。室内导航、开环采集和标定作为独立入口保留，不能默认与实车主线使用相同的配置和控制出口。Gazebo/TEB/RVO对照已按用户要求清理。
 
 **2026-10-29已实施精简：** 普通导航恢复“NeuPAN原生求解→数值/输入时效/任务归属校验→直接发布首个动作”。ROS不再改写整段控制或热启动，不再施加持续减速目标、二次全预测碰撞门槛或独立派发线程。原生选点与排序恢复，本车参数、模型、外部initial_path时间/距离修复和定位/扫描/人工停止保护保留。相机仅做约1–3 m稳定参考修正；具体现场验收仍见问题文档。
 
@@ -79,7 +79,6 @@ GNSS位置/航向/质量 → GPS投影 + 全局定位保护 → /odometry/global
 | `lidar_curb_refinement` | 路沿检测及可选路径修正 | `road_curb_debug.launch` |
 | `usb_camera` / `FAST-Calib` | 相机输入、内外参及标定 | 各包config与launch |
 | `vehicle_bag_recorder` / `Test` | 数据记录、开环与离线回归 | 录包配置及tests目录 |
-| `teb_test` / 仿真example | 规划器对照与仿真 | 独立launch与仿真配置 |
 
 路径公共Python模块通过 `osm_map_handler/setup.py` 导出；NeuPAN消费这些模块，不应复制另一份相机监督或掉头实现。ROS话题连接以launch的条件、参数和remap为准，不能只凭静态import图判断。
 
@@ -193,7 +192,7 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 
 ## 8. 整个neupan_ros包：逐程序职责与改动
 
-### 8.1 对照范围与数量
+### 8.1 历史对照范围与数量（2026-10-30快照）
 
 对照作者[neupan_ros固定提交b9558f3](https://github.com/hanruihua/neupan_ros/tree/b9558f3fbce4bdab356008b50b9eb6272cebef7e)，不是只比较`neupan_core.py`。排除`.git`和`__pycache__`，原包26个文件，当前128个；同路径修改4个、相同21个、新增103个、移除旧入口路径1个。旧入口`src/neupan_node.py`已迁移为`scripts/neupan_node.py`并补充异常诊断，并非删除了节点。逐文件状态和哈希见[整个包清单](tracker_logs/review_20261028/package_scope_followup/package_inventory.json)。
 
@@ -201,8 +200,8 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 | --- | ---: | --- | --- |
 | `src/`、`scripts/` | 6 | 核心修改1个、增加4个辅助模块、迁移并改写1个入口 | 是，具体启用条件见下表 |
 | `example/lxw_car/` | 48 | 全部为本车新增 | 只有启动选中的配置/模型和节点参与；其中39个是模型及训练记录 |
-| `example/lxw_car_simulation/` | 50 | 新增仿真与对照工具 | 普通实车`full_system_run.launch`没有启动这些程序 |
-| `example/gazebo_limo/` | 18 | 与原版逐字节相同 | 作者示例，普通实车入口未使用 |
+| 已移除的本车仿真目录 | 50（历史） | 原新增仿真与对照工具 | 2026-11-06已移除 |
+| 已移除的作者LIMO示例 | 18（历史） | 原与上游相同 | 2026-11-06已移除 |
 | 包根目录 | 6 | CMake/README/package.xml修改，另外3个相同 | 构建、依赖、说明及安装辅助 |
 
 当前包共有22个Python程序、2个C++程序和3个Shell脚本，下面全部列出。模型、地图、世界、图片、URDF和配置另列，不能把128个文件都理解成新增控制逻辑。
@@ -242,59 +241,9 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 
 每组模型均有`model_0.pth`、`model_500.pth`直到`model_5000.pth`共11个权重文件，以及`results.txt`、`train_dict.pkl`，三组共39个文件。它们是数据资产，不是39套控制器。文件存在不能证明训练质量或车体几何已验收；变更模型/外形时需核对训练记录和实际载入路径。
 
-### 8.4 新增仿真目录的每个程序
+### 8.4 已移除的非实车对照
 
-以下路径相对于`src/neupan_ros/example/lxw_car_simulation/`。16个程序均为新增，普通实车主launch没有启动它们；部分脚本会被catkin安装，但“被安装”不等于“实车正在运行”。
-
-| 程序 | 含义与用途 |
-| --- | --- |
-| `scripts/ackermann_sim_driver.py` | 仿真阿克曼底盘，接速度/前轮转角，积分位姿并输出里程计、关节及Gazebo模型状态 |
-| `scripts/gazebo_goal_marker.py` | 将目标点显示为Gazebo可视标记 |
-| `scripts/publish_demo_goal.py` | 发布演示目标 |
-| `scripts/neupan_sim_controller.py` | NeuPAN仿真对照适配器；10 Hz调用算法、转换输入并发布对照所需状态；不等价于实车核心全部保护 |
-| `scripts/outdoor_motion_controller.py` | 仅仿真使用的实车核心派生适配；扫描时刻TF、障碍速度输入、有限重启求解及道路/让行实验 |
-| `scripts/scan_motion_estimator.py` | 仿真中按扫描簇估计障碍速度，并提供`PredictiveYieldGuard`让行实验；确有额外实验判断，但未接入普通实车入口 |
-| `scripts/outdoor_simulation.py` | 独立ROS/Gazebo环境、传感器桥接、场景执行、隔离和结果记录；不启动真实串口/GNSS/雷达/GPU设备 |
-| `scripts/outdoor_road_simulation.py` | 道路静态障碍、横穿及校园场景自动测试，核对真实仿真传输和车体净距 |
-| `scripts/outdoor_osm_world.py` | 由本地OSM生成平面道路/建筑Gazebo场景，缺失宽度和高度采用显式场景假设 |
-| `scripts/planner_comparison.py` | 构造相同参考/场景，分别运行TEB与NeuPAN并记录通过、停顿等指标 |
-| `scripts/audit_comparison_transport.py` | 离线检查对照bag的时钟、扫描、里程计和几何是否匹配 |
-| `scripts/report_comparison.py` | 汇总对照试验、审计、轨迹图及同步视频 |
-| `scripts/export_comparison_video.py` | 导出TEB/NeuPAN时间对齐视频及指标画面 |
-| `scripts/export_outdoor_road_video.py` | 导出道路仿真录像及按仿真时间匹配的中文状态画面 |
-| `src/sim_pose_world_plugin.cpp` | 在Gazebo物理更新线程应用运动学模型位姿，减少SetModelState传输对仿真时钟的干扰 |
-| `src/teb_sim_controller.cpp` | 调用已安装的TEB插件作仿真对照，并把角速度接口适配成本工程的转角命令；不是实车NeuPAN内部子模块 |
-
-其余仿真文件分工如下，均未改变实车主入口的配置来源：
-
-| 文件 | 含义 |
-| --- | --- |
-| `launch/lxw_car_simulation.launch` | 本车Gazebo入口的包装 |
-| `launch/neupan_lxwcar_gazebo.launch` | Gazebo世界、车辆、虚拟驱动及可选NeuPAN/目标/RViz |
-| `launch/outdoor_simulation.launch` | 室外OSM仿真基础组合 |
-| `launch/outdoor_road_simulation.launch` | 道路场景自动回归组合 |
-| `launch/planner_comparison.launch` | TEB/NeuPAN对照入口 |
-| `config/neupan_config_sim.yaml` | 本车基础仿真参数 |
-| `config/comparison_neupan.yaml`、`comparison_neupan_adapter.yaml` | 对照用算法及适配配置 |
-| `config/comparison_teb.yaml`、`comparison_teb_field.yaml`、`teb_field_adaptation.json` | TEB对照参数与现场参数映射记录 |
-| `config/outdoor_road_profiles.yaml`、`rvo_config_complex.yaml` | 道路试验组合及仿真运动障碍设置 |
-| `CMakeLists.txt` | 安装仿真脚本，可用依赖存在时编译Gazebo插件/TEB适配器；缺少这些可选依赖不阻止正常NeuPAN构建 |
-| `urdf/`、`meshes/`、`models/`、`worlds/`、`maps/`、`rviz/` | 车体/传感器、障碍、场景、测试地图和显示资产；完整路径见包清单 |
-| `README.md`、`docs/` | 仿真运行与对照解释 |
-
-### 8.5 原示例、构建和安装辅助
-
-| 程序/文件 | 含义 | 相对原版 |
-| --- | --- | --- |
-| `example/gazebo_limo/dune_train_limo.py` | 作者LIMO模型训练入口 | 未改 |
-| `example/gazebo_limo/gazebo_example_setup.sh` | 作者LIMO/RVO依赖与示例工作空间准备 | 未改；只阅读，未执行 |
-| `example/gazebo_limo/run_neupan_gazebo_exp.sh` | 启动作者Gazebo场景及NeuPAN示例 | 未改；只阅读，未执行 |
-| `source_setup.sh` | 将工作空间环境加入用户Shell配置的旧辅助脚本 | 未改；不由导航循环执行 |
-| `CMakeLists.txt` | 安装节点与4个辅助模块，加入可选仿真构建目录 | 已改；运行入口和模块需要同时部署 |
-| `package.xml` | 消息、TF、rospkg、Gazebo和跨包运行依赖声明 | 已改；增加本车链路所需依赖，不是优化目标修改 |
-| `README.md` | 包的安装、配置和使用说明 | 已改 |
-
-原`example/gazebo_limo`其余launch/config/模型/world/RViz/说明均与作者相同，完整文件名见包清单；并没有对作者全部示例重复修改。
+2026-11-06按用户要求移除本车Gazebo、作者LIMO示例、TEB/RVO及其专属测试、构建目标和视频。`neupan_ros`仅安装实车入口和核心模块，不再声明Gazebo依赖。此前按固定上游提交的文件数量仅为历史审查快照，不能视作当前目录清单。
 
 ### 8.6 不在neupan_ros目录、但直接影响本车的代码
 

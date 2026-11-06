@@ -120,9 +120,6 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
-# Optional Gazebo-only controllers; their dependencies stay in the example.
-add_subdirectory(example/lxw_car_simulation)
-
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
 #   src/${PROJECT_NAME}/neupan_ros.cpp
@@ -164,14 +161,6 @@ add_subdirectory(example/lxw_car_simulation)
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
   scripts/neupan_node.py
-  example/lxw_car_simulation/scripts/ackermann_sim_driver.py
-  example/lxw_car_simulation/scripts/publish_demo_goal.py
-  example/lxw_car_simulation/scripts/gazebo_goal_marker.py
-  example/lxw_car_simulation/scripts/outdoor_simulation.py
-  example/lxw_car_simulation/scripts/planner_comparison.py
-  example/lxw_car_simulation/scripts/neupan_sim_controller.py
-  example/lxw_car_simulation/scripts/report_comparison.py
-  example/lxw_car_simulation/scripts/export_comparison_video.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

@@ -80,7 +80,7 @@ class GnssTimebase:
             self.watermarks[family] = stamp
             self.latest[family] = self.metadata[key]
 
-    def check(self, family, stamp, ros_ns, mono_ns, timeout):
+    def check(self, family, stamp, ros_ns, mono_ns, timeout, period_sec=0., margin_sec=.3):
         self.tick(ros_ns, mono_ns)
         if self.fault:
             return False, self.fault
@@ -95,8 +95,14 @@ class GnssTimebase:
         if event is None:
             return False, 'position_source_time_mismatch'
         read = event.get('host_read_mono_ns')
-        if type(read) is not int or not 0 <= mono_ns-read <= timeout*1e9:
+        receive_deadline = period_sec+margin_sec if period_sec else timeout
+        source_deadline = timeout+receive_deadline if period_sec else timeout
+        if period_sec:
+            read_ros = event.get('host_read_ros_ns')
+            if type(read_ros) is not int or not -.05 <= (read_ros-stamp)*1e-9 <= timeout:
+                return False, 'measurement_transport_late_'+family
+        if type(read) is not int or not 0 <= mono_ns-read <= receive_deadline*1e9:
             return False, 'measurement_receive_stale_'+family
-        if not -.05 <= (ros_ns-stamp)*1e-9 <= timeout:
+        if not -.05 <= (ros_ns-stamp)*1e-9 <= source_deadline:
             return False, 'measurement_source_stale_'+family
         return True, 'measurement_paired'

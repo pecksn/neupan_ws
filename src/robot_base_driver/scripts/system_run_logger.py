@@ -23,6 +23,7 @@ class SystemRunLogger:
     def __init__(self):
         rospy.init_node("system_run_logger")
         self.log_lock = threading.RLock()
+        self.logger_started_unix = time.time()
         self.previous_auto_receive = None
 
         self.fix_topic = rospy.get_param("~fix_topic", "/gps/fix")
@@ -606,12 +607,21 @@ class SystemRunLogger:
         with self.log_lock:
             if identity in self.seen_failure_snapshots:
                 return True
+            occurred = payload.get('stamp')
+            started = getattr(self, 'logger_started_unix', None)
+            belongs = (occurred >= started if isinstance(occurred, (int, float))
+                       and math.isfinite(occurred) and started is not None else None)
+            attribution = dict(original_occurred_at=occurred, collected_at=time.time(),
+                source_planner_session=payload.get('planner_session_id'), source_pid=payload.get('pid'),
+                current_logger_run=belongs, attribution='current_run' if belongs is True else
+                'historical_collection' if belongs is False else 'unknown_origin')
             self.update("neupan_failure", {
                 key: payload.get(key) for key in
                 ("stamp", "stage", "exception_type", "message", "snapshot_json", "snapshot_npz")
             })
+            self.latest['neupan_failure'].update(attribution)
             saved = self.write_record({"record_type": "neupan_failure_event", "data": payload,
-                                       "ingest_source": source},
+                                       "ingest_source": source, "attribution": attribution},
                                       force_flush=True, ignore_size_limit=True)
             if saved:
                 self.seen_failure_snapshots.add(identity)
