@@ -81,6 +81,7 @@ class SystemRunLogger:
             "gnss_solution": None,
             "gnss_serial_diagnostics": None,
             "gnss_time_diagnostics": None,
+            "gps_projection_pairing": None,
             "gps_odom": None,
             "global_odom": None,
             "local_odom": None,
@@ -136,6 +137,8 @@ class SystemRunLogger:
         rospy.Subscriber(self.solution_topic, String, self.solution_cb, queue_size=10)
         rospy.Subscriber('/gnss/serial_diagnostics', String, self.gnss_serial_diagnostics_cb, queue_size=10)
         rospy.Subscriber('/gnss/time_diagnostics', String, self.gnss_time_diagnostics_cb, queue_size=200)
+        rospy.Subscriber('/gps/projection_pairing', String,
+                         lambda msg: self.update('gps_projection_pairing', self.parse_status(msg)), queue_size=2)
         rospy.Subscriber(self.gps_odom_topic, Odometry, self.gps_odom_cb, queue_size=30)
         rospy.Subscriber(self.global_odom_topic, Odometry, self.global_odom_cb, queue_size=30)
         rospy.Subscriber(self.local_odom_topic, Odometry, self.local_odom_cb, queue_size=50)
@@ -200,6 +203,7 @@ class SystemRunLogger:
             "gnss_solution": self.solution_topic,
             "gnss_serial_diagnostics": '/gnss/serial_diagnostics',
             "gnss_time_diagnostics": '/gnss/time_diagnostics',
+            "gps_projection_pairing": '/gps/projection_pairing',
             "gps_odom": self.gps_odom_topic,
             "global_odom": self.global_odom_topic,
             "local_odom": self.local_odom_topic,
@@ -427,6 +431,9 @@ class SystemRunLogger:
                 "satellites": int(msg.num_sats),
                 "hdop": float(msg.hdop),
                 "altitude": float(msg.alt),
+                "diff_age": int(msg.diff_age),
+                "station_id": str(msg.station_id),
+                "diff_age_note": "driver integer seconds; missing may be zero; zero does not prove valid RTCM",
             },
         )
 

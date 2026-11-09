@@ -14,6 +14,7 @@ from unittest.mock import Mock,patch
 import numpy as np
 import test_stable_reference_policy as stable
 from test_camera_right_refinement import namespace as n
+from reference_test_frames import stamp_reference_frame
 import test_outdoor_start_connection as connection_tests
 import test_runtime_position as localization_fixture
 import test_global_alignment as alignment_fixture
@@ -44,7 +45,7 @@ class AdvisoryTests(unittest.TestCase):
         node.cache_geometry=geometry;node.cache.committed={i:(0.,clock[0]) for i in geometry}
         with stable.StableReferenceTests().repair_context(clock):
             for seq in (1,2,3):
-                clock[0]+=.2;node.last_seq=seq;result=copy.deepcopy(node.path)
+                clock[0]+=.2;node.last_seq=seq;stamp_reference_frame(node,seq);result=copy.deepcopy(node.path)
                 active,count=node.stable_result(result,clock[0],.2);node.publish_result(result,clock[0],'terminal',active,count)
                 selected=guard.select(clock[0],round(clock[0]*1.e9))
             self.assertEqual(selected[2]['source'],'camera')
@@ -103,7 +104,7 @@ class AdvisoryTests(unittest.TestCase):
         node,guard,clock,_,_=stable.StableReferenceTests().repair_node(4.)
         with stable.StableReferenceTests().repair_context(clock):
             for seq in (1,2,3):
-                node.last_seq=seq;result=copy.deepcopy(node.path)
+                node.last_seq=seq;stamp_reference_frame(node,seq);result=copy.deepcopy(node.path)
                 active,count=node.stable_result(result,clock[0],.2);node.publish_result(result,clock[0],'terminal',active,count)
                 before=guard.select(clock[0])
             replacement=copy.deepcopy(result);replacement.poses[-1].pose.position.y=-1.2
@@ -142,7 +143,7 @@ class AdvisoryTests(unittest.TestCase):
         node.cache_geometry=geometry;node.cache.committed={i:(0.,clock[0]) for i in geometry}
         with stable.StableReferenceTests().repair_context(clock):
             for seq in range(10,16):
-                node.last_seq=seq;clock[0]+=.2
+                node.last_seq=seq;stamp_reference_frame(node,seq);clock[0]+=.2
                 node.stable_result(copy.deepcopy(node.path),clock[0],.2)
                 np.testing.assert_array_equal(node.frozen_reference_map,adopted)
                 self.assertEqual(node.reference_version,version)
@@ -180,11 +181,15 @@ class AdvisoryTests(unittest.TestCase):
         node,_,clock,points,geometry,adopted=stable.StableReferenceTests().adopted_reference()
         node.reference_transition_end_odom=np.array([-1.,0.])
         node.reference_exit_frozen=True;node.reference_exit_end_s=99.
+        # A replacement requires fresh out-of-band road evidence, not merely
+        # a mocked successful geometry search while already inside the band.
+        for item in geometry.values():
+            item['points_odom'][2,1] -= 1.5
         proposed=adopted.copy();proposed[40,1]-=.1
         report=dict(changed=True,reason='new_spatial_segment',transition_start_m=0.,transition_length_m=16.,reference_connection=None)
         with stable.StableReferenceTests().repair_context(clock),patch.dict(n,stable_segment_reference=Mock(side_effect=lambda *a,**kw:(proposed,copy.deepcopy(report)))):
             for seq in (50,51,52):
-                node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+                node.last_seq=seq;stamp_reference_frame(node,seq);node.stable_result(copy.deepcopy(node.path),clock[0],.2)
         np.testing.assert_array_equal(node.frozen_reference_map,proposed)
         np.testing.assert_allclose(node.reference_transition_end_odom,[16.,0.])
         self.assertIsNone(node.reference_connection);self.assertFalse(node.reference_exit_frozen)
@@ -233,6 +238,7 @@ class AdvisoryTests(unittest.TestCase):
         with stable.StableReferenceTests().repair_context(clock):
             for seq in range(1,5):
                 clock[0]+=.2;node.last_seq=seq
+                stamp_reference_frame(node,seq)
                 result=copy.deepcopy(node.path)
                 active,count=node.stable_result(result,clock[0],.2)
                 node.publish_result(result,clock[0],'pose connection',active,count)
@@ -283,7 +289,7 @@ class AdvisoryTests(unittest.TestCase):
             node.reference_progress_s=data['progress']
             with stable.StableReferenceTests().repair_context(clock):
                 for seq in range(1,5):
-                    clock[0]+=.2;node.last_seq=seq;result=copy.deepcopy(node.path)
+                    clock[0]+=.2;node.last_seq=seq;stamp_reference_frame(node,seq);result=copy.deepcopy(node.path)
                     active,count=node.stable_result(result,clock[0],.2)
                     node.publish_result(result,clock[0],'frozen conflict',active,count)
                     self.assertFalse(node.hazards.regions)

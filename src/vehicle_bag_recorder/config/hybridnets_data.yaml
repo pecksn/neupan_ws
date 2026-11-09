@@ -85,6 +85,7 @@ topics:
   - /gnss/solution_status
   - /gnss/serial_diagnostics
   - /gnss/time_diagnostics
+  - /gps/projection_pairing
   - /odometry/lio_guarded
   - /gps_guard/local_fault_event
   - /motor/status

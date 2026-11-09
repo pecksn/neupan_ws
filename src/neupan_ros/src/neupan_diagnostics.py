@@ -110,6 +110,11 @@ def save_failure(node, exc_info, log_dir):
     # These are the actual nominal/reference tensors and optimization parameters
     # on the failed call stack; useful for replaying a solver error exactly.
     tb = exc_info[2]
+    try:
+        nrmp = node.neupan_planner.pan.nrmp_layer
+        record['nrmp_solve'] = dict(getattr(nrmp, 'solve_diagnostics', {}))
+    except AttributeError:
+        pass
     index = 0
     while tb is not None:
         frame = tb.tb_frame

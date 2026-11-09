@@ -655,10 +655,10 @@ def osm_guidance_context(points,position,yaw,junctions,lookahead=8.):
         headings=np.arctan2(direction[:,1],direction[:,0])
         relative=np.arctan2(np.sin(headings-yaw),np.cos(headings-yaw))
         bend=np.arctan2(np.sin(headings-headings[0]),np.cos(headings-headings[0]))
+        if np.max(abs(relative))>=math.radians(135):
+            return 'reverse_direction'
         if np.max(abs(bend))>math.radians(20):
             return 'osm_turn'
-        if np.max(abs(relative))>math.radians(20):
-            return 'heading_deviation'
     return 'straight'
 
 
@@ -694,7 +694,7 @@ def reference_evidence_window(points,geometry,indices,position,progress=None,hea
     station=arc[:-1]+t*lengths
     valid=lengths>1.e-6
     if heading is not None:
-        valid&=(edges@np.array([math.cos(heading),math.sin(heading)])/np.maximum(lengths,1.e-9))>=math.cos(math.radians(45))
+        valid&=(edges@np.array([math.cos(heading),math.sin(heading)])/np.maximum(lengths,1.e-9))>=math.cos(math.radians(75))
     if progress is not None:
         valid&=(station>=progress-1.)&(station<=progress+lookahead)
     candidates=np.flatnonzero(valid)
@@ -837,7 +837,13 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
     constraint_normals/=np.maximum(np.linalg.norm(constraint_normals,axis=1)[:,None],1.e-9)
     began=time.monotonic();attempts=0;budget_exhausted=False
     for target_delta in amplitudes:
-        for length in (8.,12.,16.,24.,32.):
+        curvature=math.tan((limits or {}).get('max_steer',.35))/(limits or {}).get('wheelbase',.67)
+        minimum=max(1., math.sqrt(5.8*abs(target_delta)/max(curvature,1.e-6)))
+        available=max(0.,segment_end-progress_s)
+        lengths=sorted(set(round(v,3) for v in (minimum,minimum*1.25,minimum*1.5,2.,3.,4.,5.,6.,8.,12.,16.,24.,32.,available)
+                           if v>=minimum-1.e-6 and v<=available+1.e-6))
+        report['candidate_lengths_m']=lengths
+        for length in lengths:
             for start in starts:
                 if attempts>=384 or time.monotonic()-began>.20:
                     budget_exhausted=True;break
@@ -861,11 +867,14 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
                     # A reference is not a visible-free-space certificate.
                     # Only current forward right-edge evidence constrains it;
                     # left masks, holes and past observations are diagnostics.
-                    if np.any(right_gap<.05):continue
+                    if np.any(right_gap<.05):
+                        report['last_rejection']='right_boundary_crossing';continue
                     first=0 if connection is None else connection['start_index']
-                    if not advisory_geometry_ok(candidate[first:],points[first:]):continue
+                    if not advisory_geometry_ok(candidate[first:],points[first:]):
+                        report['last_rejection']='advisory_geometry';continue
                     shape=shape_report(candidate[first:],points[first:],terminal_continuation=True,**(limits or {}))
-                    if not shape['ok']:continue
+                    if not shape['ok']:
+                        report['last_rejection']=dict(reason='kinematics',shape=shape,length_m=length);continue
                     checked=corridor_report(candidate,geometry,anchor,keys)
                     report.update(changed=True,reason='new_spatial_segment',shape=shape,corridor=checked,
                         transition_start_m=progress_s if connection else start,transition_length_m=length,offset_change_m=target_delta,
@@ -1066,6 +1075,9 @@ class CameraRightPath:
             self.frozen_reference_map=None
             self.reference_version=0
             self.reference_outside_count=0
+            self.reference_evidence_event=None
+            self.reference_capture_watermark=None
+            self.reference_road_region=None
             self.reference_exit_frozen=False
             self.reference_exit_end_s=None
             self.reference_exit_event=None
@@ -1457,7 +1469,9 @@ class CameraRightPath:
         getattr(self,'anchor_history',deque()).clear()
         self.frozen_reference_map=None;self.frozen_reference_odom=None
         self.reference_transition_end_odom=None;self.reference_connection=None
-        self.reference_progress_s=None;self.reference_outside_count=0
+        self.reference_progress_s=None;self.reference_outside_count=0;self.reference_evidence_event=None
+        self.reference_road_region=None
+        self.reference_capture_watermark=None
         self.reference_exit_frozen=False;self.reference_exit_end_s=None
         self.reference_frame_invalidated=True
         self.reference_version=getattr(self,'reference_version',0)+1
@@ -1633,10 +1647,11 @@ class CameraRightPath:
         # Reference feasibility is NOT evidence of vehicle-motion danger.
         # Existing independently sourced hazards remain separate and retained.
         checked=corridor_report(current,geometry,anchor,local_keys)
-        if context in ('heading_deviation','osm_invalid_geometry','osm_junction'):
+        if context in ('reverse_direction','osm_invalid_geometry','osm_junction'):
             # A temporary vehicle yaw error is not a road turn. Hold geometry
             # and let the existing NeuPAN controller follow/avoid obstacles.
             self.reference_outside_count=0
+            self.reference_evidence_event=None
             diagnostic=dict(changed=False,reason='hold_reference_'+context)
         else:
             transitioning=False
@@ -1647,10 +1662,58 @@ class CameraRightPath:
             common=set(old_road)&set(local_keys)
             road_changed=bool(len(common)>=3 and np.median([
                 np.linalg.norm(np.asarray(geometry[i]['points_odom'])[2]-old_road[i]) for i in common])>.5)
+            # Confirm ROAD observations before constructing expensive geometry.
+            # Timer ticks/new JSON with an unchanged capture do not count.
+            event=getattr(self,'reference_evidence_event',None)
+            if event is not None and now-event['last_new_mono']>min(3.,self.cache.ttl):
+                event=None
+            evidence_ready=False
+            evidence_reason='hold_without_new_evidence'
+            if len(local_keys)>=3:
+                edge=np.asarray([planar_transform([geometry[i]['points_odom'][2]],anchor)[0] for i in local_keys])
+                route_direction=points[local_keys[-1]]-points[local_keys[0]]
+                measured_direction=edge[-1]-edge[0]
+                norm=np.linalg.norm(route_direction)*np.linalg.norm(measured_direction)
+                direction_ok=norm>1.e-6 and float(route_direction@measured_direction/norm)>=math.cos(math.radians(30))
+                normals=np.vstack((np.diff(points,axis=0),points[-1]-points[-2]))
+                normals=np.column_stack((-normals[:,1],normals[:,0]))/np.maximum(np.linalg.norm(normals,axis=1)[:,None],1.e-9)
+                gap=float(np.median(np.sum((current[local_keys]-edge)*normals[local_keys],axis=1))+self.origin[1])
+                delta=float(np.clip(gap,self.clearance_min,self.clearance_max)-gap)
+                capture=max((geometry[i].get('capture_timestamp_ns',0) for i in local_keys),default=0)
+                identity=(geometry[local_keys[-1]].get('receiver_session_id'),geometry[local_keys[-1]].get('camera_time_epoch'),capture)
+                watermark=getattr(self,'reference_capture_watermark',None)
+                new_capture=capture>0 and (watermark is None or identity[:2]!=watermark[:2] or capture>watermark[2])
+                if new_capture:self.reference_capture_watermark=identity
+                if self.clearance_min-.1<=gap<=self.clearance_max+.1:
+                    event=None;evidence_reason='hold_in_band'
+                elif not direction_ok:
+                    event=None;evidence_reason='hold_direction_evidence_mismatch'
+                elif capture>0:
+                    if event is not None and identity[:2]!=event.get('source_key'):
+                        event=None
+                    if new_capture:
+                        if event is None or delta*event['delta']<=0 or abs(delta-event['delta'])>.35:
+                            event=dict(delta=delta,frames=[],last_new_mono=now,source_key=identity[:2],last_capture=0)
+                        event['frames']=(event['frames']+[identity])[-3:]
+                        event['last_new_mono']=now
+                        event['last_capture']=capture
+                    evidence_ready=event is not None and len(event['frames'])>=3
+                    evidence_reason='road_offset_confirmed' if evidence_ready else 'confirming_out_of_band_reference'
+            self.reference_evidence_event=event
+            self.reference_outside_count=0 if event is None else len(event['frames'])
             try:
                 if transitioning and not road_changed:
                     proposed=current;diagnostic=dict(changed=False,reason='hold_spatial_entry_until_traversed')
+                elif not evidence_ready:
+                    proposed=current;diagnostic=dict(changed=False,reason=evidence_reason,
+                        evidence_confirmations=self.reference_outside_count)
+                elif (event.get('search_pose') is not None
+                      and np.linalg.norm(np.asarray(position[:2])-event['search_pose'][:2])<.5
+                      and abs(math.atan2(math.sin(yaw-event['search_pose'][2]),math.cos(yaw-event['search_pose'][2])))<math.radians(5)):
+                    proposed=current;diagnostic=dict(changed=False,reason='hold_confirmed_model_geometry_unchanged',
+                        evidence_confirmations=self.reference_outside_count)
                 else:
+                    event['search_pose']=[float(position[0]),float(position[1]),float(yaw)]
                     segment_end=None
                     if local_keys:
                         arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(points,axis=0),axis=1))]
@@ -1668,18 +1731,15 @@ class CameraRightPath:
                 diagnostic=dict(changed=False,reason='advisory_candidate_rejected_hold_reference',
                     reference_failure=str(error),corridor=checked)
                 self.reference_outside_count=0
-            # Three DIFFERENT accepted frames confirm an out-of-band event.
+            # Geometric acceptance and version commit are atomic, after the
+            # independently confirmed road evidence above.
             if diagnostic['changed'] and diagnostic.get('reason')=='new_spatial_segment':
-                if self.last_seq!=getattr(self,'reference_event_seq',None):
-                    self.reference_event_seq=self.last_seq
-                    self.reference_outside_count=getattr(self,'reference_outside_count',0)+1
                 if self.reference_outside_count>=3:
                     candidate=proposed;self.reference_outside_count=0
                     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(points,axis=0),axis=1))]
                     end=min(len(points)-1,int(np.searchsorted(arc,diagnostic['transition_start_m']+diagnostic['transition_length_m'])))
                     new_transition_end=planar_transform([points[end]],anchor,True)[0]
                 else:diagnostic.update(changed=False,reason='confirming_out_of_band_reference')
-            else:self.reference_outside_count=0
         finished=time.monotonic()
         # Recheck the current pose and original TTL after computation. Ordinary
         # advisory holding never renews these observations or grants a lease.
@@ -1703,6 +1763,12 @@ class CameraRightPath:
             self.reference_exit_event=None
             self.reference_exit_clear_count=0
             self.reference_road_evidence={i:np.asarray(item['points_odom'])[2].copy() for i,item in geometry.items()}
+            self.reference_road_region=dict(frame_id='map',reference_version=self.reference_version,
+                source='accepted_measured_right_edge',
+                right_edge_map=[planar_transform([geometry[i]['points_odom'][2]],anchor)[0].tolist() for i in local_keys],
+                original_route_map=points[local_keys].tolist(),
+                capture_timestamps_ns=sorted(set(geometry[i].get('capture_timestamp_ns') for i in local_keys
+                                                if geometry[i].get('capture_timestamp_ns') is not None)))
             self.reference_connection=diagnostic.get('reference_connection')
         self.frozen_reference_odom=planar_transform(candidate,anchor,True)
         self.frozen_reference_map=candidate.copy()
@@ -1716,6 +1782,12 @@ class CameraRightPath:
         diagnostic.setdefault('decision_window',window)
         diagnostic.setdefault('reference_connection',getattr(self,'reference_connection',None))
         diagnostic['correction_established']=bool(np.max(np.linalg.norm(candidate-points,axis=1))>.001)
+        event=getattr(self,'reference_evidence_event',None)
+        diagnostic['road_evidence_confirmation']=dict(
+            count=0 if event is None else len(event['frames']),
+            last_capture_timestamp_ns=None if event is None else event['last_capture'],
+            source_key=None if event is None else event['source_key'],
+            decision=diagnostic.get('reason'))
         self.final_path_diagnostics=diagnostic
         self.applied=np.linalg.norm(candidate-points,axis=1)
         self.shift=float(np.max(self.applied))
@@ -2190,6 +2262,7 @@ class CameraRightPath:
             'advisory_clearance_band_m':[getattr(self,'clearance_min',1.),getattr(self,'clearance_max',3.)],
             'reference_role':'advisory' if getattr(self,'strategy',None)=='segment_reference' else 'visual_execution',
             'reference_version':getattr(self,'reference_version',0),
+            'road_region':getattr(self,'reference_road_region',None),
             'reference_frame_invalidated':getattr(self,'reference_frame_invalidated',False),
             'localization_reference_frame_key':getattr(self,'alignment_frame_key',None),
             'reference_frame_reset':getattr(self,'reference_frame_reset_diagnostics',None),

@@ -450,9 +450,17 @@ class GlobalOdomBridge:
             rospy.Subscriber(self.solution_topic, String, self.solution_cb, queue_size=10)
 
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.publish_rate), self.timer_cb)
+        rospy.loginfo('Localization startup effective: low_precision=%s HDOP<=%.2f covariance<=%.3f '
+                      'min_satellites=%d require_heading_fixed=%s PVT=%.3fs GGA=%.3fs',
+            self.low_precision_startup,
+            self.low_precision_max_hdop if self.low_precision_startup else self.max_hdop,
+            self.low_precision_max_covariance if self.low_precision_startup else self.max_position_covariance,
+            self.low_precision_min_satellites if self.low_precision_startup else self.min_satellites,
+            self.require_heading_fixed, self.pvt_period_sec, self.gga_period_sec)
         rospy.loginfo(
             "global_odom_bridge GPS guard: gps=%s fix=%s gga=%s heading=%s local=%s -> %s "
-            "(GGA=%d sats>=%d HDOP<=%.1f status>=%d cov<=%.3fm2 recovery=%.1fs)",
+            "(high-precision tracking/recovery limits: GGA=%d sats>=%d HDOP<=%.1f "
+            "status>=%d cov<=%.3fm2 recovery=%.1fs; startup limits printed separately)",
             self.input_topic,
             self.fix_topic,
             self.gga_topic,
@@ -1401,6 +1409,12 @@ class GlobalOdomBridge:
         return False
 
     def set_mode(self, mode, reason):
+        display_reason=reason
+        if ((mode!=self.mode or reason!=self.reason and self.print_status_to_screen)
+                and reason.startswith('measurement_') and reason.endswith('_PVTSLNA')):
+            diagnostic=self.localization_diagnostic_summary(rospy.Time.now(),False)
+            if diagnostic['latest_pvt']['valid'] and not self.latest_heading_health(rospy.Time.now())['valid']:
+                display_reason=diagnostic['reason']+'; selected_heading='+reason
         if mode == self.TRACKING:
             # Reset only after trusted GPS correction/initialization/recovery.
             self.dead_reckoning_budget.reset()
@@ -1413,11 +1427,11 @@ class GlobalOdomBridge:
             self.dead_reckoning_budget.begin(rospy.Time.now().to_sec(), xy)
         if mode != self.mode:
             if mode == self.DEAD_RECKONING:
-                rospy.logwarn("GPS guard: %s -> %s (%s)", self.mode, mode, reason)
+                rospy.logwarn("GPS guard: %s -> %s (%s; initialized=%s)", self.mode, mode, display_reason,self.transform_initialized)
             else:
-                rospy.loginfo("GPS guard: %s -> %s (%s)", self.mode, mode, reason)
+                rospy.loginfo("GPS guard: %s -> %s (%s; initialized=%s)", self.mode, mode, display_reason,self.transform_initialized)
         elif reason != self.reason and self.print_status_to_screen:
-            rospy.loginfo("GPS guard: mode=%s reason=%s", mode, reason)
+            rospy.loginfo("GPS guard: mode=%s initialized=%s reason=%s", mode,self.transform_initialized,display_reason)
         self.mode = mode
         self.reason = reason
 
@@ -1724,6 +1738,42 @@ class GlobalOdomBridge:
             and self.dead_reckoning_budget.check(now.to_sec()) is None
         )
 
+    def localization_diagnostic_summary(self, now, localization_safe):
+        """Read-only explanation; never grants heading or control authority."""
+        health=self.latest_heading_health(now)
+        gate=self.gnss_timebase
+        mono=time.monotonic_ns()
+        def observation(stamp):
+            event=gate.metadata.get(('PVTSLNA',stamp),{})
+            # check() ticks its clock latch. Probe a shallow copy so generating
+            # diagnostics cannot mutate the live time gate or its authority.
+            valid,reason=copy.copy(gate).check('PVTSLNA',stamp,now.to_nsec(),mono,
+                self.heading_timeout_sec,self.pvt_period_sec,self.cadence_margin_sec)
+            read=event.get('host_read_mono_ns')
+            read_ros=event.get('host_read_ros_ns')
+            return dict(source_ns=stamp,valid=valid,reason=reason,
+                receive_age_sec=None if type(read) is not int else (mono-read)*1e-9,
+                transport_age_sec=None if type(read_ros) is not int or stamp is None else (read_ros-stamp)*1e-9,
+                source_age_sec=None if stamp is None else (now.to_nsec()-stamp)*1e-9)
+        latest=observation((gate.latest.get('PVTSLNA') or {}).get('measurement_stamp_ns'))
+        selected=observation(self.observation_buffer_diagnostics.get('selected_heading_ns'))
+        solution=(self.latest_solution_health or {}).get('payload') or self.last_solution or {}
+        reason=(latest['reason'] if not latest['valid'] else health['reason'] if not health['valid'] else self.reason)
+        if not self.transform_initialized:
+            if solution.get('receiver_heading_fixed',solution.get('heading_fixed')) is not True:
+                phase='waiting_first_map_heading'
+            elif gate.mode=='measurement' and not gate.clock_ready:
+                phase='waiting_measurement_clock'
+            else:phase='waiting_initial_position_or_stability'
+        elif not localization_safe:phase='localization_unsafe'
+        else:phase={self.DEAD_RECKONING:'local_position_continuation',
+                    self.POSITION_TRACKING:'position_only_correction',
+                    self.TRACKING:'high_precision_tracking'}.get(self.mode,self.mode)
+        return dict(phase=phase,reason=reason,guard_reason=self.reason,
+            position_reason=self.runtime_position_reason,
+            initialized=self.transform_initialized,localization_safe=localization_safe,
+            heading_type=solution.get('heading_type'),latest_pvt=latest,selected_heading=selected)
+
     def publish_status(self, now):
         fix_status = None if self.last_fix is None else int(self.last_fix.status.status)
         cov_x = None if self.last_fix is None else float(self.last_fix.position_covariance[0])
@@ -1732,6 +1782,7 @@ class GlobalOdomBridge:
         satellites = None if self.last_gga is None else int(self.last_gga.num_sats)
         hdop = None if self.last_gga is None else float(self.last_gga.hdop)
         localization_safe = self.localization_is_safe(now)
+        summary=self.localization_diagnostic_summary(now,localization_safe)
         payload = {
             "stamp": now.to_sec(),
             "reference_frame": {"instance_id": self.reference_frame_instance,
@@ -1746,6 +1797,7 @@ class GlobalOdomBridge:
                 'metadata_samples': len(self.gnss_timebase.metadata)},
             "mode": self.mode,
             "reason": self.reason,
+            "diagnostic_summary": summary,
             "initialized": self.transform_initialized,
             "low_precision_startup_enabled": self.low_precision_startup,
             "runtime_position": {
@@ -1830,10 +1882,12 @@ class GlobalOdomBridge:
         if self.print_status_to_screen:
             rospy.loginfo_throttle(
                 8.0,
-                "GPS guard mode=%s reason=%s GGA=%s sats=%s HDOP=%s fix=%s cov=[%s,%s] "
+                "GPS guard phase=%s initialized=%s reason=%s position_reason=%s mode=%s heading=%s clock=%s "
+                "GGA=%s sats=%s HDOP=%s fix=%s cov=[%s,%s] "
                 "local_safe=%s correction_error=[%s m,%s deg]",
+                summary['phase'],self.transform_initialized,summary['reason'],summary['position_reason'],
                 self.mode,
-                self.reason,
+                summary['heading_type'],self.gnss_timebase.wait_reason,
                 "none" if gga_quality is None else str(gga_quality),
                 "none" if satellites is None else str(satellites),
                 "none" if hdop is None else "%.2f" % hdop,

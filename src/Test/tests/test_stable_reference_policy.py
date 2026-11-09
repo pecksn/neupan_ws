@@ -13,6 +13,7 @@ import numpy as np
 import test_followup_safety as fixture
 import test_camera_publication_protocol as protocol
 from test_camera_right_refinement import namespace as n
+from reference_test_frames import stamp_reference_frame
 from test_startup_recovery import Stamp
 from neupan_safety import (validate_solution,
                           trajectory_clearance,CandidateRejected)
@@ -63,7 +64,7 @@ class StableReferenceTests(unittest.TestCase):
         node.cache.committed={i:(0.,clock[0]) for i in geometry}
         with self.repair_context(clock):
             for seq in (1,1,2,3):
-                clock[0]+=.2;node.last_seq=seq
+                clock[0]+=.2;node.last_seq=seq;stamp_reference_frame(node,seq)
                 result=copy.deepcopy(node.path)
                 active,count=node.stable_result(result,clock[0],.2)
                 node.publish_result(result,clock[0],'single-side repair',active,count)
@@ -112,7 +113,7 @@ class StableReferenceTests(unittest.TestCase):
         for item in geometry.values():item['mode']='right_only'
         with self.repair_context(clock):
             for seq in range(1,5):
-                node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+                node.last_seq=seq;stamp_reference_frame(node,seq);node.stable_result(copy.deepcopy(node.path),clock[0],.2)
         self.assertLess(node.frozen_reference_map[70,1],-.4)
         self.assertFalse(node.hazards.regions);self.assertFalse(node.corridor_stop_required)
         self.assertEqual(node.reference_version,1)
@@ -161,15 +162,15 @@ class StableReferenceTests(unittest.TestCase):
                 np.testing.assert_array_equal(node.frozen_reference_map,adopted)
         self.assertEqual(node.reference_version,1);self.assertFalse(getattr(node,'reference_exit_frozen',False))
 
-    def test_large_temporary_yaw_holds_reference_and_new_entry(self):
+    def test_large_temporary_yaw_does_not_block_road_evidence(self):
         node,_,clock,points,_=self.repair_node(3.6)
         node.cache_pose=lambda now,force=False:([0.,0.,0.],math.radians(60))
         with self.repair_context(clock):
             for frame in range(6):
-                clock[0]+=.2;node.last_seq=frame;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
-        np.testing.assert_array_equal(node.frozen_reference_map,points)
-        self.assertEqual(node.final_path_diagnostics['reason'],'hold_reference_heading_deviation')
-        self.assertEqual(node.reference_outside_count,0)
+                clock[0]+=.2;node.last_seq=frame;stamp_reference_frame(node,frame)
+                node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+        self.assertEqual(len(node.reference_evidence_event['frames']),3)
+        self.assertNotEqual(node.final_path_diagnostics['reason'],'hold_reference_heading_deviation')
 
     def test_junction_preserves_accepted_offset_across_straight_frames(self):
         node,_,clock,_,_,adopted=self.adopted_reference()
@@ -255,7 +256,7 @@ class StableReferenceTests(unittest.TestCase):
         points,_=road()
         for angle in (20.5,60.,179.):
             self.assertEqual(n['osm_guidance_context'](points,[0.,0.],math.radians(angle),np.empty((0,2))),
-                'heading_deviation')
+                'reverse_direction' if angle>=135 else 'straight')
 
     def repair_node(self,gap=.76):
         node,guard,clock=protocol.RecoveryTests().node();points,geometry=road(gap)
@@ -339,7 +340,7 @@ class StableReferenceTests(unittest.TestCase):
         node.current_proof_geometry={}
         with self.repair_context(clock):
             for seq in range(1,4):
-                node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+                node.last_seq=seq;stamp_reference_frame(node,seq);node.stable_result(copy.deepcopy(node.path),clock[0],.2)
         self.assertGreater(node.reference_version,0)
         self.assertTrue(node.hazards.regions);self.assertTrue(node.corridor_stop_required)
         self.assertIsNone(node.execution_contract)
@@ -351,7 +352,7 @@ class StableReferenceTests(unittest.TestCase):
         node.current_proof_geometry=copy.deepcopy(geometry)
         with self.repair_context(clock):
             for seq in range(1,4):
-                node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+                node.last_seq=seq;stamp_reference_frame(node,seq);node.stable_result(copy.deepcopy(node.path),clock[0],.2)
         self.assertTrue(node.corridor_stop_required);self.assertFalse(node.hazard_proof)
 
     def test_exit_request_does_not_start_a_new_right_entry(self):
@@ -412,11 +413,11 @@ class StableReferenceTests(unittest.TestCase):
         node.cache_pose=lambda now,force=False:([0.,0.,0.],0.)
         with patch.dict(n,time=NS(monotonic=lambda:clock[0]),rospy=NS(Time=NS(now=lambda:Stamp(clock[0])))):
             for seq in range(1,4):
-                node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+                node.last_seq=seq;stamp_reference_frame(node,seq);node.stable_result(copy.deepcopy(node.path),clock[0],.2)
             frozen=node.frozen_reference_map.copy();version=node.reference_version
             self.assertGreater(version,0)
             for seq in range(4,12):
-                node.last_seq=seq;clock[0]+=.2;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+                node.last_seq=seq;stamp_reference_frame(node,seq);clock[0]+=.2;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
             np.testing.assert_array_equal(node.frozen_reference_map,frozen)
             self.assertEqual(node.reference_version,version);self.assertIsNone(node.execution_contract)
             for item in geometry.values():item['points_odom'][2,1]-=.7

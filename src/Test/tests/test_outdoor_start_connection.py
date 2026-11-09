@@ -564,7 +564,7 @@ class AdapterTests(unittest.TestCase):
         tree = ast.parse(filename.read_text())
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'neupan_core')
         method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'apply_pending_route')
-        ros = SimpleNamespace(loginfo=Mock(), logwarn_throttle=Mock(), Time=SimpleNamespace(now=lambda: SimpleNamespace(to_sec=lambda: 1.)))
+        ros = SimpleNamespace(loginfo=Mock(), logwarn_throttle=Mock(), logdebug_throttle=Mock(), Time=SimpleNamespace(now=lambda: SimpleNamespace(to_sec=lambda: 1.)))
         namespace = {'np': np, 'time': SimpleNamespace(monotonic=lambda: 1.),
                      'rospy': ros, 'Twist': object, 'yellow_terminal_text': lambda x: x,
                      'resample_forward_reference': resample_forward_reference}
@@ -848,6 +848,13 @@ class SharedCppTests(unittest.TestCase):
         self.assertFalse(result['success'])
         self.assertEqual(result['stats']['observed_free_cells'], 0)
         self.assertTrue(result['stats']['scan_rejected'])
+        self.assertEqual(result['reason'],'initial_footprint_scan_unobserved_or_obstructed')
+
+    def test_start_outside_road_is_not_reported_as_scan_failure(self):
+        result,_,_,_=self.run_worker(width=.1)
+        self.assertFalse(result['success'])
+        self.assertEqual(result['reason'],'initial_footprint_outside_road_region')
+        self.assertEqual(result['stats']['expanded'],0)
 
     def test_async_transport_round_trip_without_ros_master(self):
         import time

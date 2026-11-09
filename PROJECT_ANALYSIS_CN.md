@@ -271,7 +271,7 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 | 作者py38版本 | [70991f0](https://github.com/hanruihua/NeuPAN/tree/70991f0d96b7a15135ba02ea8ad3f3090ff0926e) | 与作者Python 3.8分支存在什么差异 |
 | 作者main版本 | [d225c38](https://github.com/hanruihua/NeuPAN/tree/d225c3862654ade30ccd19455997f615a689a670) | 与本次获取的作者main快照存在什么差异 |
 
-本机相对初始提交仅`neupan/blocks/initial_path.py`未提交修改；其余差异已存在于本机导入版本，不能统称为最近增加的功能，也不能未经历史追溯断言都由本项目开发。算法包内13个Python文件相对py38有8个不同，相对main有9个不同。完整哈希/状态见[算法程序清单](tracker_logs/review_20261028/package_scope_followup/algorithm_inventory.json)。
+以下作者版本对比与文件数量为2026-10-28审计快照，不能当作当前工作树状态。11月9日另对`neupan/blocks/nrmp.py`和`pan.py`作定向推理接口修改：显式CLARABEL复用原CVXPY问题；保留训练CvxpyLayer、PAN/DUNE迭代、原目标/约束和首动作。未建立外部控制器或自动求解器回退。历史差异不能统称为本轮新增功能。历史完整哈希/状态见[算法程序清单](tracker_logs/review_20261028/package_scope_followup/algorithm_inventory.json)，本轮验证见问题文档第5节。
 
 ### 9.2 算法包内全部13个Python文件
 
@@ -283,10 +283,10 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 | [neupan/neupan.py](/home/nuc/lxw/NeuPAN/neupan/neupan.py) | 公共入口：读YAML、建立robot/InitialPath/PAN、生成每轮参考和名义控制、调用优化、保留热启动、返回首步动作和预测；处理到达与原生stop | 未改 | 与py38/main的差异为`q_s`标量/向量说明等文档；不能由文档变化推导本机已支持向量权重 |
 | [neupan/blocks/__init__.py](/home/nuc/lxw/NeuPAN/neupan/blocks/__init__.py) | 导出6个算法组件 | 未改 | 与py38/main一致 |
 | [neupan/blocks/initial_path.py](/home/nuc/lxw/NeuPAN/neupan/blocks/initial_path.py) | 路点生成线段/Dubins/Reeds参考，确定路径进度/挡位/到达，按上一轮控制生成名义状态，生成本轮50步参考 | **已改** | 主路径改用弧长与`abs(ref_speed)*dt`推进，插值位置/最短航向角，处理不均匀/重复点；增加有限值、每步位移及航向连续性校验；旧圆线求交辅助增加数值容差，拒绝无前向交点却跳到远端终点。详见9.3 |
-| [neupan/blocks/pan.py](/home/nuc/lxw/NeuPAN/neupan/blocks/pan.py) | PAN迭代协调器：将名义轨迹转成各时刻点流，交替调用DUNE和NRMP，按变化量提前结束 | 未改 | 本机已有`point_velocities=None`时补零的静态障碍适配；作者固定py38/main的相应实现不同，另有默认dict参数差异。这是基线差异，非本轮新增预测器 |
+| [neupan/blocks/pan.py](/home/nuc/lxw/NeuPAN/neupan/blocks/pan.py) | PAN迭代协调器：将名义轨迹转成各时刻点流，交替调用DUNE和NRMP，按变化量提前结束 | **已改** | 11月9日仅透传显式推理配置并启用NRMP推理模式，调用`train()`仍恢复原梯度路径。原静态障碍补零和默认dict等属于历史基线差异，非新增预测器 |
 | [neupan/blocks/dune.py](/home/nuc/lxw/NeuPAN/neupan/blocks/dune.py) | 用ObsPointNet将障碍点编码为μ/λ，估计目标距离、排序并输出最小距离；载入或训练DUNE模型 | 未改 | 本机保留可变默认dict、未显式拒绝robot=None；缺模型/训练交互选择退出时使用`sys.exit`，作者版本采用显式异常及参数校验。模型与编码公式未因此重写 |
 | [neupan/blocks/obs_point_net.py](/home/nuc/lxw/NeuPAN/neupan/blocks/obs_point_net.py) | DUNE的MLP网络结构，将二维点映射为车体边数对应的非负潜在特征 | 未改 | 与py38/main一致；新增ROS辅助代码不等于新增网络层 |
-| [neupan/blocks/nrmp.py](/home/nuc/lxw/NeuPAN/neupan/blocks/nrmp.py) | 构造可微凸优化层，结合参考跟踪、避障距离变量、车体约束和线性化运动学求解控制/状态序列 | 未改 | 本机`q_s`为标量；作者版本支持3维状态权重并增加dtype转换等处理。本机没有对应向量权重实现；不能直接照作者新示例填`[qx,qy,qyaw]` |
+| [neupan/blocks/nrmp.py](/home/nuc/lxw/NeuPAN/neupan/blocks/nrmp.py) | 构造可微凸优化层，结合参考跟踪、避障距离变量、车体约束和线性化运动学求解控制/状态序列 | **已改** | 11月9日缓存原CVXPY问题并增加显式CLARABEL推理，验证状态/有限值/硬约束及返回精度残差；异常仍抛出，无自动回退。训练仍用原CvxpyLayer。本机`q_s`仍为标量，未移植作者向量权重实现 |
 | [neupan/blocks/dune_train.py](/home/nuc/lxw/NeuPAN/neupan/blocks/dune_train.py) | 离线生成车体距离训练数据、训练/验证网络、保存检查点及测试结果 | 未改 | 与作者主要是保存路径变量拼写和注释差异；不是新增训练方法，普通导航不运行训练循环 |
 | [neupan/robot/__init__.py](/home/nuc/lxw/NeuPAN/neupan/robot/__init__.py) | 导出robot类 | 未改 | 与py38/main一致 |
 | [neupan/robot/robot.py](/home/nuc/lxw/NeuPAN/neupan/robot/robot.py) | 车体顶点/半空间、阿克曼/差速/全向线性化、参考代价及速度/预测内变化率约束 | 未改 | 本机参考状态代价用标量`q_s`；作者增加向量权重分支。原生相邻控制的变化率约束已存在，ROS额外首步连续性层已撤出 |

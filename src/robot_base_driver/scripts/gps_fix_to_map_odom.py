@@ -4,6 +4,8 @@ import math
 import json
 import time
 import threading
+import copy
+from collections import OrderedDict, Counter
 from gnss_timebase import GnssTimebase
 
 import rospy
@@ -48,6 +50,15 @@ class GpsFixToMapOdom:
         self.timebase = GnssTimebase(rospy.get_param('~gps_time_mode', 'shadow'),
                                     rospy.get_param('~gps_time_clock_verified', False))
         self.last_published_source_ns = None
+        self.pending_fixes = OrderedDict()
+        self.pair_wait_sec = float(rospy.get_param('~pair_wait_sec', .15))
+        if not math.isfinite(self.pair_wait_sec) or not .05 <= self.pair_wait_sec <= .2:
+            raise ValueError('pair_wait_sec must be between .05 and .2 seconds')
+        self.pair_counts = Counter()
+        self.pair_max_wait_sec = 0.
+        self.pair_state = 'waiting_for_fix'
+        self.last_pair_report = float('-inf')
+        self.pair_pub = rospy.Publisher('/gps/projection_pairing', String, queue_size=2)
         rospy.Subscriber('/gnss/time_diagnostics', String, self.time_metadata_cb, queue_size=200)
         self.last_fix_recv = None
         self.last_heading = None
@@ -108,8 +119,19 @@ class GpsFixToMapOdom:
     def fix_cb(self, msg):
         if not self._finite(msg.latitude) or not self._finite(msg.longitude):
             return
-        self.last_fix = msg
-        self.last_fix_recv = rospy.Time.now()
+        with self.time_lock:
+            self.last_fix = msg
+            self.last_fix_recv = rospy.Time.now()
+            stamp = msg.header.stamp.to_nsec()
+            if self.timebase.mode == 'measurement':
+                if stamp <= 0 or (self.last_published_source_ns is not None and stamp <= self.last_published_source_ns):
+                    self.pair_counts['duplicate_or_old_fix'] += 1
+                    return
+                if stamp not in self.pending_fixes:
+                    self.pending_fixes[stamp] = (copy.deepcopy(msg), time.monotonic_ns(), self.timebase.session)
+                while len(self.pending_fixes) > 64:
+                    self.pending_fixes.popitem(last=False)
+                    self.pair_counts['capacity_expired'] += 1
 
     def heading_cb(self, msg):
         q = msg.quaternion
@@ -130,7 +152,16 @@ class GpsFixToMapOdom:
 
     def timer_cb(self, _event):
         with self.time_lock:
-            self._timer_cb(_event)
+            try:
+                self._timer_cb(_event)
+            finally:
+                mono = time.monotonic()
+                if mono-self.last_pair_report >= .5:
+                    self.pair_pub.publish(String(data=json.dumps(dict(
+                        stamp=rospy.Time.now().to_sec(), state=self.pair_state,
+                        pending=len(self.pending_fixes), max_wait_sec=self.pair_max_wait_sec,
+                        counts=dict(self.pair_counts), projected_source_ns=self.last_published_source_ns))))
+                    self.last_pair_report = mono
 
     def _timer_cb(self, _event):
         if self.last_fix is None:
@@ -138,6 +169,37 @@ class GpsFixToMapOdom:
 
         fix = self.last_fix
         now = rospy.Time.now()
+        if self.timebase.mode == 'measurement':
+            mono = time.monotonic_ns()
+            fix = None
+            reason = 'pair_pending' if self.pending_fixes else 'waiting_for_fix'
+            for stamp in sorted(self.pending_fixes, reverse=True):
+                message, arrived, session = self.pending_fixes[stamp]
+                waited = max(0., (mono-arrived)*1.e-9)
+                self.pair_max_wait_sec = max(self.pair_max_wait_sec, waited)
+                if self.last_published_source_ns is not None and stamp <= self.last_published_source_ns:
+                    self.pending_fixes.pop(stamp); continue
+                if session is not None and session != self.timebase.session:
+                    self.pending_fixes.pop(stamp)
+                    self.pair_counts['session_rejected'] += 1
+                    reason = 'time_session_changed_restart_required'; continue
+                good, why = self.timebase.check('GGA', stamp, now.to_nsec(), mono, 1.)
+                if good:
+                    fix = message; break
+                pending = why in ('position_source_time_mismatch', 'waiting_for_measurement_clock') and not self.timebase.fault
+                if pending and waited <= self.pair_wait_sec:
+                    continue  # A newer pending fix cannot hide an older complete pair.
+                reason = 'pair_metadata_timeout' if pending else why
+                if waited > self.pair_wait_sec or not pending:
+                    self.pending_fixes.pop(stamp)
+                    self.pair_counts['expired_or_rejected'] += 1
+            if fix is None:
+                self.pair_state = reason
+                if reason in ('pair_pending', 'waiting_for_fix'):
+                    rospy.logdebug_throttle(8., 'GPS projection pair_pending: waiting for exact epoch metadata')
+                else:
+                    rospy.logwarn_throttle(8., 'GPS projection time gate: %s', reason)
+                return
         source_ns = fix.header.stamp.to_nsec()
         good, reason = self.timebase.check('GGA', source_ns, now.to_nsec(), time.monotonic_ns(), 1.)
         if not good:
@@ -172,6 +234,11 @@ class GpsFixToMapOdom:
 
         self.pub.publish(odom)
         self.last_published_source_ns = source_ns
+        self.pair_state = 'paired'
+        self.pair_counts['projected'] += 1
+        for stamp in list(self.pending_fixes):
+            if stamp <= source_ns:
+                self.pending_fixes.pop(stamp)
 
 
 if __name__ == "__main__":

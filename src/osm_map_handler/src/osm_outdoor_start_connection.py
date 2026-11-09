@@ -304,10 +304,54 @@ class StartRouteConnector:
         if not np.isfinite(self.vertices).all() or not math.isfinite(radius) or radius <= 0:
             raise ValueError('invalid start-connection vehicle geometry')
         self.corridor, self.candidates = corridor, candidates
+        self.original_corridor = corridor
+        self.corridor_source = 'osm'
         self.search = search
         self.scan = None  # immutable capture-aligned snapshots assigned by the control loop
         self.scan_transform_state = 'waiting_for_scan'
         self.reset()
+
+    def use_advisory_road(self, region, version):
+        """Bind measured right edge to the existing OSM road width/direction.
+
+        No invented road width and no global translation of unrelated roads.
+        Only the observed segment is represented; scan/body checks remain.
+        """
+        if not version:
+            if self.corridor_source != 'osm':
+                self.corridor=self.original_corridor
+            self.corridor_source='osm';return
+        self.corridor=None;self.corridor_source='road_alignment_evidence_insufficient'
+        if (not isinstance(region,dict) or region.get('frame_id')!='map'
+                or region.get('reference_version')!=version or self.original_corridor is None):
+            return
+        try:
+            right=np.asarray(region['right_edge_map'],float)
+            original=np.asarray(region['original_route_map'],float)
+            if right.shape!=original.shape or right.ndim!=2 or right.shape[1]!=2 or not 2<=len(right)<=256:
+                return
+            if not np.isfinite(right).all() or not np.isfinite(original).all():return
+            roads=self.original_corridor.segments
+            built=[]
+            for a,b,u,v in zip(right[:-1],right[1:],original[:-1],original[1:]):
+                tangent=b-a;length=np.linalg.norm(tangent)
+                if length<.01:continue
+                tangent=tangent/length
+                center=(u+v)/2;edges=roads[:,2:4]-roads[:,:2]
+                ratio=np.clip(np.sum((center-roads[:,:2])*edges,axis=1)/np.sum(edges*edges,axis=1),0,1)
+                distance=np.linalg.norm(center-(roads[:,:2]+ratio[:,None]*edges),axis=1)
+                nearest=int(np.argmin(distance));road=roads[nearest]
+                if distance[nearest]>.5 or abs(float(tangent@edges[nearest]/np.linalg.norm(edges[nearest])))<.866:
+                    return
+                normal=np.array([-tangent[1],tangent[0]])
+                shifted_a=a+normal*road[4];shifted_b=b+normal*road[4]
+                direction=road[5] if float(tangent@edges[nearest])>=0 else -road[5]
+                built.append([*shifted_a,*shifted_b,road[4],direction])
+            if built:
+                self.corridor=RoadCorridor(built)
+                self.corridor_source='accepted_right_edge_with_osm_width_v%d'%version
+        except (KeyError,ValueError,TypeError,IndexError):
+            return
 
     def reset(self):
         if self.search is not None:
@@ -385,7 +429,8 @@ class StartRouteConnector:
             self.phase, self.reason = 'waiting_for_scan', 'connection_waiting_for_fresh_scan'
             return 'wait', None
         if self.corridor is None or not len(self.corridor.segments):
-            self.phase, self.reason = 'blocked', 'connection_road_corridor_unavailable'
+            self.phase, self.reason = 'blocked', ('connection_road_alignment_evidence_insufficient'
+                if self.corridor_source!='osm' else 'connection_road_corridor_unavailable')
             return 'reject', None
         arc = np.r_[0., np.cumsum(np.linalg.norm(np.diff(route[nearest:, :2], axis=0), axis=1))]
         anchors = sorted(set(nearest+min(int(np.searchsorted(arc, distance)), len(arc)-1)

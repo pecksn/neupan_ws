@@ -12,6 +12,7 @@ import test_followup_safety as fixture
 import test_camera_publication_protocol as protocol
 from test_startup_recovery import Stamp
 from test_camera_right_refinement import namespace as n
+from reference_test_frames import stamp_reference_frame
 from neupan_navigation import MotionFeedback
 from neupan_safety import CandidateRejected,candidate_snapshot
 
@@ -74,7 +75,7 @@ class LocalReferenceTests(unittest.TestCase):
         node.cache_pose=lambda now,force=False:([20.,0.,0.],0.)
         with patch.dict(n,time=NS(monotonic=lambda:clock[0]),rospy=NS(Time=NS(now=lambda:Stamp(clock[0])))):
             for seq in range(1,4):
-                node.last_seq=seq;node.stable_result(copy.deepcopy(node.path),clock[0],.2)
+                node.last_seq=seq;stamp_reference_frame(node,seq);node.stable_result(copy.deepcopy(node.path),clock[0],.2)
         self.assertGreater(node.reference_version,0)
         self.assertLess(node.frozen_reference_map[80,1],-.7)
         self.assertEqual(node.final_path_diagnostics['decision_window']['used_points'],9)

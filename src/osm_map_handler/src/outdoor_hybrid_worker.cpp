@@ -247,7 +247,9 @@ int main() {
       if(collision.isTraversable(&start))
         solution=Algorithm::hybridAStar(start,options.goals[0],nodes.data(),nullptr,space.size,space.size,
                                       collision,nullptr,visual,&options);
-      else options.reason="initial_footprint_not_observed_or_on_road";
+      else if(space.road_rejected) options.reason="initial_footprint_outside_road_region";
+      else if(space.boundary_rejected) options.reason="initial_footprint_outside_search_grid";
+      else options.reason="initial_footprint_scan_unobserved_or_obstructed";
     }
     auto path=trace(solution,space);
     if(path.size()<2) {

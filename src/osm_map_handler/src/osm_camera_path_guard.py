@@ -40,6 +40,7 @@ def authorization_identity(status):
     fields['hazards']=status.get('hazard_regions') or detail.get('hazard_regions') or {}
     fields['reference_role']=detail.get('reference_role','visual_execution')
     fields['reference_version']=detail.get('reference_version')
+    fields['road_region']=detail.get('road_region')
     fields['reference_connection']=(detail.get('final_path') or {}).get('reference_connection')
     try:return hashlib.sha256(json.dumps(fields,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
     except (TypeError,ValueError):return None
@@ -289,6 +290,7 @@ class CameraPathGuard:
             state = {'source': source, 'reason': reason, 'heartbeat_age_sec': age,
                      'reference_role':'advisory' if advisory else 'visual_execution',
                      'reference_version':detail.get('reference_version'),
+                     'road_region':detail.get('road_region') if advisory else None,
                      'reference_connection':(detail.get('final_path') or {}).get('reference_connection') if advisory else None,
                      'authorization_generation':self.authorization_generation,
                      'authorization_id':self.authorization_id,

@@ -27,6 +27,7 @@ topics:
   - /gnss/solution_status
   - /gnss/serial_diagnostics
   - /gnss/time_diagnostics
+  - /gps/projection_pairing
   - /livox/lidar
   - /livox/imu
   - /cloud_registered_body

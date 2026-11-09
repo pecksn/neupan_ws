@@ -176,6 +176,21 @@ class CadencePipelineTests(unittest.TestCase):
 
 @unittest.skipUnless(pipeline.ROS, 'ROS1 launch parser required')
 class CadenceLaunchTests(unittest.TestCase):
+    def test_documented_ordinary_and_camera_entries_share_localization_parameters(self):
+        import roslaunch
+        root=Path(__file__).resolve().parents[3]
+        path=root/'src/neupan_ros/example/lxw_car/launch/full_system_run.launch'
+        configs=[]
+        for extra in ([],['enable_camera_right_path:=true','enable_camera_right_control:=true']):
+            config=roslaunch.config.load_config_default([(str(path),[
+                'outdoor_mode:=true','low_precision_startup:=true']+extra)],None,verbose=False)
+            configs.append({key:value.value for key,value in config.params.items()
+                if key.startswith(('/global_odom_bridge/','/gps_fix_to_map_odom/','/nmea_serial_driver_node/'))})
+        self.assertTrue(configs[0]['/global_odom_bridge/low_precision_startup'])
+        self.assertEqual(configs[0],configs[1])
+        commands=(root/'核心启动指令.md').read_text()
+        self.assertEqual(commands.count('outdoor_mode:=true low_precision_startup:=true'),2)
+
     def test_full_system_passes_configured_periods_to_both_driver_and_bridge(self):
         import roslaunch
         root = Path(__file__).resolve().parents[3]

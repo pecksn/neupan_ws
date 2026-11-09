@@ -36,6 +36,7 @@ pan:
 
 # adjust parameters
 adjust:
+  inference_solver: CLARABEL # NRMP内部单一显式推理接口；训练仍保留CvxpyLayer。
   q_s: 1.2    # 状态跟踪误差平方项内的标量缩放，包含位置和航向；本机不支持向量权重。
   p_u: 21.0   # 纵向速度跟踪项(p_u*(v-v_ref))^2的缩放，不是转角/相邻控制平滑权重。
   eta: 1.0    # 距离变量奖励-eta*sum(d)的权重，结合上下界及违约罚项作用。
