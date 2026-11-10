@@ -10,6 +10,10 @@
   <arg name="time_mode" default="shadow" />
   <arg name="time_clock_verified" default="false" />
   <arg name="pvt_period_sec" default="1.0" />
+  <arg name="gnss_transport_limit_sec" default="0.0" />
+  <arg name="gnss_common_utc_verified" default="false" />
+  <arg name="host_clock_evidence_file" default="/home/nuc/lxw/neupan_ws/.runtime_diagnostics/host_utc.json" />
+  <arg name="raw_capture_sec" default="0.0" />
   <arg name="gga_period_sec" default="0.05" />
   <arg name="cadence_margin_sec" default="0.3" />
   <arg name="heading_source_is_north_cw" default="true" />
@@ -31,6 +35,11 @@
     <param name="time_mode" value="$(arg time_mode)" />
     <param name="time_clock_verified" value="$(arg time_clock_verified)" />
     <param name="pvt_period_sec" value="$(arg pvt_period_sec)" />
+    <param name="gnss_transport_limit_sec" value="$(arg gnss_transport_limit_sec)" />
+    <param name="gnss_common_utc_verified" value="$(arg gnss_common_utc_verified)" />
+    <param name="host_clock_evidence_file" value="$(arg host_clock_evidence_file)" />
+    <param name="raw_capture_sec" value="$(arg raw_capture_sec)" />
+    <param name="raw_capture_directory" value="$(find robot_base_driver)/../../tracker_logs/gnss_raw" />
     <param name="gga_period_sec" value="$(arg gga_period_sec)" />
     <param name="cadence_margin_sec" value="$(arg cadence_margin_sec)" />
     <param name="rotation" value="$(arg rotation)" />

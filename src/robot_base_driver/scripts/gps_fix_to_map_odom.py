@@ -43,6 +43,12 @@ class GpsFixToMapOdom:
         self.use_heading = bool(rospy.get_param("~use_heading", True))
         self.heading_timeout_sec = max(0.1, float(rospy.get_param("~heading_timeout_sec", 0.5)))
         self.publish_rate = max(1.0, float(rospy.get_param("~publish_rate", 30.0)))
+        self.transport_limit_sec=float(rospy.get_param('~gnss_transport_limit_sec',0.))
+        if (not math.isfinite(self.transport_limit_sec) or not 0<=self.transport_limit_sec<=4.
+                or self.transport_limit_sec>1. and rospy.get_param('~gnss_common_utc_verified',False) is not True):
+            raise ValueError('extended GNSS transport requires independently verified common UTC')
+        self.gga_period_sec=float(rospy.get_param('~gga_period_sec',.05))
+        self.cadence_margin_sec=float(rospy.get_param('~cadence_margin_sec',.3))
 
         self.earth_radius = 6378137.0
         self.last_fix = None
@@ -183,7 +189,8 @@ class GpsFixToMapOdom:
                     self.pending_fixes.pop(stamp)
                     self.pair_counts['session_rejected'] += 1
                     reason = 'time_session_changed_restart_required'; continue
-                good, why = self.timebase.check('GGA', stamp, now.to_nsec(), mono, 1.)
+                good, why = self.timebase.check('GGA', stamp, now.to_nsec(), mono,
+                    self.transport_limit_sec or 1.,self.gga_period_sec if self.transport_limit_sec else 0.,self.cadence_margin_sec)
                 if good:
                     fix = message; break
                 pending = why in ('position_source_time_mismatch', 'waiting_for_measurement_clock') and not self.timebase.fault
@@ -201,7 +208,8 @@ class GpsFixToMapOdom:
                     rospy.logwarn_throttle(8., 'GPS projection time gate: %s', reason)
                 return
         source_ns = fix.header.stamp.to_nsec()
-        good, reason = self.timebase.check('GGA', source_ns, now.to_nsec(), time.monotonic_ns(), 1.)
+        good, reason = self.timebase.check('GGA', source_ns, now.to_nsec(), time.monotonic_ns(),
+            self.transport_limit_sec or 1.,self.gga_period_sec if self.transport_limit_sec else 0.,self.cadence_margin_sec)
         if not good:
             rospy.logwarn_throttle(2., 'GPS projection time gate: %s', reason)
             return

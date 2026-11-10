@@ -108,9 +108,22 @@ class RosNMEADriver(object):
             rospy.get_param('~time_mode', 'shadow'),
             rospy.get_param('~time_clock_verified', False),
             pvt_period_sec=self.pvt_period_sec, gga_period_sec=self.gga_period_sec,
-            cadence_margin_sec=self.cadence_margin_sec)
-        rospy.loginfo('GNSS configured cadence: PVT %.3fs, GGA %.3fs, margin %.3fs; source transport gate unchanged',
-                      self.pvt_period_sec, self.gga_period_sec, self.cadence_margin_sec)
+            cadence_margin_sec=self.cadence_margin_sec,
+            transport_limit_sec=rospy.get_param('~gnss_transport_limit_sec',0.),
+            common_utc_verified=rospy.get_param('~gnss_common_utc_verified',False))
+        # Coarse G90 installation sanity envelope, NOT an exact 0.67m
+        # calibration. Only the newly admitted L1 class needs this extra gate;
+        # existing NARROW_INT continuity/quality contract is unchanged.
+        self.l1_baseline_min=float(rospy.get_param('~l1_heading_baseline_min_m',.3))
+        self.l1_baseline_max=float(rospy.get_param('~l1_heading_baseline_max_m',1.2))
+        self.l1_pitch_max=float(rospy.get_param('~l1_heading_pitch_max_deg',45.))
+        if not (0<self.l1_baseline_min<self.l1_baseline_max<=3. and 0<self.l1_pitch_max<=45.):
+            raise ValueError('invalid L1 heading installation sanity envelope')
+        rospy.loginfo('GNSS configured cadence: PVT %.3fs, GGA %.3fs, margin %.3fs; '
+                      'transport_limit=%s common_UTC_asserted=%s (not hardware proof)',
+                      self.pvt_period_sec, self.gga_period_sec, self.cadence_margin_sec,
+                      self.observation_timing.transport_limit_sec or 'legacy: PVT .5s, GGA 1s',
+                      self.observation_timing.common_utc_verified)
         self.time_diagnostics_pub = rospy.Publisher('/gnss/time_diagnostics', String, queue_size=200)
         self._time_event = None
 
@@ -284,7 +297,7 @@ class RosNMEADriver(object):
 
     def measurement_accepted(self):
         event = self._measurement_event or {}
-        timeout = .5 if event.get('family') == 'PVTSLNA' else 1.
+        timeout = self.observation_timing.transport_limit_sec or (.5 if event.get('family') == 'PVTSLNA' else 1.)
         return (event.get('time_valid') is True and event.get('clock_verified') is True
                 and event.get('epoch_order') == 'new'
                 and -.05 <= event.get('measurement_age_ms', float('inf'))/1000. <= timeout)
@@ -319,6 +332,12 @@ class RosNMEADriver(object):
                                       self.pvt_period_sec+self.cadence_margin_sec)
             try:
                 self.last_solution = parse_pvtslna(nmea_string)
+                if self.last_solution['heading_type']=='L1_INT':
+                    geometry_ok=(self.l1_baseline_min<=self.last_solution['baseline_m']<=self.l1_baseline_max
+                        and abs(self.last_solution['pitch_deg'])<=self.l1_pitch_max
+                        and self.last_solution['heading_satellites']>=4)
+                    self.last_solution['heading_geometry_valid']=geometry_ok
+                    self.last_solution['heading_valid'] &= geometry_ok
                 if self.serial_diagnostics is not None:
                     self.serial_diagnostics.count('pvtslna_parse_ok')
             except (ValueError, IndexError, UnicodeError) as exc:
@@ -340,6 +359,8 @@ class RosNMEADriver(object):
                 # never stamp it with "now" as a healthy GNSS observation.
                 if event.get('time_valid') and event.get('clock_verified'):
                     source_time = self.measurement_stamp()
+                    if event.get('epoch_order')=='rejected_age':
+                        self.last_solution.update(heading_valid=False,error='measurement_transport_age_rejected')
                 else:
                     source_time = rospy.Time(0)
                     self.last_solution.update(heading_valid=False, heading_fixed=False,

@@ -15,7 +15,7 @@
     <arg name="enable_lidar_curb_control" default="false" doc="让NeuPAN跟踪路沿修正路径；实车标定确认前保持false"/>
     <arg name="enable_camera_right_path" default="false" doc="输出摄像头靠右验证路径，不改变控制" />
     <arg name="enable_camera_right_control" default="false" doc="显式启用摄像头参考路径修正；先完成影子模式验证" />
-    <arg name="camera_right_guard_timeout" default="3.0" doc="靠右心跳超时后由NeuPAN独立回退原路线，无原路线则停车" />
+    <arg name="camera_right_guard_timeout" default="3.0" doc="首次需确认道路参考；已确认建议在普通缺帧时保持，独立危险保护不变" />
     <arg name="camera_right_center_clearance_m" default="-1" doc="旧中心距离覆盖；-1按右轮外沿距离换算" />
     <arg name="camera_right_wheel_clearance_m" default="1.5" doc="右轮胎外沿距右边界目标距离" />
     <arg name="camera_right_track_width_m" default="0.67" doc="用户确认的实车左右轮中心间距" />
@@ -23,6 +23,7 @@
     <arg name="camera_right_wheel_offset_m" default="-1" doc="中心至右轮外沿覆盖值；-1按轮距及胎宽换算" />
     <arg name="camera_right_wheel_geometry_verified" default="false" />
     <arg name="camera_right_strategy" default="segment_reference" doc="segment_reference: 稳定粗略参考建议；segment_cache: 旧显式视觉执行合同" />
+    <arg name="camera_right_max_map_shift_m" default="6.0" doc="道路参考相对原OSM的地图误差修正范围，非车辆实际横移上限" />
     <arg name="camera_right_processing_rate_hz" default="5.0" />
     <arg name="camera_right_min_confidence" default="0.60" />
     <arg name="camera_right_timeout_sec" default="-1" />
@@ -65,6 +66,9 @@
     <arg name="gps_time_mode" default="$(eval 'measurement' if arg('outdoor_mode') else 'shadow')" doc="室外默认measurement，时间无效时等待，不退回主机时标" />
     <arg name="gps_time_clock_verified" default="$(eval 'auto' if arg('outdoor_mode') else 'false')" doc="auto启动门控：NUC同步、连续有效GNSS时间；不修改系统时钟" />
     <arg name="gps_pvt_period_sec" default="1.0" doc="当前端口PVTSLNA周期；显式配置，不从断流学习" />
+    <arg name="gps_transport_limit_sec" default="0.0" doc="0保留原GNSS期限；4秒需宿主机NTP证据与接收机UTC确认；不影响LIO/扫描超时" />
+    <arg name="gps_common_utc_verified" default="false" doc="独立共同UTC确认，不等同内核同步布尔值" />
+    <arg name="gps_raw_capture_sec" default="0.0" doc="同一读取线程限时保存原文：0关闭，30到60秒，最多1MB" />
     <arg name="gps_gga_period_sec" default="0.05" doc="当前端口GGA周期" />
     <arg name="gps_cadence_margin_sec" default="0.3" doc="到包周期抖动余量；不放宽源报文传输时延" />
     <arg name="use_global_ekf" default="false" doc="false: 稳定模式直接使用/odometry/gps; true: 使用ekf_global" />
@@ -171,6 +175,8 @@
     <!-- NeuPAN雷达失效保护：空旷全inf允许通过，scan/TF失效则停车。 -->
     <arg name="neupan_stop_on_scan_fault" default="true" />
     <arg name="neupan_scan_timeout" default="0.5" />
+    <arg name="neupan_result_publish_timeout" default="$(arg neupan_scan_timeout)" doc="结果快照发布源龄；0.60仅为显式实测候选，不改当前输入期限" />
+    <arg name="neupan_result_compute_timeout" default="0.50" doc="单轮准备到发布的总计算预算，最大0.50秒" />
     <arg name="neupan_scan_transform_timeout" default="0.5" />
     <arg name="neupan_scan_recovery_stable_sec" default="0.5" />
     <arg name="neupan_scan_filtered_empty_timeout" default="2.0" />
@@ -196,6 +202,9 @@
         <arg name="gps_time_mode" value="$(arg gps_time_mode)" />
         <arg name="gps_time_clock_verified" value="$(arg gps_time_clock_verified)" />
         <arg name="gps_pvt_period_sec" value="$(arg gps_pvt_period_sec)" />
+        <arg name="gps_transport_limit_sec" value="$(arg gps_transport_limit_sec)" />
+        <arg name="gps_common_utc_verified" value="$(arg gps_common_utc_verified)" />
+        <arg name="gps_raw_capture_sec" value="$(arg gps_raw_capture_sec)" />
         <arg name="gps_gga_period_sec" value="$(arg gps_gga_period_sec)" />
         <arg name="gps_cadence_margin_sec" value="$(arg gps_cadence_margin_sec)" />
         <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
@@ -462,6 +471,9 @@
             <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
             <param name="stop_on_scan_fault" value="$(arg neupan_stop_on_scan_fault)"/>
             <param name="scan_timeout" value="$(arg neupan_scan_timeout)"/>
+            <param name="result_publish_timeout" value="$(arg neupan_result_publish_timeout)"/>
+            <param name="result_compute_timeout" value="$(arg neupan_result_compute_timeout)"/>
+            <param name="auto_command_timeout" value="$(arg auto_command_timeout)"/>
             <param name="scan_transform_timeout" value="$(arg neupan_scan_transform_timeout)"/>
             <param name="scan_recovery_stable_sec" value="$(arg neupan_scan_recovery_stable_sec)"/>
             <param name="scan_filtered_empty_timeout" value="$(arg neupan_scan_filtered_empty_timeout)"/>
@@ -483,6 +495,7 @@
             <node pkg="neupan_ros" type="neupan_node.py" name="neupan_control" output="screen">
                 <param name="camera_right_guard_enabled" value="$(arg enable_camera_right_control)" />
                 <param name="camera_right_guard_timeout" value="$(arg camera_right_guard_timeout)" />
+                <param name="camera_right_strategy" value="$(arg camera_right_strategy)" />
                 <param name="camera_right_fallback_topic" value="$(arg outdoor_initial_path_topic)" />
                 <param name="config_file" value="$(arg neupan_config_outdoor)"/>
                 <param name="map_frame"   value="map"/>
@@ -504,6 +517,9 @@
                 <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
                 <param name="stop_on_scan_fault" value="$(arg neupan_stop_on_scan_fault)"/>
                 <param name="scan_timeout" value="$(arg neupan_scan_timeout)"/>
+                <param name="result_publish_timeout" value="$(arg neupan_result_publish_timeout)"/>
+                <param name="result_compute_timeout" value="$(arg neupan_result_compute_timeout)"/>
+                <param name="auto_command_timeout" value="$(arg auto_command_timeout)"/>
                 <param name="scan_transform_timeout" value="$(arg neupan_scan_transform_timeout)"/>
                 <param name="scan_recovery_stable_sec" value="$(arg neupan_scan_recovery_stable_sec)"/>
                 <param name="scan_filtered_empty_timeout" value="$(arg neupan_scan_filtered_empty_timeout)"/>
@@ -526,6 +542,7 @@
                 <param name="default_road_width" value="$(arg osm_default_road_width)" />
                 <param name="camera_right_guard_enabled" value="$(arg enable_camera_right_control)" />
                 <param name="camera_right_guard_timeout" value="$(arg camera_right_guard_timeout)" />
+                <param name="camera_right_strategy" value="$(arg camera_right_strategy)" />
                 <param name="camera_right_fallback_topic" value="$(arg outdoor_initial_path_topic)" />
                 <param name="config_file" value="$(arg neupan_config_outdoor)"/>
                 <param name="map_frame"   value="map"/>
@@ -547,6 +564,9 @@
                 <param name="avoid_adjust_profile" value="$(arg avoid_adjust_profile)"/>
                 <param name="stop_on_scan_fault" value="$(arg neupan_stop_on_scan_fault)"/>
                 <param name="scan_timeout" value="$(arg neupan_scan_timeout)"/>
+                <param name="result_publish_timeout" value="$(arg neupan_result_publish_timeout)"/>
+                <param name="result_compute_timeout" value="$(arg neupan_result_compute_timeout)"/>
+                <param name="auto_command_timeout" value="$(arg auto_command_timeout)"/>
                 <param name="scan_transform_timeout" value="$(arg neupan_scan_transform_timeout)"/>
                 <param name="scan_recovery_stable_sec" value="$(arg neupan_scan_recovery_stable_sec)"/>
                 <param name="scan_filtered_empty_timeout" value="$(arg neupan_scan_filtered_empty_timeout)"/>
@@ -568,6 +588,7 @@
         <arg name="right_wheel_lateral_offset_m" value="$(arg camera_right_wheel_offset_m)" />
         <arg name="wheel_geometry_verified" value="$(arg camera_right_wheel_geometry_verified)" />
         <arg name="strategy" value="$(arg camera_right_strategy)" />
+        <arg name="reference_max_map_shift_m" value="$(arg camera_right_max_map_shift_m)" />
         <arg name="processing_rate_hz" value="$(arg camera_right_processing_rate_hz)" />
         <arg name="vehicle_config_file" value="$(arg neupan_config_outdoor)" />
         <arg name="min_confidence" value="$(arg camera_right_min_confidence)" />

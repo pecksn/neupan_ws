@@ -553,7 +553,7 @@ def lane_target(left, right, clearance, left_margin=None):
 
 def boundary_samples(left,right,minimum_clearance,left_margin=.80,advisory=False):
     """Keep measured left constraints where present, never invent missing ones."""
-    lower=max(2.,right[0,0]);upper=min(6.,right[-1,0])
+    lower=max(1. if advisory else 2.,right[0,0]);upper=min(8. if advisory else 6.,right[-1,0])
     if upper-lower<2:raise ValueError('insufficient continuous right boundary range')
     x=np.arange(lower,upper+.001,.25);ry=np.interp(x,right[:,0],right[:,1])
     if np.max(abs(np.diff(ry)/np.diff(x)))>.5:raise ValueError('sharp boundary or junction')
@@ -679,7 +679,7 @@ def bounded_offsets(points, offsets, slope=.25):
     return magnitudes*signs
 
 
-def reference_evidence_window(points,geometry,indices,position,progress=None,heading=None,lookahead=8.):
+def reference_evidence_window(points,geometry,indices,position,progress=None,heading=None,lookahead=8.,max_map_distance=4.):
     """Current forward route evidence, not the median of historical cache.
 
     Progress and heading disambiguate parallel/returning roads. Ambiguous
@@ -702,7 +702,7 @@ def reference_evidence_window(points,geometry,indices,position,progress=None,hea
     if not len(candidates):return [],report
     order=candidates[np.argsort(distance[candidates],kind='stable')]
     nearest=int(order[0])
-    if distance[nearest]>4.:return [],dict(report,reason='vehicle_far_from_route')
+    if distance[nearest]>max_map_distance:return [],dict(report,reason='vehicle_far_from_route')
     # At a loop/crossing, proximity alone is not proof of route progress.
     near=order[distance[order]<=distance[nearest]+.25]
     if progress is None and len(near) and np.ptp(station[near])>lookahead:
@@ -720,6 +720,35 @@ def reference_evidence_window(points,geometry,indices,position,progress=None,hea
         route_interval_m=[station_now+2.,end],route_indices=[keys[0],keys[-1]] if keys else None,
         used_points=len(keys),discarded_cache_points=len(indices)-len(keys))
     return keys,report
+
+
+def competing_road_branch(points,segments,position,heading,interval,max_distance):
+    """A nearby parallel OSM branch is ambiguity, not permission to snap.
+
+    Only inspect actually observed longitudinal support. Selected route
+    segments are excluded geometrically; no road width/free area is invented.
+    """
+    roads=np.asarray(segments,float).reshape(-1,6)
+    if not len(roads):return False
+    position=np.asarray(position,float)[:2];points=np.asarray(points,float)
+    forward=np.array([math.cos(heading),math.sin(heading)])
+    edges=roads[:,2:4]-roads[:,:2];length=np.linalg.norm(edges,axis=1)
+    a=(roads[:,:2]-position)@forward;b=(roads[:,2:4]-position)@forward
+    lo=np.maximum(np.minimum(a,b),interval[0]);hi=np.minimum(np.maximum(a,b),interval[1])
+    cosine=edges@forward/np.maximum(length,1.e-9)
+    possible=(hi-lo>=2.)&(abs(cosine)>=math.cos(math.radians(30)))&(roads[:,5]*cosine>=0)
+    for i in np.flatnonzero(possible):
+        ratio=((lo[i]+hi[i])/2-a[i])/(b[i]-a[i])
+        center=roads[i,:2]+ratio*edges[i]
+        if np.linalg.norm(center-position)>max_distance+interval[1]:continue
+        normal=np.array([-forward[1],forward[0]])
+        if abs(float((center-position)@normal))>max_distance:continue
+        route_edges=np.diff(points,axis=0)
+        t=np.clip(np.sum((center-points[:-1])*route_edges,axis=1)/
+                  np.maximum(np.sum(route_edges**2,axis=1),1.e-9),0,1)
+        gap=np.min(np.linalg.norm(center-(points[:-1]+t[:,None]*route_edges),axis=1))
+        if gap>.75:return True
+    return False
 
 
 def pose_connected_reference(points,current,arc,normals,position,heading,progress,length,target,max_shift,segment_end=None):
@@ -781,7 +810,7 @@ def advisory_geometry_ok(candidate,original):
 
 def stable_segment_reference(points, current, geometry, anchor, indices, position,
                              limits=None, camera_y=0., clearance=(1.,3.), max_shift=1.5,
-                             progress=None,heading=None,segment_end=None):
+                             progress=None,heading=None,segment_end=None,reference_accepted=True):
     """Event-driven advisory geometry; never a free-space/execution permission.
 
     Keep an in-band reference exactly. Otherwise search a bounded set
@@ -790,7 +819,7 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
     """
     points=np.asarray(points,float);current=np.asarray(current,float)
     all_keys=sorted(i for i in indices if i in geometry and 0<=i<len(points))
-    keys,window=reference_evidence_window(points,geometry,all_keys,position,progress,heading)
+    keys,window=reference_evidence_window(points,geometry,all_keys,position,progress,heading,max_map_distance=max(4.,max_shift))
     report=dict(changed=False,reference_role='advisory',evidence_points=len(keys),decision_window=window,
                 corridor_evidence_points=len(all_keys),reason='hold_without_new_evidence')
     corridor=corridor_report(current,geometry,anchor,keys)
@@ -804,7 +833,10 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
     # Independently recorded danger retains its separate scope/lifetime.
     report.update(reference_gap_m=float(np.median(gaps)),reference_gap_range_m=[float(min(gaps)),float(max(gaps))],corridor=corridor)
     lo,hi=clearance
-    if lo-.10<=np.median(gaps)<=hi+.10:
+    previous=np.sum((current-points)*normals,axis=1)
+    vehicle_lateral=float((np.asarray(position[:2])-points[window['progress_index']])@normals[window['progress_index']])
+    nearby=abs(vehicle_lateral-float(np.median(previous[keys])))>.2
+    if lo-.10<=np.median(gaps)<=hi+.10 and (reference_accepted or not nearby):
         report['reason']='hold_in_band';return current.copy(),report
     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(points,axis=0),axis=1))]
     # A discontinuous map corner starts another road segment. Continuous
@@ -819,16 +851,24 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
     # Keep the executed prefix and its tangent unchanged. A C2 entry may start
     # at current progress; postponing every entry by 2m misses near repairs.
     progress_s=window['progress_s']
+    near=window['progress_index']
+    vehicle_lateral=float((np.asarray(position[:2])-points[near])@normals[near])
+    # Map translation is not a vehicle manoeuvre. Prefer the in-band line
+    # nearest the measured vehicle, not the line nearest a misaligned OSM.
+    vehicle_gap=float(np.median(gaps)+vehicle_lateral-np.median(previous[keys]))
+    nearby_delta=vehicle_lateral+float(np.clip(vehicle_gap,lo,hi)-vehicle_gap)-float(np.median(previous[keys]))
+    use_nearby=abs(vehicle_lateral-float(np.median(previous[keys])))>.2
+    if use_nearby:delta=nearby_delta
     rejected=corridor.get('boundary_rejected_indices',[])
     first_conflict=min((arc[i] for i in rejected if arc[i]>=progress_s),default=progress_s+4.)
     starts=sorted(set((progress_s,progress_s+1.,min(progress_s+2.,max(progress_s,first_conflict-2.)))))
-    if corridor['ok']:starts=sorted(starts,reverse=True)
+    if corridor['ok'] and not use_nearby:starts=sorted(starts,reverse=True)
     # Small bounded lateral corrections win; do not chase visible left masks.
     amplitudes={round(delta,6),round(delta+.2,6),round(delta-.2,6)}
     amplitudes.update(round(sign*value,6) for sign in (-1,1)
                       for value in np.arange(.2,2*max_shift+.001,.2))
     amplitudes=sorted((a for a in amplitudes if abs(a)>=max(.01,abs(delta)-1.e-6)),
-                      key=lambda a:(abs(a),abs(a-delta),a))
+                      key=lambda a:(abs(a-delta),abs(a),a) if use_nearby else (abs(a),abs(a-delta),a))
     # Only forward right-edge evidence constrains ordinary suggestions.
     evidence_world=np.asarray([planar_transform(geometry[i]['points_odom'],anchor) for i in keys])
     constraint_normals=np.asarray([planar_transform([geometry[i]['normal_odom']],([0.,0.],anchor[1]))[0]
@@ -838,7 +878,8 @@ def stable_segment_reference(points, current, geometry, anchor, indices, positio
     began=time.monotonic();attempts=0;budget_exhausted=False
     for target_delta in amplitudes:
         curvature=math.tan((limits or {}).get('max_steer',.35))/(limits or {}).get('wheelbase',.67)
-        minimum=max(1., math.sqrt(5.8*abs(target_delta)/max(curvature,1.e-6)))
+        actual_entry_delta=(float(np.median(previous[keys]))+target_delta-vehicle_lateral if use_nearby else target_delta)
+        minimum=max(1., math.sqrt(5.8*abs(actual_entry_delta)/max(curvature,1.e-6)))
         available=max(0.,segment_end-progress_s)
         lengths=sorted(set(round(v,3) for v in (minimum,minimum*1.25,minimum*1.5,2.,3.,4.,5.,6.,8.,12.,16.,24.,32.,available)
                            if v>=minimum-1.e-6 and v<=available+1.e-6))
@@ -965,7 +1006,11 @@ class CameraRightPath:
         self.map_anchor = None
         self.osm_junctions=np.zeros((0,2))
         self.osm_map_loaded=False
+        self.osm_road_segments=np.zeros((0,6))
         try:
+            from osm_outdoor_start_connection import RoadCorridor
+            self.osm_road_segments=RoadCorridor.load(rospy.get_param('~osm_file','/home/nuc/lxw/ros_maps/map.osm'),
+                float(rospy.get_param('~map_origin_lat',23.0398)),float(rospy.get_param('~map_origin_lon',113.39002))).segments
             self.osm_junctions=load_osm_junctions(rospy.get_param('~osm_file','/home/nuc/lxw/ros_maps/map.osm'),
                                                float(rospy.get_param('~map_origin_lat',23.0398)),float(rospy.get_param('~map_origin_lon',113.39002)))
             self.osm_map_loaded=True
@@ -988,6 +1033,9 @@ class CameraRightPath:
         if self.max_source_age_ms > self.max_capture_age_ms:
             raise ValueError('source age limit exceeds capture age limit')
         self.max_shift = float(rospy.get_param('~max_shift_m', 1.5))
+        self.reference_max_shift=float(rospy.get_param('~reference_max_map_shift_m',6.))
+        if not math.isfinite(self.reference_max_shift) or not 1.5<=self.reference_max_shift<=8.:
+            raise ValueError('reference map shift must be in [1.5,8] metres')
         self.distance_reference=rospy.get_param('~distance_reference','camera_center')
         if self.distance_reference not in ('camera_center','right_tire_outer','vehicle_center'):
             raise ValueError('unknown distance reference')
@@ -1074,10 +1122,13 @@ class CameraRightPath:
             self.frozen_reference_odom=None
             self.frozen_reference_map=None
             self.reference_version=0
+            self.reference_accepted_stamp=None
+            self.reference_segment_index=None
             self.reference_outside_count=0
             self.reference_evidence_event=None
             self.reference_capture_watermark=None
             self.reference_road_region=None
+            self.raw_road_observations=deque(maxlen=32)
             self.reference_exit_frozen=False
             self.reference_exit_end_s=None
             self.reference_exit_event=None
@@ -1266,6 +1317,9 @@ class CameraRightPath:
                     self.retired_receiver_sessions = retired
                     self.last_receiver_session = session
                     self.last_camera_epoch = epoch
+                    self.raw_road_observations=deque(maxlen=32)
+                    self.reference_evidence_event=None
+                    self.reference_outside_count=0
                     self.confirmations = 0
                     if hasattr(self, 'cache'):
                         self.cache.pending.clear()
@@ -1436,10 +1490,23 @@ class CameraRightPath:
         elif single:
             raise ValueError('single-side mode requires fixed-odom segment_cache strategy')
         c, s = math.cos(yaw), math.sin(yaw)
+        map_limit=getattr(self,'reference_max_shift',6.) if advisory else self.max_shift
+        if advisory:
+            # Record real capture-time road geometry BEFORE task association.
+            # An ambiguous/off-screen task may not erase this observation.
+            road=np.column_stack((x,ry))@np.array([[c,s],[-s,c]])+np.asarray(position[:2])
+            self.raw_road_observation=dict(points_odom=planar_transform(road,self.capture_map_anchor,True),
+                capture_timestamp_ns=capture,receiver_session_id=p.get('receiver_session_id'),
+                camera_time_epoch=p.get('camera_time_epoch'))
+            history=getattr(self,'raw_road_observations',None)
+            if history is None:self.raw_road_observations=history=deque(maxlen=32)
+            if not any(item['capture_timestamp_ns']==capture for item in history):
+                history.append(dict(self.raw_road_observation,received_mono=now))
+            while history and now-history[0]['received_mono']>3.:history.popleft()
         points = np.array([[q.pose.position.x, q.pose.position.y] for q in self.path.poses])
         delta = points-np.array(position[:2])
         bx, by = delta[:, 0]*c+delta[:, 1]*s, -delta[:, 0]*s+delta[:, 1]*c
-        usable = (bx >= x[0]) & (bx <= x[-1]) & (np.abs(by) < 5)
+        usable = (bx >= x[0]) & (bx <= x[-1]) & (np.abs(by) < (map_limit+1. if advisory else 5.))
         if not usable.any():
             raise ValueError('global route outside camera support')
         headings = np.arctan2(np.diff(points[:, 1]), np.diff(points[:, 0]))
@@ -1452,8 +1519,12 @@ class CameraRightPath:
             # road bend; a vehicle-relative angle is not a turn-exit command.
             usable &= np.abs(angles)<math.radians(60)
             if not usable.any():raise ValueError('no forward road evidence')
+            if np.any(np.diff(np.flatnonzero(usable))>1):raise ValueError('ambiguous road branch association')
+            if competing_road_branch(points,getattr(self,'osm_road_segments',[]),position,yaw,
+                    (float(x[0]),float(x[-1])),map_limit):
+                raise ValueError('ambiguous parallel OSM road association')
         desired = np.interp(bx[usable], x, y)-by[usable]
-        if np.all(np.abs(desired) > self.max_shift+1.):
+        if np.all(np.abs(desired) > map_limit+1.):
             raise ValueError('camera route differs too far from global route')
         return points, bx, by, x, y, ly, ry, c, s, usable, float(np.median(desired))
 
@@ -1471,6 +1542,9 @@ class CameraRightPath:
         self.reference_transition_end_odom=None;self.reference_connection=None
         self.reference_progress_s=None;self.reference_outside_count=0;self.reference_evidence_event=None
         self.reference_road_region=None
+        self.reference_accepted_stamp=None
+        self.reference_segment_index=None
+        self.raw_road_observations=deque(maxlen=32)
         self.reference_capture_watermark=None
         self.reference_exit_frozen=False;self.reference_exit_end_s=None
         self.reference_frame_invalidated=True
@@ -1507,7 +1581,7 @@ class CameraRightPath:
                     key=(instance,epoch);old=getattr(self,'alignment_frame_key',None)
                     reset=frame.get('last_reset') or {}
                     reset_stamp=reset.get('stamp',-math.inf)
-                    if (old is None and reset_stamp>getattr(self,'reference_accepted_stamp',math.inf)
+                    if (old is None and reset_stamp>(getattr(self,'reference_accepted_stamp',None) or math.inf)
                             and reset_stamp>getattr(self,'alignment_fault_stamp',-math.inf)
                             and self.strategy=='segment_reference'):
                         self.invalidate_reference_frame('localization_reanchor_after_reference_acceptance',stamp)
@@ -1582,7 +1656,8 @@ class CameraRightPath:
                 raise ValueError('map alignment changed; cache cleared')
             if shift>1.e-6 or angle>1.e-6:
                 points=np.array([[p.pose.position.x,p.pose.position.y] for p in self.path.poses])
-                remap_cache_geometry(self.cache,getattr(self,'cache_geometry',{}),points,(anchor[:2],anchor_yaw),self.max_shift,
+                remap_cache_geometry(self.cache,getattr(self,'cache_geometry',{}),points,(anchor[:2],anchor_yaw),
+                    getattr(self,'reference_max_shift',self.max_shift) if getattr(self,'strategy',None)=='segment_reference' else self.max_shift,
                     getattr(self,'clearance_min',1.),getattr(self,'clearance_max',2.),float(getattr(self,'origin',np.zeros(3))[1]))
                 self.cache_alignment_diagnostics['action']='reprojected_fixed_odom'
                 if getattr(self,'strategy',None)=='segment_reference':
@@ -1634,9 +1709,15 @@ class CameraRightPath:
         values=self.cache.values(now)
         geometry={i:v for i,v in self.cache_geometry.items() if i in values}
         local_keys,window=reference_evidence_window(points,geometry,values,position,
-            getattr(self,'reference_progress_s',None),yaw)
+            getattr(self,'reference_progress_s',None),yaw,
+            max_map_distance=max(4.,getattr(self,'reference_max_shift',self.max_shift)))
         if 'progress_s' in window:self.reference_progress_s=window['progress_s']
         elif window.get('reason')=='vehicle_far_from_route':self.reference_progress_s=None
+        direction=np.arctan2(np.diff(points[:,1]),np.diff(points[:,0]))
+        corners=np.flatnonzero(abs(np.arctan2(np.sin(np.diff(direction)),np.cos(np.diff(direction))))>math.radians(30))+1
+        segment_index=sum(int(i)<=window.get('progress_index',0) for i in corners)
+        accepted=(getattr(self,'reference_accepted_stamp',None) is not None
+                  and getattr(self,'reference_segment_index',segment_index) in (None,segment_index))
         hazards=getattr(self,'hazards',None)
         # Retained independent danger does not send advisory generation into
         # the legacy execution-contract channel.
@@ -1644,6 +1725,7 @@ class CameraRightPath:
         context=osm_guidance_context(context_points,position[:2],yaw,self.osm_junctions)
         self.guidance_diagnostics=dict(context=context,lookahead_m=8.,skip_new_cache=context not in ('straight','osm_turn'))
         candidate=current.copy();diagnostic=dict(changed=False,reason='hold_advisory_reference');new_transition_end=None
+        evidence_ready=False
         # Reference feasibility is NOT evidence of vehicle-motion danger.
         # Existing independently sourced hazards remain separate and retained.
         checked=corridor_report(current,geometry,anchor,local_keys)
@@ -1665,6 +1747,7 @@ class CameraRightPath:
             # Confirm ROAD observations before constructing expensive geometry.
             # Timer ticks/new JSON with an unchanged capture do not count.
             event=getattr(self,'reference_evidence_event',None)
+            if event is not None and event.get('segment_index',segment_index)!=segment_index:event=None
             if event is not None and now-event['last_new_mono']>min(3.,self.cache.ttl):
                 event=None
             evidence_ready=False
@@ -1679,12 +1762,19 @@ class CameraRightPath:
                 normals=np.column_stack((-normals[:,1],normals[:,0]))/np.maximum(np.linalg.norm(normals,axis=1)[:,None],1.e-9)
                 gap=float(np.median(np.sum((current[local_keys]-edge)*normals[local_keys],axis=1))+self.origin[1])
                 delta=float(np.clip(gap,self.clearance_min,self.clearance_max)-gap)
+                if not accepted:
+                    near=window['progress_index']
+                    lateral=float((np.asarray(position[:2])-points[near])@normals[near])
+                    previous=float(np.median(np.sum((current[local_keys]-points[local_keys])*normals[local_keys],axis=1)))
+                    vehicle_gap=gap+lateral-previous
+                    if abs(lateral-previous)>.2:
+                        delta=lateral-previous+float(np.clip(vehicle_gap,self.clearance_min,self.clearance_max)-vehicle_gap)
                 capture=max((geometry[i].get('capture_timestamp_ns',0) for i in local_keys),default=0)
                 identity=(geometry[local_keys[-1]].get('receiver_session_id'),geometry[local_keys[-1]].get('camera_time_epoch'),capture)
                 watermark=getattr(self,'reference_capture_watermark',None)
                 new_capture=capture>0 and (watermark is None or identity[:2]!=watermark[:2] or capture>watermark[2])
                 if new_capture:self.reference_capture_watermark=identity
-                if self.clearance_min-.1<=gap<=self.clearance_max+.1:
+                if accepted and self.clearance_min-.1<=gap<=self.clearance_max+.1:
                     event=None;evidence_reason='hold_in_band'
                 elif not direction_ok:
                     event=None;evidence_reason='hold_direction_evidence_mismatch'
@@ -1692,8 +1782,8 @@ class CameraRightPath:
                     if event is not None and identity[:2]!=event.get('source_key'):
                         event=None
                     if new_capture:
-                        if event is None or delta*event['delta']<=0 or abs(delta-event['delta'])>.35:
-                            event=dict(delta=delta,frames=[],last_new_mono=now,source_key=identity[:2],last_capture=0)
+                        if event is None or delta*event['delta']<0 or abs(delta-event['delta'])>.35:
+                            event=dict(delta=delta,frames=[],last_new_mono=now,source_key=identity[:2],last_capture=0,segment_index=segment_index)
                         event['frames']=(event['frames']+[identity])[-3:]
                         event['last_new_mono']=now
                         event['last_capture']=capture
@@ -1723,8 +1813,9 @@ class CameraRightPath:
                                     and arc[nearest]>arc[local_keys[-1]]+1.):
                                 segment_end=min(segment_end or float(arc[-1]),float(arc[nearest]))
                     proposed,diagnostic=stable_segment_reference(points,current,geometry,anchor,values,position,
-                        self.vehicle_limits,float(self.origin[1]),(self.clearance_min,self.clearance_max),self.max_shift,
-                        getattr(self,'reference_progress_s',None),yaw,segment_end)
+                        self.vehicle_limits,float(self.origin[1]),(self.clearance_min,self.clearance_max),
+                        getattr(self,'reference_max_shift',self.max_shift),
+                        getattr(self,'reference_progress_s',None),yaw,segment_end,reference_accepted=accepted)
             except CorridorUnsafe as error:
                 proposed=current
                 candidate=current.copy()
@@ -1750,10 +1841,13 @@ class CameraRightPath:
                 new_transition_end=None
                 diagnostic=dict(changed=False,reason='evidence_expired_during_reference_search')
             anchor=self.map_anchor
-        if diagnostic.get('changed'):
+        accepting_original=(not accepted and diagnostic.get('reason')=='hold_in_band'
+                            and evidence_ready and finished-now<=.05)
+        if diagnostic.get('changed') or accepting_original:
             self.reference_accepted_stamp=rospy.Time.now().to_sec()
+            self.reference_segment_index=segment_index
             self.reference_frame_invalidated=False
-            self.reference_version=getattr(self,'reference_version',0)+1
+            self.reference_version=getattr(self,'reference_version',0)+(0 if accepting_original else 1)
             # Commit geometry and its complete state together. None explicitly
             # ends the old entry; it must not silently inherit an obsolete end.
             self.reference_transition_end_odom=new_transition_end
@@ -2025,6 +2119,9 @@ class CameraRightPath:
             self.pose_tick_open=True
             self.pose_tick_snapshot=None
             now = time.monotonic()
+            history=getattr(self,'raw_road_observations',None)
+            if history is not None:
+                while history and now-history[0]['received_mono']>3.:history.popleft()
             dt = min(1., now-self.last_tick)
             self.delivery_dt=dt
             self.last_tick = now
@@ -2096,7 +2193,9 @@ class CameraRightPath:
                         elif int(i) in self.cache.committed:
                             # Refresh raw measured boundaries, not frozen target choice.
                             self.cache_geometry[int(i)].update(points_odom=planar_transform(world,self.capture_map_anchor,True),
-                                capture_timestamp_ns=self.packet['capture_timestamp_ns'])
+                                capture_timestamp_ns=self.packet['capture_timestamp_ns'],
+                                camera_time_epoch=self.packet.get('camera_time_epoch'),
+                                receiver_session_id=self.packet.get('receiver_session_id'))
                         evidence=self.cache_geometry[int(i)]
                         normal=np.array([-tangent[1],tangent[0]])
                         evidence.update(mode='dual' if np.isfinite(local[1]).all() else 'right_only',area=getattr(self,'capture_area',None),
@@ -2262,6 +2361,9 @@ class CameraRightPath:
             'advisory_clearance_band_m':[getattr(self,'clearance_min',1.),getattr(self,'clearance_max',3.)],
             'reference_role':'advisory' if getattr(self,'strategy',None)=='segment_reference' else 'visual_execution',
             'reference_version':getattr(self,'reference_version',0),
+            'reference_accepted':getattr(self,'reference_accepted_stamp',None) is not None,
+            'reference_accepted_stamp':getattr(self,'reference_accepted_stamp',None),
+            'raw_road_observation_samples':len(getattr(self,'raw_road_observations',())),
             'road_region':getattr(self,'reference_road_region',None),
             'reference_frame_invalidated':getattr(self,'reference_frame_invalidated',False),
             'localization_reference_frame_key':getattr(self,'alignment_frame_key',None),

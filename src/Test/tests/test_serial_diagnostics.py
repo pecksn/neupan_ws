@@ -178,6 +178,7 @@ class PipelineTests(unittest.TestCase):
              patch.object(rospy,'Timer',side_effect=make_timer), \
              patch.object(rospy,'Publisher',side_effect=publisher), \
              patch.object(rospy,'loginfo'),patch.object(node.serial,'Serial',return_value=port) as opened:
+            port.in_waiting=0
             node.main()
         opened.assert_called_once()
         port.readline.assert_called_once()

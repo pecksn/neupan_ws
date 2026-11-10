@@ -43,7 +43,8 @@ import rospy
 from libnmea_navsat_driver.driver import RosNMEADriver
 from libnmea_navsat_driver import driver as driver_module, unicore
 from libnmea_navsat_driver import observation_time
-from libnmea_navsat_driver.serial_diagnostics import SerialDiagnostics, source_identity
+from libnmea_navsat_driver.serial_diagnostics import SerialDiagnostics, source_identity, BoundedRawCapture
+from libnmea_navsat_driver.host_utc_evidence import validate as validate_host_utc
 from std_msgs.msg import String
 
 
@@ -51,6 +52,9 @@ def process_serial_read(raw, driver, diagnostics, frame_id):
     """Tap the existing read result, not a second reader; preserve parse policy."""
     read_mono_ns = time.monotonic_ns()
     read_ros_ns = rospy.Time.now().to_nsec()
+    capture=getattr(diagnostics,'raw_capture',None)
+    if isinstance(capture,BoundedRawCapture):
+        capture.observe(raw,read_ros_ns,read_mono_ns,diagnostics.processing['in_waiting_bytes'])
     diagnostics.observe_read(raw)
     if not raw:
         return
@@ -69,6 +73,8 @@ def process_serial_read(raw, driver, diagnostics, frame_id):
     except Exception as exc:
         diagnostics.error('unhandled_errors', exc)
         raise  # Do not mask a real driver fault as successful parsing.
+    finally:
+        diagnostics.observe_processing(len(raw),(time.monotonic_ns()-read_mono_ns)/1.e6)
 
 
 def main():
@@ -87,6 +93,14 @@ def main():
     serial_port = rospy.get_param('~port', '/dev/ttyUSB0')
     serial_baud = rospy.get_param('~baud', 4800)
     frame_id = RosNMEADriver.get_frame_id()
+    clock_file=rospy.get_param('~host_clock_evidence_file','')
+    # The production entry point requires host evidence for the explicit
+    # deployment assertion. Unit pipelines can still test that assertion.
+    if rospy.get_param('~gnss_common_utc_verified',False):
+        try:
+            with open(clock_file) as stream:valid=validate_host_utc(json.load(stream))
+        except (OSError,ValueError):valid=False
+        if not valid:raise ValueError('4s GNSS deployment requires fresh independent host NTP evidence; use host start_outdoor.sh')
     diagnostics = SerialDiagnostics({
         'port': serial_port, 'baud': serial_baud, 'framing': '8N1',
         'nominal_payload_bytes_per_sec': float(serial_baud)/10.,
@@ -97,14 +111,22 @@ def main():
         'observation_time': source_identity(observation_time.__file__),
     })
     publisher = rospy.Publisher('/gnss/serial_diagnostics', String, queue_size=5, latch=True)
+    diagnostics.raw_capture=BoundedRawCapture(rospy.get_param('~raw_capture_directory',''),
+                                             float(rospy.get_param('~raw_capture_sec',0.)))
     print_summary = bool(rospy.get_param('~serial_diagnostics_print', False))
     driver = None
+    clock_evidence={'updated_mono':float('-inf'),'data':None}
 
     def publish_diagnostics(_event=None):
         report = diagnostics.snapshot()
         report['stamp'] = rospy.Time.now().to_sec()
         if driver is not None:
             report['observation_timing'] = driver.observation_timing.summary()
+        if time.monotonic()-clock_evidence['updated_mono']>=30.:
+            clock_evidence.update(updated_mono=time.monotonic(),data=observation_time.host_clock_evidence(clock_file))
+        report['host_clock_evidence']=clock_evidence['data']
+        capture=diagnostics.raw_capture
+        report['raw_capture']=dict(path=capture.path,bytes=capture.bytes,active=capture.file is not None,error=capture.error)
         try:
             publisher.publish(String(data=json.dumps(report, allow_nan=False, separators=(',', ':'))))
             if print_summary:
@@ -129,6 +151,7 @@ def main():
         driver = RosNMEADriver()
         driver.serial_diagnostics = diagnostics
         while not rospy.is_shutdown():
+            diagnostics.observe_backlog(int(GPS.in_waiting))
             process_serial_read(GPS.readline(), driver, diagnostics, frame_id)
     except rospy.ROSInterruptException:
         pass
@@ -142,6 +165,7 @@ def main():
         raise
     finally:
         timer.shutdown()
+        diagnostics.raw_capture.close()
         try:
             if GPS is not None:
                 GPS.close()

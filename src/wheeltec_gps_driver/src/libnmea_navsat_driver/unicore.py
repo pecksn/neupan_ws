@@ -33,13 +33,16 @@ def parse_pvtslna(sentence):
             and 0 <= length <= 3000 and 0 <= heading <= 360
             and -90 <= pitch <= 90 and satellites >= 0):
         raise ValueError('Out-of-range PVTSLNA data')
-    heading_fixed = heading_type == 'NARROW_INT'
+    # N4 table 0-4: both are integer solutions; preserve the exact type,
+    # do not claim equal precision or admit FLOAT/NONE/unknown types.
+    heading_fixed = heading_type in ('NARROW_INT','L1_INT')
     return {
         'source': 'PVTSLNA',
         'position_type': position_type,
-        'position_fixed': position_type == 'NARROW_INT',
+        'position_fixed': position_type in ('NARROW_INT','L1_INT'),
         'latitude': latitude, 'longitude': longitude,
         'heading_type': heading_type, 'heading_fixed': heading_fixed,
+        'heading_quality_class': heading_type,
         'heading_valid': heading_fixed and length > 0 and satellites > 0,
         'baseline_m': length, 'heading_deg': heading,
         'pitch_deg': pitch, 'heading_satellites': satellites,

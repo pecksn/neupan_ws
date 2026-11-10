@@ -16,6 +16,7 @@ class GnssTimebase:
         self.mode = mode
         self.auto_clock = verified == 'auto'
         self.clock_ready = verified is True
+        self.clock_established = self.clock_ready
         self.wait_reason = 'waiting_for_time_metadata'
         self.fault = None
         self.session = None
@@ -30,7 +31,7 @@ class GnssTimebase:
         if self.previous_clock is not None:
             r, m = self.previous_clock
             if mono_ns < m or abs((ros_ns-r)-(mono_ns-m)) > 250000000:
-                if not (self.auto_clock and not self.clock_ready):
+                if not (self.auto_clock and not self.clock_established):
                     self.fault = 'host_clock_jump_restart_required'
         self.previous_clock = ros_ns, mono_ns
 
@@ -47,15 +48,19 @@ class GnssTimebase:
             self.fault = 'invalid_time_session'
             return
         if (self.session is not None and session != self.session
-                and not (self.auto_clock and not self.clock_ready)):
+                and not (self.auto_clock and not self.clock_established)):
             self.fault = 'time_session_changed_restart_required'
         self.session = session
         if event.get('clock_verified') is not True or event.get('clock_jump'):
             self.wait_reason = event.get('clock_gate_reason', 'waiting_for_verified_clock')
-            if not (self.auto_clock and not self.clock_ready and event.get('clock_waiting') is True):
+            recoverable=(event.get('clock_waiting') is True and self.auto_clock
+                         and (not event.get('clock_jump') or not self.clock_established))
+            if recoverable:self.clock_ready=False
+            else:
                 self.fault = 'receiver_clock_unverified_restart_required'
             return
         self.clock_ready = True
+        self.clock_established = True
         self.wait_reason = 'ready'
         family = event.get('family')
         if family not in ('GGA', 'PVTSLNA'):

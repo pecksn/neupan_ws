@@ -66,7 +66,7 @@ def camera_replay(directory=None):
     if not files:raise FileNotFoundError('Oct28 camera bag missing')
     with rosbag.Bag(str(files[0])) as bag:start=bag.get_start_time()
     clock=NS(ns=round(start*1.e9));listener,feed,Time=tf_environment(clock)
-    guard=CameraPathGuard();rows=[];health_rows=[];route_changes=[];last_digest=[None];recorded_runtime=[None,None]
+    guard=CameraPathGuard(require_initial_reference=True);rows=[];health_rows=[];route_changes=[];last_digest=[None];recorded_runtime=[None,None]
     params={'~strategy':'segment_reference','~control_enabled':True,
         '~camera_info_file':str(ROOT/'src/usb_camera/config/usb_camera.yaml'),
         '~extrinsics_file':str(ROOT/'src/usb_camera/config/livox_camera_extrinsics.yaml'),
@@ -84,8 +84,10 @@ def camera_replay(directory=None):
                               and payload.get('control_path_digest')!=original_digest)
         matched=state['source']=='camera' and state.get('matched_path_digest')==payload.get('control_path_digest')
         rows.append(dict(stamp_ns=clock.ns,active=payload['active'],producer_reason=payload['reason'],
+            reference_shift_m=payload.get('shift_m'),
             source=state['source'],consumer_reason=state['reason'],
             version=detail.get('reference_version'),producer_decision=final,
+            reference_accepted=detail.get('reference_accepted'),reference_accepted_stamp=detail.get('reference_accepted_stamp'),
             pipeline_stage=('new_reference_consumer_selected_tracking_not_replayed' if matched else 'new_reference_consumer_not_selected')
                 if changed_geometry and (detail.get('reference_version') or 0)>0
                 else 'held_or_reprojected_geometry_consumer_selected' if changed_geometry and matched

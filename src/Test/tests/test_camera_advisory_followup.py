@@ -251,7 +251,9 @@ class AdvisoryTests(unittest.TestCase):
             self.assertEqual(node.reference_version,1)
             connection=state['reference_connection'];self.assertEqual(connection['start_index'],20)
             np.testing.assert_allclose(frozen[20],[10.,-1.1])
-            self.assertAlmostEqual(frozen[-1,1],-.6)
+            # Already 2.5m from the right edge: stay near the measured vehicle,
+            # rather than moving 0.5m merely to minimize offset from bad OSM.
+            self.assertAlmostEqual(frozen[-1,1],-1.1)
             self.assertTrue(n['advisory_geometry_ok'](frozen[20:],points[20:]))
 
     def test_connected_suffix_is_actually_loaded_by_existing_neupan_adapter(self):

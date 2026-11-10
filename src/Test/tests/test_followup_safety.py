@@ -25,7 +25,7 @@ class CommandBoundaryTests(unittest.TestCase):
     def run_loop(self, empty_error=False, delay=0., delay_at='check', newer_scan=False, disk_error=False,contract=None,recover=False,setup_hook=None):
         source=ROOT/'src/neupan_ros/src/neupan_core.py'
         original=next(x for x in ast.parse(source.read_text()).body if isinstance(x,ast.ClassDef) and x.name=='neupan_core')
-        body=[x for x in original.body if isinstance(x,ast.FunctionDef) and x.name in ('command_gate','control_mode_callback','run','generate_twist_msg','hold_planner_fault','temporary_input_stop','check_camera_execution','publish_stop_snapshot','cycle_metrics','candidate_stop','capture_candidate_rejection','stopping_shadow','refresh_camera_hazard_scope','continue_checked_execution','trajectory_execution_check','final_execution_input_check')]
+        body=[x for x in original.body if isinstance(x,ast.FunctionDef) and x.name in ('command_gate','control_mode_callback','run','generate_twist_msg','hold_planner_fault','temporary_input_stop','check_camera_execution','check_publication_inputs','publish_stop_snapshot','cycle_metrics','candidate_stop','capture_candidate_rejection','stopping_shadow','refresh_camera_hazard_scope','continue_checked_execution','trajectory_execution_check','final_execution_input_check')]
         selected=ast.fix_missing_locations(ast.Module(body=[ast.ClassDef(name='Run',bases=[],keywords=[],body=body,decorator_list=[])],type_ignores=[]))
         clock=NS(value=1000.,loops=0)
         class Stamp:

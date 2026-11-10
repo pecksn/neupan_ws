@@ -266,6 +266,15 @@ class GlobalOdomBridge:
         self.publish_rate = max(1.0, float(rospy.get_param("~publish_rate", 30.0)))
         self.data_timeout_sec = max(0.1, float(rospy.get_param("~data_timeout_sec", 1.0)))
         self.heading_timeout_sec = max(0.1, float(rospy.get_param("~heading_timeout_sec", 0.5)))
+        self.gnss_transport_limit_sec=float(rospy.get_param('~gnss_transport_limit_sec',0.))
+        self.gnss_common_utc_verified=rospy.get_param('~gnss_common_utc_verified',False) is True
+        if (not math.isfinite(self.gnss_transport_limit_sec) or not 0<=self.gnss_transport_limit_sec<=4.
+                or self.gnss_transport_limit_sec>1. and rospy.get_param('~gnss_common_utc_verified',False) is not True):
+            raise ValueError('extended GNSS transport requires independently verified common UTC')
+        if self.gnss_transport_limit_sec:self.heading_timeout_sec=self.gnss_transport_limit_sec
+        self.position_source_timeout=(self.gnss_transport_limit_sec+self.data_timeout_sec
+                                      if self.gnss_transport_limit_sec else self.data_timeout_sec)
+        self.gnss_history_sec=10.
         # Legacy callers retain their old timeout; full-system launch explicitly
         # supplies the receiver cadence. Never infer a slower rate from outages.
         self.pvt_period_sec = float(rospy.get_param('~pvt_period_sec', 0.))
@@ -400,13 +409,14 @@ class GlobalOdomBridge:
         # existing local-fault/re-anchor branch advances this generation.
         self.reference_frame_instance=uuid.uuid4().hex
         self.reference_frame_epoch=0
+        self.heading_alignment_epoch=0
         self.reference_frame_reset=None
         self.last_position_error = None
         self.last_yaw_error_deg = None
         self.last_tracking_candidate = None
         self.last_candidate_step_m = None
-        self.local_pose_history = deque(maxlen=400)
-        self.observation_history = {name: deque(maxlen=128)
+        self.local_pose_history = deque(maxlen=10000)
+        self.observation_history = {name: deque(maxlen=2048)
                                     for name in ('gps', 'fix', 'gga', 'heading', 'solution')}
         self.pair_wait_timeout_sec = float(rospy.get_param(
             '~pair_wait_timeout_sec', min(.5, self.data_timeout_sec, self.heading_timeout_sec)))
@@ -450,6 +460,9 @@ class GlobalOdomBridge:
             rospy.Subscriber(self.solution_topic, String, self.solution_cb, queue_size=10)
 
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.publish_rate), self.timer_cb)
+        rospy.loginfo('GNSS effective: low_precision=%s transport_limit=%.3fs late_mode=%s common_UTC_asserted=%s',
+            self.low_precision_startup,self.gnss_transport_limit_sec or self.heading_timeout_sec,
+            bool(self.gnss_transport_limit_sec),self.gnss_common_utc_verified)
         rospy.loginfo('Localization startup effective: low_precision=%s HDOP<=%.2f covariance<=%.3f '
                       'min_satellites=%d require_heading_fixed=%s PVT=%.3fs GGA=%.3fs',
             self.low_precision_startup,
@@ -560,6 +573,9 @@ class GlobalOdomBridge:
         if result['fault']:
             self.local_pose_history.clear()
         self.local_pose_history.append((msg.header.stamp.to_nsec(), current))
+        cutoff=msg.header.stamp.to_nsec()-int(self.gnss_history_sec*1e9)
+        while len(self.local_pose_history)>2 and self.local_pose_history[1][0]<cutoff:
+            self.local_pose_history.popleft()
 
     def fix_cb(self, msg):
         with self.state_lock:
@@ -666,6 +682,8 @@ class GlobalOdomBridge:
             reason = 'latest_heading_solution_stale'
         elif payload.get('error') is not None:
             reason = 'latest_heading_solution_invalid'
+        elif payload.get('heading_geometry_valid') is False:
+            reason = 'latest_heading_geometry_invalid'
         elif payload.get('heading_fixed') is not True or payload.get('heading_valid') is not True:
             reason = 'latest_heading_solution_unfixed'
         return {'valid': reason == 'ok', 'reason': reason, 'source_ns': stamp,
@@ -688,11 +706,22 @@ class GlobalOdomBridge:
             if self.pvt_period_sec and self.last_heading_stamp is not None:
                 previous, _ = self.local_pose_at(self.last_heading_stamp.to_nsec())
                 current, _ = self.local_pose_at(msg.header.stamp.to_nsec())
-                if previous is not None and current is not None:
+                if (previous is not None and current is not None
+                        and self.heading_alignment_epoch==self.reference_frame_epoch):
                     # Compare alignment change, not the real turn accumulated
                     # over a whole PVT second. Both local poses are historical
                     # measurements, not an extrapolated/predicted heading.
                     delta = self.normalize_angle(delta-self.normalize_angle(current[2]-previous[2]))
+                elif (current is not None and self.transform_initialized
+                      and self.heading_alignment_epoch==self.reference_frame_epoch):
+                    # Old sample expired from the bounded LIO history. Test
+                    # the new measurement against this generation's accepted
+                    # alignment, never raw yaw across a long real turn.
+                    delta=self.normalize_angle(yaw-current[2]-self.transform_yaw)
+                else:
+                    # No common-generation measurement pair: ordinary pairing
+                    # and recovery windows decide; absence is not a yaw jump.
+                    delta=0.
             jump = abs(delta)
             if jump > math.radians(self.heading_jump_limit_deg):
                 self.heading_bad_until = now + rospy.Duration(self.heading_jump_hold_sec)
@@ -716,6 +745,8 @@ class GlobalOdomBridge:
         except (TypeError, ValueError, OverflowError):
             stamp = 0
         self.observation_history[name].append((stamp, received, copy.deepcopy(message)))
+        history=self.observation_history[name]
+        while history and (received-history[0][1]).to_sec()>self.gnss_history_sec:history.popleft()
 
     def observation_entries(self, name):
         entries = {entry[0]: entry for entry in self.observation_history[name]}
@@ -792,7 +823,7 @@ class GlobalOdomBridge:
                 return None
         for gps in sorted(entries['gps'], key=lambda e: e[0], reverse=True):
             stamp = gps[0]
-            if not 0 <= now.to_nsec()-stamp <= self.data_timeout_sec*1e9:
+            if not 0 <= now.to_nsec()-stamp <= self.position_source_timeout*1e9:
                 continue
             fix = exact('fix', stamp) if self.guard_enabled else None
             observation_stamp = fix[0] if fix is not None else stamp
@@ -888,6 +919,7 @@ class GlobalOdomBridge:
         """
         observed = {}
         for name, stamp_ns, timeout in sources:
+            if name in ('gps_odom','gps_fix','gga'):timeout=self.position_source_timeout
             if stamp_ns is None or stamp_ns <= 0:
                 return False, 'source_stamp_invalid_'+name
             age = (now.to_nsec()-stamp_ns)*1.e-9
@@ -917,7 +949,7 @@ class GlobalOdomBridge:
         if self.guard_enabled:
             fix_ns = self.last_fix.header.stamp.to_nsec()
             if (fix_ns != self.last_gps_odom.header.stamp.to_nsec() or
-                    abs(fix_ns-self.last_local_odom.header.stamp.to_nsec()) > 250000000 or
+                    (not self.gnss_transport_limit_sec and abs(fix_ns-self.last_local_odom.header.stamp.to_nsec()) > 250000000) or
                     fix_ns != self.last_gga.header.stamp.to_nsec()):
                 return False, 'position_source_time_mismatch'
         stamp = self.last_gps_odom.header.stamp.to_nsec()
@@ -994,7 +1026,9 @@ class GlobalOdomBridge:
             return False, 'waiting_for_measurement_clock'
         if self.last_gps_odom is not None:
             fresh, reason = self.gnss_timebase.check('GGA',
-                self.last_gps_odom.header.stamp.to_nsec(), now.to_nsec(), time.monotonic_ns(), self.data_timeout_sec)
+                self.last_gps_odom.header.stamp.to_nsec(), now.to_nsec(), time.monotonic_ns(),
+                self.gnss_transport_limit_sec or self.data_timeout_sec,
+                self.gga_period_sec if self.gnss_transport_limit_sec else 0.,self.cadence_margin_sec)
             if not fresh:
                 return False, reason
         if not runtime_position and self.last_heading_stamp is not None:
@@ -1595,6 +1629,7 @@ class GlobalOdomBridge:
                                  mean_y-s*anchor[0]-c*anchor[1], candidate[2])
                 self.transform_x, self.transform_y, self.transform_yaw = candidate
                 self.transform_initialized = True
+                self.heading_alignment_epoch=self.reference_frame_epoch
                 self.initialization_precision = "low" if low_precision else "high"
                 self.global_reference_precision = self.initialization_precision
                 self.last_tracking_candidate = candidate
@@ -1692,6 +1727,7 @@ class GlobalOdomBridge:
                 self.stable_since = None
                 self.recovery_candidates.clear()
                 self.set_mode(self.TRACKING, "gps_recovered")
+                self.heading_alignment_epoch=self.reference_frame_epoch
 
     def publish_global_odom(self, now):
         if not self.transform_initialized or self.last_local_odom is None:
@@ -1758,9 +1794,14 @@ class GlobalOdomBridge:
         latest=observation((gate.latest.get('PVTSLNA') or {}).get('measurement_stamp_ns'))
         selected=observation(self.observation_buffer_diagnostics.get('selected_heading_ns'))
         solution=(self.latest_solution_health or {}).get('payload') or self.last_solution or {}
+        source_ns=solution.get('measurement_stamp_ns');read_ns=solution.get('host_read_ros_ns')
+        transport=(read_ns-source_ns)*1.e-9 if type(read_ns) is int and type(source_ns) is int else None
+        receiver_fixed=solution.get('receiver_heading_fixed',solution.get('heading_fixed')) is True
         reason=(latest['reason'] if not latest['valid'] else health['reason'] if not health['valid'] else self.reason)
         if not self.transform_initialized:
-            if solution.get('receiver_heading_fixed',solution.get('heading_fixed')) is not True:
+            if solution.get('heading_geometry_valid') is False:
+                phase='waiting_heading_geometry'
+            elif not receiver_fixed:
                 phase='waiting_first_map_heading'
             elif gate.mode=='measurement' and not gate.clock_ready:
                 phase='waiting_measurement_clock'
@@ -1772,7 +1813,12 @@ class GlobalOdomBridge:
         return dict(phase=phase,reason=reason,guard_reason=self.reason,
             position_reason=self.runtime_position_reason,
             initialized=self.transform_initialized,localization_safe=localization_safe,
-            heading_type=solution.get('heading_type'),latest_pvt=latest,selected_heading=selected)
+            heading_type=solution.get('heading_type'),latest_pvt=latest,selected_heading=selected,
+            receiver_position_fixed=solution.get('position_fixed'),receiver_heading_fixed=receiver_fixed,
+            software_heading_usable=health['valid'],transport_age_sec=transport,
+            transport_limit_sec=self.gnss_transport_limit_sec or self.heading_timeout_sec,
+            late_mode_enabled=bool(self.gnss_transport_limit_sec),
+            common_utc_verified=self.gnss_common_utc_verified)
 
     def publish_status(self, now):
         fix_status = None if self.last_fix is None else int(self.last_fix.status.status)
@@ -1788,6 +1834,7 @@ class GlobalOdomBridge:
             "reference_frame": {"instance_id": self.reference_frame_instance,
                 "odom_epoch": self.reference_frame_epoch,"last_reset": self.reference_frame_reset},
             "timebase_contract": {'mode': self.gnss_timebase.mode,
+                'gnss_transport_limit_sec':self.gnss_transport_limit_sec,'history_sec':self.gnss_history_sec,
                 'pvt_period_sec': self.pvt_period_sec, 'gga_period_sec': self.gga_period_sec,
                 'cadence_margin_sec': self.cadence_margin_sec,
                 'heading_receive_deadline_sec': self.heading_receive_timeout,
@@ -1898,6 +1945,10 @@ class GlobalOdomBridge:
                 "none" if self.last_position_error is None else "%.2f" % self.last_position_error,
                 "none" if self.last_yaw_error_deg is None else "%.1f" % self.last_yaw_error_deg,
             )
+            rospy.loginfo_throttle(8.,'GNSS receiver position_Fixed=%s heading_Fixed=%s software_usable=%s '
+                'transport=%ss limit=%.3fs late_mode=%s UTC_asserted=%s',
+                summary['receiver_position_fixed'],summary['receiver_heading_fixed'],summary['software_heading_usable'],
+                summary['transport_age_sec'],summary['transport_limit_sec'],summary['late_mode_enabled'],summary['common_utc_verified'])
 
     def timer_cb(self, _event):
         with self.state_lock:

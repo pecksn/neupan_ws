@@ -1,0 +1,221 @@
+{
+  "scope": "Recorded timing/ages for 12 command interruptions; no recorded rejected solver actions or counterfactual vehicle motion",
+  "events": [
+    {
+      "session": "151533",
+      "event": "15:15:56.730",
+      "reason": "checked inputs expired at publication: scan=0.508625s receive=0.473633s state=0.500619888",
+      "preparation_ms": 3.1581270000060613,
+      "solver_ms": 408.1406829999423,
+      "post_solver_ms": 4.671188999964215,
+      "elapsed_ms": 415.9735490000003,
+      "input_ages": {
+        "scan_measurement_age_ms": 97.97239300000001,
+        "scan_receive_age_ms": 62.97802199992475,
+        "state_age_ms": 89.967728,
+        "scan_stamp_ns": 1794294956183700200
+      },
+      "publish_scan_age_sec": 0.508625,
+      "publish_receive_age_sec": 0.473633,
+      "publish_state_age_sec": 0.500619888
+    },
+    {
+      "session": "151533",
+      "event": "15:16:03.530",
+      "reason": "checked inputs expired at publication: scan=0.525337s receive=0.509836s state=0.515393496",
+      "preparation_ms": 4.51415099996666,
+      "solver_ms": 450.3084240000135,
+      "post_solver_ms": 3.118927999935295,
+      "elapsed_ms": 457.94508999995287,
+      "input_ages": {
+        "scan_measurement_age_ms": 72.623729,
+        "scan_receive_age_ms": 57.12098000003607,
+        "state_age_ms": 62.680006,
+        "scan_stamp_ns": 1794294962981795800
+      },
+      "publish_scan_age_sec": 0.525337,
+      "publish_receive_age_sec": 0.509836,
+      "publish_state_age_sec": 0.515393496
+    },
+    {
+      "session": "154322",
+      "event": "15:43:39.006",
+      "reason": "checked inputs expired at publication: scan=0.507735s receive=0.465437s state=0.507735014",
+      "preparation_ms": 9.092421000332251,
+      "solver_ms": 340.87551399989025,
+      "post_solver_ms": 69.05806700024186,
+      "elapsed_ms": 419.0297590002956,
+      "input_ages": {
+        "scan_measurement_age_ms": 99.531173,
+        "scan_receive_age_ms": 57.21248999998352,
+        "state_age_ms": 99.531173,
+        "scan_stamp_ns": 1794296618456029000
+      },
+      "publish_scan_age_sec": 0.507735,
+      "publish_receive_age_sec": 0.465437,
+      "publish_state_age_sec": 0.507735014
+    },
+    {
+      "session": "154322",
+      "event": "15:43:42.907",
+      "reason": "checked inputs expired at publication: scan=0.504179s receive=0.477551s state=0.49757576",
+      "preparation_ms": 8.44598000003316,
+      "solver_ms": 397.67855500031146,
+      "post_solver_ms": 8.584483999584336,
+      "elapsed_ms": 414.7118189998764,
+      "input_ages": {
+        "scan_measurement_age_ms": 98.58727400000001,
+        "scan_receive_age_ms": 71.95073499997306,
+        "state_age_ms": 91.98379499999999,
+        "scan_stamp_ns": 1794296622355310800
+      },
+      "publish_scan_age_sec": 0.504179,
+      "publish_receive_age_sec": 0.477551,
+      "publish_state_age_sec": 0.49757576
+    },
+    {
+      "session": "154322",
+      "event": "15:43:56.906",
+      "reason": "checked inputs expired at publication: scan=0.513301s receive=0.468349s state=0.508285522",
+      "preparation_ms": 7.020768000074895,
+      "solver_ms": 416.6105230001449,
+      "post_solver_ms": 9.743174000050203,
+      "elapsed_ms": 433.3773610001117,
+      "input_ages": {
+        "scan_measurement_age_ms": 88.255405,
+        "scan_receive_age_ms": 43.28995499963639,
+        "state_age_ms": 83.240032,
+        "scan_stamp_ns": 1794296636355430100
+      },
+      "publish_scan_age_sec": 0.513301,
+      "publish_receive_age_sec": 0.468349,
+      "publish_state_age_sec": 0.508285522
+    },
+    {
+      "session": "154322",
+      "event": "15:44:03.405",
+      "reason": "checked inputs expired at publication: scan=0.503778s receive=0.470352s state=0.398291826",
+      "preparation_ms": 8.408755999880668,
+      "solver_ms": 357.6681220001774,
+      "post_solver_ms": 8.009953999589925,
+      "elapsed_ms": 374.0915139997014,
+      "input_ages": {
+        "scan_measurement_age_ms": 138.535976,
+        "scan_receive_age_ms": 105.10002499995608,
+        "state_age_ms": 33.049583,
+        "scan_stamp_ns": 1794296642855285800
+      },
+      "publish_scan_age_sec": 0.503778,
+      "publish_receive_age_sec": 0.470352,
+      "publish_state_age_sec": 0.398291826
+    },
+    {
+      "session": "154322",
+      "event": "15:44:19.706",
+      "reason": "checked inputs expired at publication: scan=0.501704s receive=0.457758s state=0.40334773",
+      "preparation_ms": 11.184516999946936,
+      "solver_ms": 314.41231400003744,
+      "post_solver_ms": 78.43831700029114,
+      "elapsed_ms": 404.0395870001703,
+      "input_ages": {
+        "scan_measurement_age_ms": 109.659671,
+        "scan_receive_age_ms": 65.69936799996867,
+        "state_age_ms": 11.303663,
+        "scan_stamp_ns": 1794296659155700700
+      },
+      "publish_scan_age_sec": 0.501704,
+      "publish_receive_age_sec": 0.457758,
+      "publish_state_age_sec": 0.40334773
+    },
+    {
+      "session": "154322",
+      "event": "15:44:26.009",
+      "reason": "checked inputs expired at publication: scan=0.519917s receive=0.449875s state=0.418344497",
+      "preparation_ms": 9.014977000333602,
+      "solver_ms": 332.4613759996282,
+      "post_solver_ms": 63.05783600009818,
+      "elapsed_ms": 404.53728100010267,
+      "input_ages": {
+        "scan_measurement_age_ms": 126.46961200000001,
+        "scan_receive_age_ms": 56.4148439998462,
+        "state_age_ms": 24.897337,
+        "scan_stamp_ns": 1794296665452401700
+      },
+      "publish_scan_age_sec": 0.519917,
+      "publish_receive_age_sec": 0.449875,
+      "publish_state_age_sec": 0.418344497
+    },
+    {
+      "session": "154322",
+      "event": "15:45:02.904",
+      "reason": "checked inputs expired at publication: scan=0.503131s receive=0.464152s state=0.497328757",
+      "preparation_ms": 8.378850000099192,
+      "solver_ms": 379.0175200001613,
+      "post_solver_ms": 8.291131000078167,
+      "elapsed_ms": 395.6911959999161,
+      "input_ages": {
+        "scan_measurement_age_ms": 116.412162,
+        "scan_receive_age_ms": 77.42088499981037,
+        "state_age_ms": 110.609769,
+        "scan_stamp_ns": 1794296702356573700
+      },
+      "publish_scan_age_sec": 0.503131,
+      "publish_receive_age_sec": 0.464152,
+      "publish_state_age_sec": 0.497328757
+    },
+    {
+      "session": "154322",
+      "event": "15:45:09.110",
+      "reason": "checked inputs expired at publication: scan=0.506037s receive=0.476075s state=0.506036758",
+      "preparation_ms": 8.829465999951935,
+      "solver_ms": 409.67032399976233,
+      "post_solver_ms": 7.585425000343093,
+      "elapsed_ms": 426.0922120001851,
+      "input_ages": {
+        "scan_measurement_age_ms": 89.28298899999999,
+        "scan_receive_age_ms": 59.323452999706205,
+        "state_age_ms": 89.28298899999999,
+        "scan_stamp_ns": 1794296708554299100
+      },
+      "publish_scan_age_sec": 0.506037,
+      "publish_receive_age_sec": 0.476075,
+      "publish_state_age_sec": 0.506036758
+    },
+    {
+      "session": "154322",
+      "event": "15:45:34.607",
+      "reason": "checked inputs expired at publication: scan=0.521003s receive=0.477853s state=0.515690803",
+      "preparation_ms": 11.883013999977265,
+      "solver_ms": 349.28602800027875,
+      "post_solver_ms": 68.73459999997067,
+      "elapsed_ms": 429.9109570001747,
+      "input_ages": {
+        "scan_measurement_age_ms": 103.814363,
+        "scan_receive_age_ms": 60.655869000129314,
+        "state_age_ms": 98.502397,
+        "scan_stamp_ns": 1794296734055385600
+      },
+      "publish_scan_age_sec": 0.521003,
+      "publish_receive_age_sec": 0.477853,
+      "publish_state_age_sec": 0.515690803
+    },
+    {
+      "session": "154322",
+      "event": "15:45:53.004",
+      "reason": "checked inputs expired at publication: scan=0.524552s receive=0.484552s state=0.428254365",
+      "preparation_ms": 8.49269100035599,
+      "solver_ms": 392.2622710001633,
+      "post_solver_ms": 12.874055999873235,
+      "elapsed_ms": 413.63197700002274,
+      "input_ages": {
+        "scan_measurement_age_ms": 119.850158,
+        "scan_receive_age_ms": 79.83433999970657,
+        "state_age_ms": 23.552894000000002,
+        "scan_stamp_ns": 1794296752456357000
+      },
+      "publish_scan_age_sec": 0.524552,
+      "publish_receive_age_sec": 0.484552,
+      "publish_state_age_sec": 0.428254365
+    }
+  ]
+}

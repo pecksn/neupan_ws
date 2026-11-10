@@ -12,6 +12,11 @@ import math
 import re
 import threading
 import uuid
+import shutil
+import subprocess
+import json
+from pathlib import Path
+from libnmea_navsat_driver.host_utc_evidence import validate as validate_host_utc
 
 from libnmea_navsat_driver.checksum_utils import check_nmea_checksum
 from libnmea_navsat_driver.unicore import crc32
@@ -19,6 +24,25 @@ from libnmea_navsat_driver.unicore import crc32
 NS = 1000000000
 DAY_NS = 86400 * NS
 GPS_EPOCH = calendar.timegm((1980, 1, 6, 0, 0, 0))
+
+
+def host_clock_evidence(snapshot_file=None):
+    """Read-only source/offset evidence, not an automatic UTC assertion."""
+    report={'scope':'host synchronization evidence, not hardware/common UTC proof'}
+    if snapshot_file:
+        try:
+            snapshot=json.loads(Path(snapshot_file).read_text())
+            report.update(host_snapshot=snapshot,host_snapshot_fresh=validate_host_utc(snapshot))
+        except (OSError,ValueError):report['host_snapshot_unavailable']=True
+    for command in (['chronyc','tracking'],['timedatectl','show-timesync','--all']):
+        if not shutil.which(command[0]):continue
+        try:
+            result=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                  text=True,timeout=.3,check=False)
+            report[command[0]]=dict(returncode=result.returncode,output=result.stdout[:4096],
+                                    error=result.stderr[:256])
+        except (OSError,subprocess.TimeoutExpired):report[command[0]]={'unavailable':True}
+    return report
 
 
 def kernel_clock_synchronized():
@@ -78,16 +102,23 @@ class ObservationTiming:
     touches the navigation bridge, its stable windows or continuation budgets.
     """
     def __init__(self, mode='shadow', clock_verified=False, clock_probe=None,
-                 pvt_period_sec=.1, gga_period_sec=.1, cadence_margin_sec=.3):
+                 pvt_period_sec=.1, gga_period_sec=.1, cadence_margin_sec=.3,
+                 transport_limit_sec=0.,common_utc_verified=False):
         if mode not in ('host', 'shadow', 'measurement'):
             raise ValueError('time_mode must be host/shadow/measurement')
         if mode == 'measurement' and not clock_verified:
             raise ValueError('measurement mode requires independently verified common UTC clocks')
         self.mode = mode
+        self.transport_limit_sec=float(transport_limit_sec)
+        self.common_utc_verified=common_utc_verified is True
+        if (not math.isfinite(self.transport_limit_sec) or not 0<=self.transport_limit_sec<=4.
+                or self.transport_limit_sec>1. and not self.common_utc_verified):
+            raise ValueError('GNSS extended transport limit requires independent common UTC confirmation; maximum 4s')
         if clock_verified not in (True, False, 'auto'):
             raise ValueError('clock verification must be bool or auto')
         self.auto_clock = clock_verified == 'auto'
         self.clock_verified = clock_verified is True
+        self.clock_established = self.clock_verified
         self.clock_probe = clock_probe or kernel_clock_synchronized
         self.host_clock_synced = False
         self.last_clock_probe = None
@@ -97,6 +128,7 @@ class ObservationTiming:
                 or not math.isfinite(self.cadence_margin) or not .05 <= self.cadence_margin <= .5):
             raise ValueError('invalid configured GNSS periods/cadence margin')
         self.auto_samples = {k: deque(maxlen=1024) for k in ('GGA', 'PVTSLNA')}
+        self.last_new_mono={}
         self.auto_failed = False
         self.auto_reason = 'waiting_for_valid_measurement_time' if self.auto_clock else 'explicit_confirmation'
         self.session_id = uuid.uuid4().hex
@@ -114,16 +146,16 @@ class ObservationTiming:
             jumped = mono_ns < m or abs((ros_ns-r)-(mono_ns-m)) > 250000000
         self.previous_clock = (ros_ns, mono_ns)
         if jumped:
-            was_verified = self.clock_verified
             self.clock_epoch += 1
             self.clock_verified = False
-            self.auto_failed = self.auto_failed or (self.auto_clock and was_verified)
+            self.auto_failed = self.auto_failed or (self.auto_clock and self.clock_established)
             self.auto_reason = ('clock_jump_restart_required' if self.auto_failed
                                 else 'waiting_after_startup_clock_adjustment')
             for samples in self.auto_samples.values():
                 samples.clear()
             self.anchor = None
             self.watermarks.clear()
+            self.last_new_mono.clear()
             for samples in self.ages.values():
                 samples.clear()
             self.counts['clock_jumps'] += 1
@@ -136,14 +168,24 @@ class ObservationTiming:
         if self.last_clock_probe is None or mono-self.last_clock_probe >= NS:
             self.host_clock_synced = self.clock_probe() is True
             self.last_clock_probe = mono
+        limit=self.transport_limit_sec or .5
         valid = (event['time_valid'] and event['epoch_order'] == 'new'
-                 and -.05 <= event['candidate_age_ms']/1000. <= .5)
+                 and -.05 <= event['candidate_age_ms']/1000. <= limit)
+        family=event['family'];previous=self.last_new_mono.get(family)
+        stream_gap=(valid and family in self.periods and previous is not None
+                    and mono-previous>(self.periods[family]+self.cadence_margin)*NS)
+        if valid and family in self.periods:self.last_new_mono[family]=mono
         if self.clock_verified:
-            if not self.host_clock_synced or (event['time_valid'] and
-                    not -.05 <= event['candidate_age_ms']/1000. <= .5):
-                self.auto_failed = True
-                self.auto_reason = 'clock_disagreement_or_unsynchronized_restart_required'
+            if not self.host_clock_synced:
+                self.auto_failed=True
+                self.auto_reason='clock_disagreement_or_unsynchronized_restart_required'
+                self.clock_verified=False
+            elif stream_gap or (event['time_valid'] and not -.05 <= event['candidate_age_ms']/1000. <= limit):
+                # Positive lateness/stream loss is recoverable, unlike _clock's
+                # actual ROS/monotonic jump. Never relabel the source as now.
+                self.auto_reason = 'waiting_for_sync_or_timely_observations'
                 self.clock_verified = False
+                for samples in self.auto_samples.values():samples.clear()
         elif not self.auto_failed:
             family = event['family']
             if family in self.auto_samples:
@@ -164,6 +206,7 @@ class ObservationTiming:
                     mono-s[-1] <= (self.periods[k]+self.cadence_margin)*NS
                     for k, s in self.auto_samples.items()):
                 self.clock_verified = True
+                self.clock_established = True
                 self.auto_reason = 'kernel_sync_and_gnss_utc_consistent'
             elif not self.host_clock_synced:
                 self.auto_reason = 'waiting_for_nuc_clock_sync'
@@ -173,6 +216,8 @@ class ObservationTiming:
             clock_waiting=not self.clock_verified and not self.auto_failed,
             clock_verification='auto_consistency_not_hardware_sync',
             host_clock_synchronized=self.host_clock_synced, clock_gate_reason=self.auto_reason)
+        event.update(common_utc_verified=self.common_utc_verified,
+                     transport_limit_sec=self.transport_limit_sec)
         if self.clock_verified and event['time_valid']:
             event['measurement_age_ms'] = event['candidate_age_ms']
             self.ages[event['family']].append(event['measurement_age_ms'])
@@ -230,13 +275,16 @@ class ObservationTiming:
                 order = 'new' if previous is None or stamp > previous else 'duplicate' if stamp == previous else 'out_of_order'
                 candidate_age = (read_ros_ns-stamp)/1000000.
                 admissible = (self.mode != 'measurement' or
-                    -50 <= candidate_age <= (500 if family == 'PVTSLNA' else 1000))
+                    -50 <= candidate_age <= (self.transport_limit_sec*1000 if self.transport_limit_sec else
+                                             500 if family == 'PVTSLNA' else 1000))
                 if not admissible:
                     order = 'rejected_age'
                 event.update(measurement_stamp_ns=stamp, time_valid=True, time_source=source,
                              observation_id='{}:{}:{}:{}'.format(self.session_id, self.clock_epoch, family, stamp),
                              reason='ok', epoch_order=order,
                              candidate_age_ms=candidate_age)
+                event['receiver_date_anchor_ns']=None if self.anchor is None else self.anchor[0]
+                event['utc_anchor_delta_ms']=None if self.anchor is None else (stamp-self.anchor[0])/1.e6
                 # Positive and negative differences are retained, never clamped
                 # into a healthy age; no inferred clock correction is applied.
                 if self.clock_verified and not self.auto_clock:
@@ -265,6 +313,7 @@ class ObservationTiming:
                         stats[family][key] = samples[min(len(samples)-1, int((len(samples)-1)*percentile))]
                     stats[family]['max_ms'] = samples[-1]
             return dict(mode=self.mode, clock_epoch=self.clock_epoch, session_id=self.session_id,
+                        transport_limit_sec=self.transport_limit_sec,common_utc_verified=self.common_utc_verified,
                         expected_period_sec=self.periods, cadence_margin_sec=self.cadence_margin,
                         clock_verified=self.clock_verified, clock_verification='auto' if self.auto_clock else 'explicit',
                         clock_gate_reason=self.auto_reason, host_clock_synchronized=self.host_clock_synced,

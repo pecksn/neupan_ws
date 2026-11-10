@@ -40,6 +40,7 @@ def authorization_identity(status):
     fields['hazards']=status.get('hazard_regions') or detail.get('hazard_regions') or {}
     fields['reference_role']=detail.get('reference_role','visual_execution')
     fields['reference_version']=detail.get('reference_version')
+    fields['reference_accepted_stamp']=detail.get('reference_accepted_stamp')
     fields['road_region']=detail.get('road_region')
     fields['reference_connection']=(detail.get('final_path') or {}).get('reference_connection')
     try:return hashlib.sha256(json.dumps(fields,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
@@ -47,10 +48,11 @@ def authorization_identity(status):
 
 
 class CameraPathGuard:
-    def __init__(self, timeout=3.0):
+    def __init__(self, timeout=3.0, require_initial_reference=False):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError('invalid camera heartbeat timeout')
         self.timeout = timeout
+        self.require_initial_reference=require_initial_reference
         self.lock = threading.RLock()
         self.original = self.candidate = None
         self.original_key = self.candidate_key = None
@@ -269,13 +271,22 @@ class CameraPathGuard:
             else:
                 source, reason = 'camera', ('camera_recovery_pending_execution' if self.pending_recovery else 'ok')
             held=None
-            if (source=='osm' and advisory and bound_task and self.accepted_advisory is not None
+            needs_initial=self.require_initial_reference or (advisory and 'reference_accepted' in detail)
+            stamp=detail.get('reference_accepted_stamp')
+            confirmed=(detail.get('reference_accepted') is True and type(stamp) in (int,float)
+                       and math.isfinite(stamp) and stamp>0 and detail.get('reference_frame_invalidated') is not True)
+            if needs_initial and source=='camera' and (not confirmed or (self.accepted_advisory is None and not fresh)):
+                source,reason='osm','waiting_for_initial_reference'
+            if (source=='osm' and (self.require_initial_reference or advisory and bound_task) and self.accepted_advisory is not None
                     and self.accepted_advisory[0]==self.original_key):
                 # Path and heartbeat arrive on separate topics. Do not expose
                 # offset OSM during a replacement's partially received pair.
                 held=self.accepted_advisory
                 source,reason='camera','advisory_reference_held_pending_replacement'
                 status=held[3];detail=status.get('inference_diagnostics') or {}
+                advisory=detail.get('reference_role')=='advisory'
+            if needs_initial and source=='osm' and self.accepted_advisory is None:
+                source,reason='wait','waiting_for_initial_reference'
             needs_contract=bool((status.get('active') and not advisory) or self.pending_recovery
                 or (advisory and detail.get('execution_contract')))
             contract=detail.get('execution_contract') if source=='camera' and needs_contract else None
@@ -284,12 +295,14 @@ class CameraPathGuard:
                 self.pending_recovery=None
             if source=='camera' and advisory and matches and held is None and not needs_contract:
                 self.accepted_advisory=(self.original_key,copy.deepcopy(self.candidate),self.candidate_digest,copy.deepcopy(status))
-            path = None if source=='stop' else self.candidate if source == 'camera' else self.original
+            path = None if source in ('stop','wait') else self.candidate if source == 'camera' else self.original
             digest = self.candidate_digest if source == 'camera' else self.original_digest
             if held is not None and source=='camera':path,digest=held[1],held[2]
             state = {'source': source, 'reason': reason, 'heartbeat_age_sec': age,
                      'reference_role':'advisory' if advisory else 'visual_execution',
                      'reference_version':detail.get('reference_version'),
+                     'reference_accepted':detail.get('reference_accepted') is True,
+                     'reference_accepted_stamp':detail.get('reference_accepted_stamp'),
                      'road_region':detail.get('road_region') if advisory else None,
                      'reference_connection':(detail.get('final_path') or {}).get('reference_connection') if advisory else None,
                      'authorization_generation':self.authorization_generation,

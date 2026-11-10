@@ -113,14 +113,16 @@ class EmptyScanTests(unittest.TestCase):
 class PreparationBindingTests(unittest.TestCase):
     def test_550ms_preparation_refreshes_scan_and_pose_before_health(self):
         node,commands,context=binding_case('new',.55)
-        self.assertTrue(commands);self.assertTrue(all(v>0 for v in commands))
+        # Preparation alone exhausted the new explicit 0.50s total budget.
+        # Rebind without an input-outage recovery, then solve the fresh cycle.
+        self.assertEqual(commands[0],0.);self.assertIn(.8,commands)
         self.assertGreater(context['inputs'][0]['stamp'],context['old_stamp'])
         self.assertLessEqual(node.publish_input_ages['scan_measurement_age_ms'],500.)
         self.assertNotIn('input',node.stop_registry.reasons)
 
     def test_550ms_preparation_does_not_use_old_pose_in_recovery_gate(self):
         node,commands,_=binding_case('new',.55,recovering=True)
-        self.assertTrue(commands);self.assertTrue(all(v>0 for v in commands))
+        self.assertEqual(commands[0],0.);self.assertIn(.8,commands)
         self.assertNotIn('input',node.stop_registry.reasons)
 
     def test_550ms_without_new_or_convertible_frame_still_stops(self):
@@ -136,7 +138,7 @@ class PreparationBindingTests(unittest.TestCase):
         self.assertTrue(all(v==0 for v in commands));self.assertIn('input',node.stop_registry.reasons)
 
     def test_prepare_new_scan_is_consumed_before_solve_and_final_check(self):
-        node,commands,context=binding_case('new')
+        node,commands,context=binding_case('new',.25)
         self.assertGreater(commands[0],0)
         self.assertGreater(context['inputs'][0]['stamp'],context['old_stamp'])
         self.assertLess(node.cycle_timing['solve_input_ages']['scan_measurement_age_ms'],500.)
@@ -152,15 +154,16 @@ class PreparationBindingTests(unittest.TestCase):
         self.assertEqual(context['inputs'][0]['stamp'],context['old_stamp'])
 
     def test_out_of_order_does_not_replace_newest_snapshot(self):
-        _,commands,context=binding_case('out_of_order')
+        _,commands,context=binding_case('out_of_order',.25)
         self.assertGreater(commands[0],0)
         self.assertGreater(context['inputs'][0]['points'][0,0],5.)
 
-    def test_scan_arriving_during_solve_stays_queued_not_used_to_renew_result(self):
-        node,commands,context=binding_case('during_solve')
+    def test_scan_arriving_during_solve_checks_current_stream_without_renewing_result(self):
+        node,commands,context=binding_case('during_solve',.25)
         self.assertGreater(commands[0],0)
         self.assertEqual(node.diagnostic_safety_scan[1],context['inputs'][-1]['stamp'])
-        self.assertTrue(node.scan_queue)
+        self.assertGreater(node.safety_scan[1],node.diagnostic_safety_scan[1])
+        self.assertEqual(node.publish_input_ages['scan_stamp_ns'],node.diagnostic_safety_scan[1])
 
     def test_fresh_scan_during_slow_solve_does_not_rescue_expired_result(self):
         node,commands,_=binding_case('during_solve_expired')

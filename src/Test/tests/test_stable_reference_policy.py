@@ -147,6 +147,7 @@ class StableReferenceTests(unittest.TestCase):
         adopted=points.copy();adopted[:,1]=-.6*u**3*(10-15*u+6*u*u)*v**3*(10-15*v+6*v*v)
         self.assertTrue(n['shape_report'](adopted,points,**node.vehicle_limits)['ok'])
         node.frozen_reference_map=adopted;node.reference_version=1
+        node.reference_accepted_stamp=clock[0]
         node.reference_transition_end_odom=np.array([8.,0.])
         return node,guard,clock,points,geometry,adopted
 

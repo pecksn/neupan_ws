@@ -9,6 +9,9 @@
     <arg name="gps_time_mode" default="shadow" />
     <arg name="gps_time_clock_verified" default="false" />
     <arg name="gps_pvt_period_sec" default="1.0" />
+    <arg name="gps_transport_limit_sec" default="0.0" />
+    <arg name="gps_common_utc_verified" default="false" />
+    <arg name="gps_raw_capture_sec" default="0.0" />
     <arg name="gps_gga_period_sec" default="0.05" />
     <arg name="gps_cadence_margin_sec" default="0.3" />
     <arg name="heading_source_is_north_cw" default="true" />
@@ -25,6 +28,9 @@
         <arg name="time_mode" value="$(arg gps_time_mode)" />
         <arg name="time_clock_verified" value="$(arg gps_time_clock_verified)" />
         <arg name="pvt_period_sec" value="$(arg gps_pvt_period_sec)" />
+        <arg name="gnss_transport_limit_sec" value="$(arg gps_transport_limit_sec)" />
+        <arg name="gnss_common_utc_verified" value="$(arg gps_common_utc_verified)" />
+        <arg name="raw_capture_sec" value="$(arg gps_raw_capture_sec)" />
         <arg name="gga_period_sec" value="$(arg gps_gga_period_sec)" />
         <arg name="cadence_margin_sec" value="$(arg gps_cadence_margin_sec)" />
         <arg name="rotation" value="$(arg gps_rotation)" />

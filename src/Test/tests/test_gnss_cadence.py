@@ -183,13 +183,21 @@ class CadenceLaunchTests(unittest.TestCase):
         configs=[]
         for extra in ([],['enable_camera_right_path:=true','enable_camera_right_control:=true']):
             config=roslaunch.config.load_config_default([(str(path),[
-                'outdoor_mode:=true','low_precision_startup:=true']+extra)],None,verbose=False)
+                'outdoor_mode:=true','low_precision_startup:=true','gps_transport_limit_sec:=4.0',
+                'gps_common_utc_verified:=true','gps_raw_capture_sec:=60']+extra)],None,verbose=False)
             configs.append({key:value.value for key,value in config.params.items()
                 if key.startswith(('/global_odom_bridge/','/gps_fix_to_map_odom/','/nmea_serial_driver_node/'))})
         self.assertTrue(configs[0]['/global_odom_bridge/low_precision_startup'])
         self.assertEqual(configs[0],configs[1])
         commands=(root/'核心启动指令.md').read_text()
-        self.assertEqual(commands.count('outdoor_mode:=true low_precision_startup:=true'),2)
+        self.assertEqual(commands.count('bash src/robot_base_driver/scripts/start_outdoor.sh'),2)
+        entry=(root/'src/robot_base_driver/scripts/start_outdoor.sh').read_text()
+        self.assertIn('--require-valid',entry)
+        self.assertIn('gps_transport_limit_sec:=4.0 gps_common_utc_verified:=true',entry)
+        for node in ('nmea_serial_driver_node','gps_fix_to_map_odom','global_odom_bridge'):
+            self.assertEqual(configs[0]['/'+node+'/gnss_transport_limit_sec'],4.)
+            self.assertTrue(configs[0]['/'+node+'/gnss_common_utc_verified'])
+        self.assertEqual(configs[0]['/nmea_serial_driver_node/raw_capture_sec'],60.)
 
     def test_full_system_passes_configured_periods_to_both_driver_and_bridge(self):
         import roslaunch

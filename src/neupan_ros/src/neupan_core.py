@@ -101,6 +101,17 @@ class neupan_core:
         )
         self.stop_on_scan_fault = bool(rospy.get_param("~stop_on_scan_fault", True))
         self.scan_timeout = max(0.1, float(rospy.get_param("~scan_timeout", 0.5)))
+        # A result-age candidate is distinct from CURRENT stream deadlines.
+        # Default remains the original scan deadline; 0.60 s is opt-in only.
+        self.result_publish_timeout=float(rospy.get_param('~result_publish_timeout',self.scan_timeout))
+        self.result_compute_timeout=float(rospy.get_param('~result_compute_timeout',.50))
+        self.auto_command_timeout=float(rospy.get_param('~auto_command_timeout',.50))
+        if (not np.isfinite([self.result_publish_timeout,self.result_compute_timeout,self.auto_command_timeout]).all()
+                or not 0<self.result_publish_timeout<=max(.60,self.scan_timeout)
+                or not 0<self.result_compute_timeout<=.50 or self.auto_command_timeout<=0):
+            raise ValueError('invalid bounded command publication policy')
+        rospy.loginfo('NeuPAN publication: result_age<=%.3fs cycle_compute<=%.3fs current_scan<=%.3fs command_timeout=%.3fs',
+            self.result_publish_timeout,self.result_compute_timeout,self.scan_timeout,self.auto_command_timeout)
         self.scan_transform_timeout = max(
             0.1, float(rospy.get_param("~scan_transform_timeout", 0.5))
         )
@@ -121,7 +132,8 @@ class neupan_core:
             raise ValueError('outdoor_reference_spacing_m must be zero or finite and at least 0.02 m')
         self.outdoor_tracking_guard = OutdoorTrackingGuard() if self.outdoor_reference_spacing else None
         self.outdoor_tracking_status = None
-        self.camera_guard = CameraPathGuard(float(rospy.get_param('~camera_right_guard_timeout', 3.0))) \
+        self.camera_guard = CameraPathGuard(float(rospy.get_param('~camera_right_guard_timeout', 3.0)),
+            require_initial_reference=rospy.get_param('~camera_right_strategy','segment_reference')=='segment_reference') \
             if rospy.get_param('~camera_right_guard_enabled', False) else None
         self.camera_guard_signature = None
         self.camera_guard_last_state = None
@@ -394,7 +406,7 @@ class neupan_core:
             # return early. This changes reporting order, not authorization.
             if not self.apply_camera_path_guard():
                 state=getattr(self,'camera_guard_selected_state',{}) or {}
-                missing=state.get('reason')=='original_route_missing_or_invalid'
+                missing=state.get('reason') in ('original_route_missing_or_invalid','waiting_for_initial_reference')
                 self.diagnostic_stage = 'waiting_for_initial_path' if missing else 'camera_guard'
                 self.publish_stop_snapshot(self.diagnostic_stage)
                 if missing:rospy.loginfo_throttle(8., 'NeuPAN waiting for goal/initial path')
@@ -517,11 +529,17 @@ class neupan_core:
                 self.robot_state=np.array([trans[0],trans[1],self.quat_to_yaw_list(rot)]).reshape(3,1)
                 solve_ages=checked_input_ages(checked_scan,rospy.Time.now().to_nsec(),time.monotonic(),
                                    self.scan_timeout,self.diagnostic_state_stamp_ns)
+                if time.monotonic()-self.cycle_started_mono>getattr(self,'result_compute_timeout',.50):
+                    raise ResultExpired('calculation budget expired during preparation; rebind before solving')
             except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException,InputUnavailable) as error:
-                self.temporary_input_stop(str(error));r.sleep();continue
+                retry=self.temporary_input_stop(str(error),after_result=isinstance(error,ResultExpired))
+                if not retry:r.sleep()
+                continue
             self.cycle_timing['preparation_ms']=(time.monotonic()-self.cycle_started_mono)*1000
             self.cycle_timing.update(solve_input_ages=solve_ages,solve_queued_frames=queued_frames)
             solve_route_version=getattr(self,'command_route_version',0)
+            startup=getattr(self,'localization_startup_status',None)
+            self.solve_localization_frame=None if startup is None else startup[1].get('reference_frame')
 
             t2 = rospy.Time.now()
             solver_started = time.monotonic()
@@ -558,7 +576,6 @@ class neupan_core:
             if self.start_connector:
                 if self.start_connector.update_progress(self.neupan_planner.ipath.point_index):
                     self.camera_guard_signature = None
-                self.publish_connection_status()
 
             # 计算各个阶段的耗时
             dt_tf = (t1 - t0).to_sec() * 1000
@@ -594,19 +611,6 @@ class neupan_core:
                 )
 
             self.diagnostic_stage = "publish_plan_and_command"
-            reference_visual = None
-            if self.camera_guard is not None and info.get('ref_state_list'):
-                original=self.camera_guard.original
-                if original is not None:
-                    reference_visual=reference_offsets(np.hstack(info['ref_state_list']),
-                        [[p.pose.position.x,p.pose.position.y] for p in original.poses])
-                    status=getattr(self,'camera_guard_selected_state',{})
-                    reference_visual['camera_channel_accepted']=status.get('camera_channel_accepted',False)
-                    reference_visual['producer_active']=status.get('producer_active',False)
-                    reference_visual['guidance_source']=status.get('guidance_source','osm')
-            # publish the path and velocity
-            self.plan_pub.publish(self.generate_path_msg(info["opt_state_list"]))
-            self.ref_state_pub.publish(self.generate_path_msg(info["ref_state_list"]))
             command = self.generate_twist_msg(action)
             try:
                 # No expensive diagnostic or path construction may follow this
@@ -615,6 +619,9 @@ class neupan_core:
                 self.publish_input_ages = None
                 if abs(command.linear.x)>1.e-9 or abs(command.angular.z)>1.e-9:
                     self.check_camera_execution(info,command)
+                    # Transform the latest available same-capture frame outside
+                    # command locks. Do not replace the SOLVED snapshot/stamp.
+                    self.refresh_scan_snapshot()
                 # All geometric/select work is finished. Lock waits and short
                 # version checks precede the FINAL exact-input age check.
                 with self.command_gate():
@@ -634,8 +641,7 @@ class neupan_core:
                                      or getattr(self,'camera_publication_contract',None))
                                     and not 0<=time.monotonic()-self.camera_guard.received<=self.camera_guard.timeout):
                                 raise AuthorizationChanged('camera heartbeat expired at publication')
-                        self.publish_input_ages=checked_input_ages(checked_scan,rospy.Time.now().to_nsec(),
-                            time.monotonic(),self.scan_timeout,self.diagnostic_state_stamp_ns)
+                        self.publish_input_ages=self.check_publication_inputs(checked_scan)
                         contract=getattr(self,'camera_publication_contract',None)
                         if contract and rospy.Time.now().to_nsec()>contract['expires_ns']:
                             raise AuthorizationChanged('camera lease expired at publication')
@@ -652,15 +658,40 @@ class neupan_core:
                 rospy.logwarn_throttle(2.,yellow_terminal_text('Control authority or motion feedback updated; discard old command and replan: %s'),str(error))
                 r.sleep();continue
             except InputUnavailable as error:
-                self.temporary_input_stop(str(error),after_result=isinstance(error,ResultExpired));r.sleep();continue
+                retry=self.temporary_input_stop(str(error),after_result=isinstance(error,ResultExpired))
+                if not retry:r.sleep()
+                continue
             except Exception as error:
                 import sys
                 self.hold_planner_fault(error,sys.exc_info())
                 r.sleep()
                 continue
             command_time = time.monotonic()
+            command_stamp_ns=rospy.Time.now().to_nsec()
+            previous_command_time=self.last_command_monotonic
+            self.last_command_monotonic=command_time
+            self.calculation_retry_count=0
+            self.last_command_was_nonzero=abs(command.linear.x)>1.e-9 or abs(command.angular.z)>1.e-9
+            command_timing=self.cycle_metrics()
+            # Diagnostics are not command authority. Serialize/publish them
+            # AFTER the native first action, not inside its age budget.
+            reference_visual = None
+            if self.camera_guard is not None and info.get('ref_state_list'):
+                original=self.camera_guard.original
+                if original is not None:
+                    reference_visual=reference_offsets(np.hstack(info['ref_state_list']),
+                        [[p.pose.position.x,p.pose.position.y] for p in original.poses])
+                    status=getattr(self,'camera_guard_selected_state',{})
+                    reference_visual['camera_channel_accepted']=status.get('camera_channel_accepted',False)
+                    reference_visual['producer_active']=status.get('producer_active',False)
+                    reference_visual['guidance_source']=status.get('guidance_source','osm')
+            self.plan_pub.publish(self.generate_path_msg(info["opt_state_list"]))
+            self.ref_state_pub.publish(self.generate_path_msg(info["ref_state_list"]))
+            if self.start_connector:self.publish_connection_status()
+            command_timing['post_publish_diagnostics_ms']=(time.monotonic()-command_time)*1000
             self.runtime_pub.publish(json.dumps({
-                "stamp": rospy.Time.now().to_sec(),
+                "stamp": command_stamp_ns*1.e-9,
+                "command_stamp_ns": command_stamp_ns,
                 "cycle_id":self.diagnostic_cycle_id,
                 "reference_receipt":getattr(self,'reference_receipt',None),
                 "selected_reference_version":(getattr(self,'camera_guard_selected_state',None) or {}).get('reference_version')
@@ -671,7 +702,7 @@ class neupan_core:
                 "command_source":"neupan_native",
                 "solver_ms": solver_ms,
                 "safety_check_ms": getattr(self,'safety_check_ms',None),
-                "timing":self.cycle_metrics(),
+                "timing":command_timing,
                 "native_action":np.asarray(action,float).reshape(2).tolist(),
                 "motion_feedback":None if getattr(self,'motion_feedback',None) is None else self.motion_feedback.snapshot(
                     rospy.Time.now().to_nsec(),time.monotonic()),
@@ -687,8 +718,8 @@ class neupan_core:
                     if getattr(self,'camera_execution_contract',None) else None,
                 "total_processing_ms": (command_time-frame_started_mono)*1000,
                 "tf_lookup_ms": dt_tf,
-                "command_interval_ms": None if self.last_command_monotonic is None
-                else (command_time - self.last_command_monotonic) * 1000.0,
+                "command_interval_ms": None if previous_command_time is None
+                else (command_time - previous_command_time) * 1000.0,
                 "linear_x": float(command.linear.x),
                 "steering_deg": degrees(float(command.angular.z)),
                 "planner_stop": bool(self.stop),
@@ -703,7 +734,6 @@ class neupan_core:
                     (ref_state[:2, 0]-self.robot_state[:2, 0]) @
                     np.array([cos(self.robot_state[2, 0]), sin(self.robot_state[2, 0])])),
             }, separators=(",", ":")))
-            self.last_command_monotonic = command_time
             self.update_goal_arrival()
 
             # 计算并打印距离目的地的距离
@@ -755,7 +785,8 @@ class neupan_core:
             value = json.loads(message.data)
             if isinstance(value, dict):
                 summary = {key: value.get(key) for key in ('stamp', 'mode', 'reason', 'initialized',
-                    'timebase_contract','diagnostic_summary','latest_heading_health','gga_quality','hdop','cov_x','cov_y')}
+                    'timebase_contract','diagnostic_summary','latest_heading_health','gga_quality','hdop','cov_x','cov_y',
+                    'reference_frame','localization_safe')}
                 solution = value.get('gnss_solution') or {}
                 summary['gnss_solution'] = {key: solution.get(key) for key in
                     ('heading_type', 'receiver_heading_fixed', 'heading_fixed', 'heading_valid', 'clock_gate_reason')}
@@ -770,16 +801,32 @@ class neupan_core:
             try:
                 self.refresh_scan_snapshot()
                 snapshot,_,_=self.bind_scan_snapshot()
+                healthy,current_reason=self.scan_is_healthy(rospy.Time.now())
+                if not healthy:raise InputUnavailable(current_reason)
+                startup=getattr(self,'localization_startup_status',None)
+                if startup is not None and startup[1].get('localization_safe') is False:
+                    raise InputUnavailable('current localization unsafe')
                 _,_,stamp=pose_snapshot(self.listener,self.map_frame,self.base_frame)
                 checked_input_ages(snapshot,rospy.Time.now().to_nsec(),time.monotonic(),self.scan_timeout,stamp)
             except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException,InputUnavailable):pass
             else:
-                self.vel_pub.publish(Twist())
+                retry=getattr(self,'calculation_retry_count',0)<1
+                self.calculation_retry_count=1 if retry else 0
+                last=getattr(self,'last_command_monotonic',None)
+                retain=(retry and last is not None and getattr(self,'last_command_was_nonzero',False)
+                    and 0<=time.monotonic()-last<getattr(self,'auto_command_timeout',.5)
+                    and getattr(self,'control_mode',0)==0 and self.pending_route_update is None
+                    and getattr(self,'pending_goal_request_stamp',None) is None
+                    and not getattr(self,'shutdown_requested',False))
+                if not retain:self.vel_pub.publish(Twist())
                 self.stop_registry.set('calculation_retry',time.monotonic(),'fresh inputs; recompute without outage recovery')
-                self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=0.,
+                self.runtime_pub.publish(json.dumps(dict(stamp=rospy.Time.now().to_sec(),linear_x=None if retain else 0.,
                     command_source='calculation_retry',result_expired=True,reason=reason,
+                    command_published=not retain,retry_scheduled=retry,
+                    retry_exhausted=not retry,previous_command_not_renewed=True,
                     stop_reasons=self.stop_registry.snapshot(),timing=self.cycle_metrics())))
-                return
+                return retry
+        self.calculation_retry_count=0
         self.vel_pub.publish(Twist())
         self.input_good_since=None
         if getattr(self,'outdoor_tracking_guard',None) is not None:self.outdoor_tracking_guard.pause()
@@ -801,6 +848,10 @@ class neupan_core:
             headline=reason
             if status is not None:
                 summary=status[1].get('diagnostic_summary') or {}
+                detail+='; receiver_position_Fixed=%s receiver_heading_Fixed=%s transport=%ss limit=%ss late_mode=%s UTC_asserted=%s' % (
+                    summary.get('receiver_position_fixed'),summary.get('receiver_heading_fixed'),
+                    summary.get('transport_age_sec'),summary.get('transport_limit_sec'),
+                    summary.get('late_mode_enabled'),summary.get('common_utc_verified'))
                 detail+='; initialized=%s phase=%s GGA=%s HDOP=%s cov=[%s,%s]' % (
                     status[1].get('initialized'),summary.get('phase','unknown'),
                     status[1].get('gga_quality'),status[1].get('hdop'),status[1].get('cov_x'),status[1].get('cov_y'))
@@ -813,6 +864,47 @@ class neupan_core:
                     headline='waiting for first map heading (receiver heading not Fixed); '+reason
             rospy.logwarn_throttle(0.,yellow_terminal_text('NeuPAN input STOP: %s%s; waiting for fresh stable inputs'),headline,detail)
             self.last_input_wait_reason=reason;self.last_input_wait_log=now
+
+    def check_publication_inputs(self, checked_scan):
+        """Bounded solved result AND native current-flow checks, never restamp.
+
+        This is temporal admission only, not a new trajectory predictor/gate.
+        Caller holds task/camera locks and publishes immediately afterwards.
+        """
+        healthy,reason=self.scan_is_healthy(rospy.Time.now())
+        if not healthy:raise InputUnavailable('current scan stream unhealthy: '+reason)
+        current_scan,_,_=self.bind_scan_snapshot()
+        try:
+            _,_,current_stamp=pose_snapshot(self.listener,self.map_frame,self.base_frame)
+        except (tf.LookupException,tf.ConnectivityException,tf.ExtrapolationException) as error:
+            raise InputUnavailable('current vehicle TF unavailable: '+str(error))
+        startup=getattr(self,'localization_startup_status',None)
+        if startup is not None:
+            status=startup[1]
+            if status.get('localization_safe') is False:
+                raise InputUnavailable('current localization unsafe')
+            initial=getattr(self,'solve_localization_frame',None)
+            current=status.get('reference_frame')
+            if initial is not None and (current is None or any(initial.get(k)!=current.get(k)
+                    for k in ('instance_id','odom_epoch'))):
+                raise AuthorizationChanged('localization generation changed during solve')
+        now=rospy.Time.now().to_nsec();mono=time.monotonic()
+        # The CURRENT scan/pose must still meet the original deadline, even
+        # when the exact solved snapshot uses the explicit age candidate.
+        try:
+            current_ages=checked_input_ages(current_scan,now,mono,self.scan_timeout,current_stamp)
+        except InputUnavailable as error:
+            raise InputUnavailable('current input stream unavailable: '+str(error))
+        elapsed=mono-self.cycle_started_mono
+        budget=getattr(self,'result_compute_timeout',.50)
+        if not math.isfinite(elapsed) or not 0<=elapsed<=budget:
+            raise ResultExpired('calculation budget expired: %.6fs limit=%.6fs' % (elapsed,budget))
+        ages=checked_input_ages(checked_scan,now,mono,
+            getattr(self,'result_publish_timeout',self.scan_timeout),self.diagnostic_state_stamp_ns)
+        self.cycle_timing.update(publication_current_input_ages=current_ages,
+            result_publish_timeout_sec=getattr(self,'result_publish_timeout',self.scan_timeout),
+            result_compute_timeout_sec=budget,publication_compute_ms=elapsed*1000)
+        return ages
 
     def cycle_metrics(self):
         now=time.monotonic()
@@ -856,7 +948,7 @@ class neupan_core:
             solved=getattr(self,'camera_guard_selected_state',{})
             if solved and any(solved.get(key)!=state.get(key) for key in ('matched_route_identity','original_path_digest')):
                 raise AuthorizationChanged('original route changed during solve')
-            if state['source']=='stop' or state['safety_generation']!=getattr(self,'camera_safety_generation',None):
+            if state['source'] in ('stop','wait') or state['safety_generation']!=getattr(self,'camera_safety_generation',None):
                 raise AuthorizationChanged('camera authority revoked during solve')
             if contract is None:
                 if current or (state.get('producer_active') and state.get('reference_role')!='advisory'):
@@ -1403,6 +1495,8 @@ class neupan_core:
         self.reference_receipt=dict(route_kind=kind,route_key=path_key,
             connection_kind='measured_pose_c2' if pose_connected else None,
             selected_source=selected.get('source','direct'),
+            reference_accepted=selected.get('reference_accepted',False),
+            reference_accepted_stamp=selected.get('reference_accepted_stamp'),
             selected_reference_version=selected.get('reference_version') if selected.get('source')=='camera' else None,
             source_path_digest=selected.get('matched_path_digest'),
             original_path_digest=selected.get('original_path_digest'),
@@ -1454,7 +1548,7 @@ class neupan_core:
             self.camera_guard_pub.publish(String(data=json.dumps(state)))
             self.camera_guard_last_publish = now
             self.camera_guard_last_state = current
-        if state['source'] == 'stop':
+        if state['source'] in ('stop','wait'):
             self.camera_guard_signature = None
             with self.route_update_lock:
                 self.pending_route_update = None

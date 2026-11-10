@@ -451,7 +451,7 @@ class BufferedAlignmentTests(unittest.TestCase):
         b = self.initialized_tracking()
         for i in range(150):
             self.gnss(b,100.+i*.001)
-        self.assertTrue(all(len(h)<=128 for h in b.observation_history.values()))
+        self.assertTrue(all(h.maxlen==2048 and len(h)<=2048 for h in b.observation_history.values()))
         self.local(b,102.,102.)
         old = b.last_processed_gps_stamp_ns
         b.update_guard(self.now)
