@@ -276,7 +276,8 @@ class CameraPathGuard:
             confirmed=(detail.get('reference_accepted') is True and type(stamp) in (int,float)
                        and math.isfinite(stamp) and stamp>0 and detail.get('reference_frame_invalidated') is not True)
             if needs_initial and source=='camera' and (not confirmed or (self.accepted_advisory is None and not fresh)):
-                source,reason='osm','waiting_for_initial_reference'
+                source,reason='osm',('waiting_for_initial_reference' if self.require_initial_reference
+                                     else 'osm_until_first_confirmed_camera_reference')
             if (source=='osm' and (self.require_initial_reference or advisory and bound_task) and self.accepted_advisory is not None
                     and self.accepted_advisory[0]==self.original_key):
                 # Path and heartbeat arrive on separate topics. Do not expose
@@ -285,7 +286,7 @@ class CameraPathGuard:
                 source,reason='camera','advisory_reference_held_pending_replacement'
                 status=held[3];detail=status.get('inference_diagnostics') or {}
                 advisory=detail.get('reference_role')=='advisory'
-            if needs_initial and source=='osm' and self.accepted_advisory is None:
+            if self.require_initial_reference and source=='osm' and self.accepted_advisory is None:
                 source,reason='wait','waiting_for_initial_reference'
             needs_contract=bool((status.get('active') and not advisory) or self.pending_recovery
                 or (advisory and detail.get('execution_contract')))
@@ -303,6 +304,7 @@ class CameraPathGuard:
                      'reference_version':detail.get('reference_version'),
                      'reference_accepted':detail.get('reference_accepted') is True,
                      'reference_accepted_stamp':detail.get('reference_accepted_stamp'),
+                     'initial_reference':copy.deepcopy(detail.get('initial_reference') or {}),
                      'road_region':detail.get('road_region') if advisory else None,
                      'reference_connection':(detail.get('final_path') or {}).get('reference_connection') if advisory else None,
                      'authorization_generation':self.authorization_generation,
@@ -326,7 +328,7 @@ class CameraPathGuard:
                      'near_field_visual_modified': bool(source == 'camera' and status.get('near_field_modified_points',0)>0),
                      'near_field_max_offset_m': status.get('near_field_max_offset_m',0.) if source == 'camera' else 0.}
             signature=(source,self.original_key,digest)
-            if advisory:signature+=(detail.get('reference_version'),self.original_digest)
+            if source=='camera' and advisory:signature+=(detail.get('reference_version'),self.original_digest)
             connection=state.get('reference_connection')
             if source=='camera' and isinstance(connection,dict):
                 signature+=(json.dumps(connection,sort_keys=True,separators=(',',':')),)

@@ -34,6 +34,9 @@ def host_clock_evidence(snapshot_file=None):
             snapshot=json.loads(Path(snapshot_file).read_text())
             report.update(host_snapshot=snapshot,host_snapshot_fresh=validate_host_utc(snapshot))
         except (OSError,ValueError):report['host_snapshot_unavailable']=True
+        # Container deployment uses independent host evidence. Its local DBus
+        # is not the host time service and must not be queried as a substitute.
+        return report
     for command in (['chronyc','tracking'],['timedatectl','show-timesync','--all']):
         if not shutil.which(command[0]):continue
         try:

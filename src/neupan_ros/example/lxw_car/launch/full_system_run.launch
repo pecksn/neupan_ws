@@ -15,7 +15,7 @@
     <arg name="enable_lidar_curb_control" default="false" doc="让NeuPAN跟踪路沿修正路径；实车标定确认前保持false"/>
     <arg name="enable_camera_right_path" default="false" doc="输出摄像头靠右验证路径，不改变控制" />
     <arg name="enable_camera_right_control" default="false" doc="显式启用摄像头参考路径修正；先完成影子模式验证" />
-    <arg name="camera_right_guard_timeout" default="3.0" doc="首次需确认道路参考；已确认建议在普通缺帧时保持，独立危险保护不变" />
+    <arg name="camera_right_guard_timeout" default="3.0" doc="无可信相机参考时先走原OSM；接受修正后普通缺帧保持，独立危险保护不变" />
     <arg name="camera_right_center_clearance_m" default="-1" doc="旧中心距离覆盖；-1按右轮外沿距离换算" />
     <arg name="camera_right_wheel_clearance_m" default="1.5" doc="右轮胎外沿距右边界目标距离" />
     <arg name="camera_right_track_width_m" default="0.67" doc="用户确认的实车左右轮中心间距" />
@@ -66,8 +66,8 @@
     <arg name="gps_time_mode" default="$(eval 'measurement' if arg('outdoor_mode') else 'shadow')" doc="室外默认measurement，时间无效时等待，不退回主机时标" />
     <arg name="gps_time_clock_verified" default="$(eval 'auto' if arg('outdoor_mode') else 'false')" doc="auto启动门控：NUC同步、连续有效GNSS时间；不修改系统时钟" />
     <arg name="gps_pvt_period_sec" default="1.0" doc="当前端口PVTSLNA周期；显式配置，不从断流学习" />
-    <arg name="gps_transport_limit_sec" default="0.0" doc="0保留原GNSS期限；4秒需宿主机NTP证据与接收机UTC确认；不影响LIO/扫描超时" />
-    <arg name="gps_common_utc_verified" default="false" doc="独立共同UTC确认，不等同内核同步布尔值" />
+    <arg name="gps_transport_limit_sec" default="4.0" doc="启动自动查询宿主机NTP；4秒仍需接收机UTC确认；不影响LIO/扫描超时" />
+    <arg name="gps_common_utc_verified" default="true" doc="启动入口获取独立宿主机UTC证据，失败显示原因并等待，不凭内核布尔值确认" />
     <arg name="gps_raw_capture_sec" default="0.0" doc="同一读取线程限时保存原文：0关闭，30到60秒，最多1MB" />
     <arg name="gps_gga_period_sec" default="0.05" doc="当前端口GGA周期" />
     <arg name="gps_cadence_margin_sec" default="0.3" doc="到包周期抖动余量；不放宽源报文传输时延" />

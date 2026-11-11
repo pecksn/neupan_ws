@@ -43,7 +43,7 @@ class InitialReferenceTests(unittest.TestCase):
                 result=copy.deepcopy(node.path);active,count=node.stable_result(result,clock[0],.1)
                 node.publish_result(result,clock[0],'initial',active,count)
                 state=guard.select(clock[0],round(clock[0]*1.e9))[2]
-                self.assertEqual(state['source'],'camera' if frame==3 else 'wait')
+                self.assertEqual(state['source'],'camera' if frame==3 else 'osm')
             self.assertEqual(node.reference_version,0)
             self.assertTrue(state['reference_accepted'])
             np.testing.assert_array_equal(node.frozen_reference_map,points)
@@ -70,7 +70,7 @@ class InitialReferenceTests(unittest.TestCase):
         guard.original_cb(path(stamp=124))
         self.assertEqual(guard.select(10.)[2]['source'],'wait') # new task must confirm
 
-    def receipt_case(self, corrected=False):
+    def receipt_case(self, corrected=False, bootstrap_osm=False):
         import test_followup_safety as command
         from test_camera_publication_protocol import path
         from test_outdoor_start_connection import AdapterTests,resample_forward_reference
@@ -95,6 +95,9 @@ class InitialReferenceTests(unittest.TestCase):
             self.assertEqual(state['inference_diagnostics']['final_path']['reference_connection']['kind'],'measured_pose_c2')
             state['inference_diagnostics'].update(reference_accepted=False,reference_accepted_stamp=None)
             guard.accepted_advisory=None;guard.require_initial_reference=True
+        if bootstrap_osm:
+            from test_camera_osm_bootstrap import production_guard
+            guard=production_guard();guard.original_cb(route);guard.candidate_cb(route)
         guard.status_cb(state,1000.)
         snapshots=[]
         def hook(node,clock,namespace):
@@ -103,6 +106,7 @@ class InitialReferenceTests(unittest.TestCase):
             methods=[v for v in cls.body if isinstance(v,ast.FunctionDef) and v.name in ('apply_camera_path_guard','apply_pending_route')]
             namespace.update(copy=copy,String=lambda **kw:NS(**kw),resample_forward_reference=resample_forward_reference)
             namespace['rospy'].logdebug_throttle=Mock();namespace['rospy'].loginfo=Mock()
+            namespace['rospy'].logdebug=Mock()
             exec(compile(ast.Module(body=methods,type_ignores=[]),str(source),'exec'),namespace)
             adapter,_=AdapterTests().node()
             for key,value in vars(adapter).items():
@@ -136,11 +140,15 @@ class InitialReferenceTests(unittest.TestCase):
                 original(message)
             node.vel_pub.publish=publish
         node,commands=command.CommandBoundaryTests().run_loop(setup_hook=hook)
-        self.assertEqual(commands[0],0.)
+        self.assertEqual(commands[0],.8 if bootstrap_osm else 0.)
         self.assertIn(.8,commands)
         self.assertTrue(snapshots)
-        self.assertTrue(snapshots[0]['reference_accepted'])
-        self.assertEqual(snapshots[0]['selected_reference_version'],1 if corrected else 0)
+        self.assertEqual(snapshots[0]['reference_accepted'],not bootstrap_osm)
+        self.assertEqual(snapshots[0]['selected_reference_version'],None if bootstrap_osm else 1 if corrected else 0)
+        if bootstrap_osm:
+            self.assertEqual(snapshots[0]['selected_source'],'osm')
+            self.assertTrue(snapshots[-1]['reference_accepted'])
+            self.assertEqual(snapshots[-1]['selected_source'],'camera')
         self.assertEqual(snapshots[0]['source_path_digest'],path_digest(route))
         np.testing.assert_allclose(snapshots[0]['loaded_endpoint_map'],
             [route.poses[-1].pose.position.x,route.poses[-1].pose.position.y])
@@ -148,6 +156,9 @@ class InitialReferenceTests(unittest.TestCase):
 
     def test_first_nonzero_native_command_has_actual_accepted_load_receipt(self):
         self.receipt_case()
+
+    def test_native_osm_command_does_not_wait_for_camera_then_loads_confirmed_camera(self):
+        self.receipt_case(bootstrap_osm=True)
 
     def test_corrected_c2_suffix_is_loaded_before_first_nonzero(self):
         self.receipt_case(corrected=True)

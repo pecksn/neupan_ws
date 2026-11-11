@@ -132,8 +132,7 @@ class neupan_core:
             raise ValueError('outdoor_reference_spacing_m must be zero or finite and at least 0.02 m')
         self.outdoor_tracking_guard = OutdoorTrackingGuard() if self.outdoor_reference_spacing else None
         self.outdoor_tracking_status = None
-        self.camera_guard = CameraPathGuard(float(rospy.get_param('~camera_right_guard_timeout', 3.0)),
-            require_initial_reference=rospy.get_param('~camera_right_strategy','segment_reference')=='segment_reference') \
+        self.camera_guard = CameraPathGuard(float(rospy.get_param('~camera_right_guard_timeout', 3.0))) \
             if rospy.get_param('~camera_right_guard_enabled', False) else None
         self.camera_guard_signature = None
         self.camera_guard_last_state = None
@@ -409,7 +408,16 @@ class neupan_core:
                 missing=state.get('reason') in ('original_route_missing_or_invalid','waiting_for_initial_reference')
                 self.diagnostic_stage = 'waiting_for_initial_path' if missing else 'camera_guard'
                 self.publish_stop_snapshot(self.diagnostic_stage)
-                if missing:rospy.loginfo_throttle(8., 'NeuPAN waiting for goal/initial path')
+                if state.get('reason')=='waiting_for_initial_reference':
+                    reference=state.get('initial_reference') or {}
+                    localization=getattr(self,'localization_startup_status',None)
+                    ready=(localization is not None and 0<=time.monotonic()-localization[0]<=2.
+                           and localization[1].get('localization_safe') is True)
+                    label='定位已就绪，等待首次右边界参考' if ready else '等待首次右边界参考；定位尚未确认就绪'
+                    rospy.loginfo_throttle(8., 'NeuPAN %s: stage=%s reason=%s frame=%s confirmations=%s/3',label,
+                        reference.get('stage','waiting_for_camera_status'),reference.get('reason','camera status unavailable'),
+                        reference.get('observation_frame_seq'),reference.get('confirmation_count',0))
+                elif missing:rospy.loginfo_throttle(8., 'NeuPAN waiting for goal/initial path')
                 else:rospy.logwarn_throttle(8., 'NeuPAN held STOP: %s',state.get('reason','reference unavailable'))
                 self.vel_pub.publish(Twist())
                 r.sleep()
@@ -1557,7 +1565,7 @@ class neupan_core:
             return False
         if signature != self.camera_guard_signature:
             if state.get('reference_role')=='advisory':
-                new_key=(state.get('matched_route_identity'),state.get('reference_version'))
+                new_key=(state.get('source'),state.get('matched_route_identity'),state.get('reference_version'))
                 xy=np.array([[p.pose.position.x,p.pose.position.y] for p in path.poses])
                 old=getattr(self,'camera_advisory_xy',None)
                 if (new_key==getattr(self,'camera_advisory_key',None) and old is not None

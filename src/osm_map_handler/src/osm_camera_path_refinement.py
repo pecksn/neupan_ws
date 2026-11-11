@@ -58,15 +58,19 @@ def boundary_curve(segments, matrix, distortion, rotation, origin, ground_z=0., 
         if diagnostic is not None:
             diagnostic.setdefault('segments', []).append(report)
         if len(points) < 3:
+            report['rejection']='fewer_than_3_projected_points'
             continue
         # Reject fold-backs, rather than fitting across an obstacle contour.
         differences = np.diff(points[:, 0])
         if not (np.all(differences >= -0.1) or np.all(differences <= 0.1)):
+            report['rejection']='foldback'
             continue
         points = points[np.argsort(points[:, 0])]
         points = points[np.r_[True, np.diff(points[:, 0]) > .03]]
         if len(points) >= 3 and points[-1, 0]-points[0, 0] >= 2:
             candidates.append(points[:, :2])
+        else:
+            report['rejection']='support_shorter_than_2m'
     if not candidates:
         raise ValueError('insufficient continuous ground boundary')
     selected = max(candidates, key=lambda p: p[-1, 0]-p[0, 0])
@@ -1187,7 +1191,10 @@ class CameraRightPath:
         packet=getattr(self,'observation_packet',None)
         if not packet or now-getattr(self,'observation_received',0)>self.timeout:
             return {'reason':'observation missing or stale'}
-        report={'frame_seq':packet.get('frame_seq'),'receiver_diagnostics':packet.get('receiver_diagnostics')}
+        report={'frame_seq':packet.get('frame_seq'),'receiver_diagnostics':packet.get('receiver_diagnostics'),
+                'coordinate_space':packet.get('coordinate_space'),
+                'image_size':[packet.get('image_width'),packet.get('image_height')],
+                'expected_coordinate_space':'rotated_image_pixels'}
         for side in ('left','right'):
             data={'boundary_valid':packet.get(side+'_boundary_valid'),
                   'quality':packet.get(side+'_boundary_quality'),
@@ -1199,6 +1206,25 @@ class CameraRightPath:
             except (ValueError,TypeError,cv2.error) as error:
                 data['rejection']=str(error)
         return report
+
+    def initial_reference_status(self, reason):
+        """Explain the existing gate; this diagnostic never grants authorization."""
+        observation=getattr(self,'observation_geometry_diagnostics',{}) or {}
+        geometry=getattr(self,'geometry_diagnostics',{}) or {}
+        right=observation.get('right') or geometry.get('right') or {}
+        final=getattr(self,'final_path_diagnostics',{}) or {}
+        accepted=getattr(self,'reference_accepted_stamp',None) is not None
+        if accepted:stage='reference_accepted'
+        elif right.get('boundary_valid') is False:stage='gpu_right_boundary_unavailable'
+        elif right.get('rejection') or right.get('projection_rejection'):stage='right_ground_projection_rejected'
+        elif (geometry.get('right') or {}).get('selected_points',0)>=3:
+            stage='reference_confirmation_pending'
+        else:stage='waiting_for_usable_right_frame'
+        return dict(stage=stage,reason=reason,frame_seq=geometry.get('frame_seq'),
+            observation_frame_seq=observation.get('frame_seq'),
+            projection_rejection=right.get('rejection') or right.get('projection_rejection'),
+            confirmation_count=getattr(self,'reference_outside_count',0),required_confirmations=3,
+            reference_decision=final.get('reason'),right_segments=right.get('segments',[]))
 
     def safe_cb(self, msg):
         with self.lock:
@@ -1416,7 +1442,8 @@ class CameraRightPath:
         advisory=getattr(self,'strategy',None)=='segment_reference'
         required=('valid','right_boundary_valid') if advisory else ('valid','road_polygon_valid','right_boundary_valid')
         if not all(p.get(k) is True for k in required):
-            raise ValueError('reliable right boundary and measured road area required')
+            raise ValueError('GPU right boundary unavailable' if advisory else
+                             'reliable right boundary and measured road area required')
         single=p.get('left_boundary_valid') is not True
         if single and not advisory and len(p.get('road_polygon_px',[]))<3:
             raise ValueError('single-side drivable area missing')
@@ -1454,8 +1481,9 @@ class CameraRightPath:
             self.geometry_diagnostics[side] = side_report
             try:curves.append(boundary_curve(segments, self.matrix, self.distortion, self.rotation, self.origin,self.ground_z,side_report))
             except ValueError as error:
+                side_report['projection_rejection']=str(error)
                 if side!='left':raise
-                curves.append(None);single=True;side_report['projection_rejection']=str(error)
+                curves.append(None);single=True
         self.observe_verification(curves,capture,now)
         if p.get('scene_type') in ('intersection','open_area'):
             raise ValueError('junction or open area')
@@ -1707,6 +1735,12 @@ class CameraRightPath:
         # A smooth localization correction is not a new route-selection event.
         current=points.copy() if frozen is None or np.shape(frozen)!=np.shape(points) else frozen.copy()
         values=self.cache.values(now)
+        if getattr(self,'reference_accepted_stamp',None) is None:
+            # The first-reference gate below already requires three distinct,
+            # agreeing capture identities. Feeding only committed (3-frame)
+            # cache points into it creates a second serial window (5 frames).
+            # Pending points are proposals only, never accepted/control paths.
+            values.update({i:v[0] for i,v in self.cache.pending.items()})
         geometry={i:v for i,v in self.cache_geometry.items() if i in values}
         local_keys,window=reference_evidence_window(points,geometry,values,position,
             getattr(self,'reference_progress_s',None),yaw,
@@ -1788,6 +1822,19 @@ class CameraRightPath:
                         event['last_new_mono']=now
                         event['last_capture']=capture
                     evidence_ready=event is not None and len(event['frames'])>=3
+                    if evidence_ready and not accepted:
+                        # Reuse, do not bypass, the cache's per-point agreement
+                        # check. Both gates observe the SAME three frames now.
+                        confirmed_keys,confirmed_window=reference_evidence_window(points,geometry,self.cache.committed,position,
+                            getattr(self,'reference_progress_s',None),yaw,
+                            max_map_distance=max(4.,getattr(self,'reference_max_shift',self.max_shift)))
+                        evidence_ready=len(confirmed_keys)>=3
+                        if evidence_ready:
+                            # Only agreed cache geometry reaches the candidate
+                            # search/commit; pending points merely warm its vote.
+                            values={i:v for i,v in values.items() if i in self.cache.committed}
+                            geometry={i:v for i,v in geometry.items() if i in values}
+                            local_keys,window=confirmed_keys,confirmed_window
                     evidence_reason='road_offset_confirmed' if evidence_ready else 'confirming_out_of_band_reference'
             self.reference_evidence_event=event
             self.reference_outside_count=0 if event is None else len(event['frames'])
@@ -2358,6 +2405,7 @@ class CameraRightPath:
         capture_age = ((rospy.Time.now().to_nsec()-capture)/1.e6
                        if isinstance(capture, int) and capture > 0 else None)
         inference_diagnostics = {
+            'initial_reference':self.initial_reference_status(reason),
             'advisory_clearance_band_m':[getattr(self,'clearance_min',1.),getattr(self,'clearance_max',3.)],
             'reference_role':'advisory' if getattr(self,'strategy',None)=='segment_reference' else 'visual_execution',
             'reference_version':getattr(self,'reference_version',0),

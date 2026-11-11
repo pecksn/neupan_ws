@@ -44,7 +44,7 @@ from libnmea_navsat_driver.driver import RosNMEADriver
 from libnmea_navsat_driver import driver as driver_module, unicore
 from libnmea_navsat_driver import observation_time
 from libnmea_navsat_driver.serial_diagnostics import SerialDiagnostics, source_identity, BoundedRawCapture
-from libnmea_navsat_driver.host_utc_evidence import validate as validate_host_utc
+from libnmea_navsat_driver.host_utc_evidence import refresh as refresh_host_utc
 from std_msgs.msg import String
 
 
@@ -77,6 +77,23 @@ def process_serial_read(raw, driver, diagnostics, frame_id):
         diagnostics.observe_processing(len(raw),(time.monotonic_ns()-read_mono_ns)/1.e6)
 
 
+def wait_for_host_utc(clock_file, diagnostics, publish):
+    """Expose deployment dependency via existing diagnostics; never open serial early."""
+    while not rospy.is_shutdown():
+        evidence=refresh_host_utc(clock_file)
+        diagnostics.host_utc_preflight={key:evidence.get(key) for key in ('qualified','error','transport','utc_ns')}
+        diagnostics.set_state('host_utc_ready' if evidence['qualified'] else 'waiting_host_utc_evidence')
+        publish()
+        if evidence['qualified']:
+            rospy.loginfo('GNSS independent host UTC verified; transport_limit=%.2fs; receiver UTC confirmation still required',
+                          rospy.get_param('~gnss_transport_limit_sec',0.))
+            return True
+        rospy.logwarn_throttle(8., 'GNSS waiting for independent host UTC evidence: %s; see /gnss/serial_diagnostics',
+                               evidence.get('error','host NTP not qualified'))
+        rospy.sleep(5.)
+    return False
+
+
 def main():
     """Create and run the nmea_serial_driver ROS node.
 
@@ -94,13 +111,6 @@ def main():
     serial_baud = rospy.get_param('~baud', 4800)
     frame_id = RosNMEADriver.get_frame_id()
     clock_file=rospy.get_param('~host_clock_evidence_file','')
-    # The production entry point requires host evidence for the explicit
-    # deployment assertion. Unit pipelines can still test that assertion.
-    if rospy.get_param('~gnss_common_utc_verified',False):
-        try:
-            with open(clock_file) as stream:valid=validate_host_utc(json.load(stream))
-        except (OSError,ValueError):valid=False
-        if not valid:raise ValueError('4s GNSS deployment requires fresh independent host NTP evidence; use host start_outdoor.sh')
     diagnostics = SerialDiagnostics({
         'port': serial_port, 'baud': serial_baud, 'framing': '8N1',
         'nominal_payload_bytes_per_sec': float(serial_baud)/10.,
@@ -111,8 +121,7 @@ def main():
         'observation_time': source_identity(observation_time.__file__),
     })
     publisher = rospy.Publisher('/gnss/serial_diagnostics', String, queue_size=5, latch=True)
-    diagnostics.raw_capture=BoundedRawCapture(rospy.get_param('~raw_capture_directory',''),
-                                             float(rospy.get_param('~raw_capture_sec',0.)))
+    diagnostics.raw_capture=BoundedRawCapture('',0.)
     print_summary = bool(rospy.get_param('~serial_diagnostics_print', False))
     driver = None
     clock_evidence={'updated_mono':float('-inf'),'data':None}
@@ -120,9 +129,12 @@ def main():
     def publish_diagnostics(_event=None):
         report = diagnostics.snapshot()
         report['stamp'] = rospy.Time.now().to_sec()
+        report['host_utc_preflight']=getattr(diagnostics,'host_utc_preflight',None)
         if driver is not None:
             report['observation_timing'] = driver.observation_timing.summary()
-        if time.monotonic()-clock_evidence['updated_mono']>=30.:
+        # Preflight may have just replaced the snapshot; show this attempt,
+        # not the diagnostic timer's previous 30-second cached failure.
+        if driver is None or time.monotonic()-clock_evidence['updated_mono']>=30.:
             clock_evidence.update(updated_mono=time.monotonic(),data=observation_time.host_clock_evidence(clock_file))
         report['host_clock_evidence']=clock_evidence['data']
         capture=diagnostics.raw_capture
@@ -146,6 +158,10 @@ def main():
     timer = rospy.Timer(rospy.Duration(1.), publish_diagnostics)
     GPS = None
     try:
+        if rospy.get_param('~gnss_common_utc_verified',False):
+            if not wait_for_host_utc(clock_file,diagnostics,publish_diagnostics):return
+        diagnostics.raw_capture=BoundedRawCapture(rospy.get_param('~raw_capture_directory',''),
+                                                 float(rospy.get_param('~raw_capture_sec',0.)))
         GPS = serial.Serial(port=serial_port, baudrate=serial_baud, timeout=2)
         diagnostics.set_state('open')
         driver = RosNMEADriver()

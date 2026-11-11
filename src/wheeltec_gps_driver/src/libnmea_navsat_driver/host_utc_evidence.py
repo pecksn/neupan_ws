@@ -1,4 +1,4 @@
-"""Read host NTP evidence before entering Docker. Never adjust either clock."""
+"""Read independent host NTP evidence. Never adjust either clock."""
 import argparse
 import datetime
 import ipaddress
@@ -9,10 +9,47 @@ from pathlib import Path
 import re
 import subprocess
 import time
+import tempfile
 
 
 def query(*args):
-    return subprocess.check_output(args,text=True,timeout=3,env=dict(os.environ,LC_ALL='C'))
+    return subprocess.check_output(args,text=True,timeout=12 if args[0]=='ssh' else 3,
+        stderr=subprocess.PIPE,env=dict(os.environ,LC_ALL='C'))
+
+
+def save(evidence, target):
+    target=Path(target)
+    target.parent.mkdir(parents=True,exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w',dir=target.parent,delete=False) as stream:
+        temporary=Path(stream.name)
+        try:
+            json.dump(evidence,stream,ensure_ascii=False,allow_nan=False)
+            stream.flush()
+            temporary.replace(target)
+        finally:
+            if temporary.exists():temporary.unlink()
+
+
+def refresh(target):
+    """One bounded, pinned, loopback-only query per startup/retry, no old fallback."""
+    channel=Path(__file__).resolve().parents[4]/'.runtime_diagnostics/host_utc_ssh'
+    try:
+        data=json.loads(query('ssh','-T','-F','/dev/null','-o','BatchMode=yes',
+            '-o','ConnectTimeout=2','-o','ConnectionAttempts=1',
+            '-o','StrictHostKeyChecking=yes','-o','IdentitiesOnly=yes',
+            '-o','UserKnownHostsFile='+str(channel/'known_hosts'),
+            '-i',str(channel/'id_ed25519'),'nuc15@127.0.0.1'))
+        if not isinstance(data,dict):raise ValueError('host evidence must be an object')
+        if not validate(data):
+            data.update(qualified=False,error=data.get('error') or
+                        'host NTP evidence unqualified, expired, rebooted or clock stepped')
+    except (OSError,ValueError,TypeError,subprocess.SubprocessError) as error:
+        data=dict(qualified=False,error=(str(error)+' '+str(getattr(error,'stderr','') or ''))[:500])
+    data['transport']='pinned_loopback_ssh'
+    try:save(data,target)
+    except (OSError,ValueError) as error:
+        data.update(qualified=False,error='cannot save startup evidence: '+str(error)[:200])
+    return data
 
 
 def seconds(text):
@@ -31,7 +68,7 @@ def validate(evidence, max_capture_age=120.):
             and abs(elapsed-age)<.1
             and 0<=evidence['sample_age_sec']+age<=evidence['max_sample_age_sec']
             and evidence['boot_id']==Path('/proc/sys/kernel/random/boot_id').read_text().strip())
-    except (KeyError,TypeError,ValueError,OSError):return False
+    except (KeyError,TypeError,ValueError,OSError,OverflowError):return False
 
 
 def collect():
@@ -66,9 +103,11 @@ def collect():
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--output',required=True)
+    parser=argparse.ArgumentParser()
+    mode=parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--output');mode.add_argument('--stdout-only',action='store_true')
     parser.add_argument('--require-valid',action='store_true');args=parser.parse_args()
-    data=collect();target=Path(args.output);target.parent.mkdir(parents=True,exist_ok=True)
-    temp=target.with_suffix('.tmp');temp.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n');temp.replace(target)
+    data=collect()
+    if args.output:save(data,args.output)
     print(json.dumps(data,ensure_ascii=False))
     if args.require_valid and not validate(data):raise SystemExit('Host UTC evidence unavailable/unqualified: keep transport candidate disabled')
