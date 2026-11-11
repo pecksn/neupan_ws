@@ -1,0 +1,130 @@
+[33m[ WARN] [1794384931.413424888]: Transform from odom to base_link was unavailable for the time requested. Using latest instead.
+[0m
+[33m[ WARN] [1794384933.446545725]: Transform from odom to base_link was unavailable for the time requested. Using latest instead.
+[0m
+[33m[ WARN] [1794384935.446726770]: Transform from odom to base_link was unavailable for the time requested. Using latest instead.
+[0m
+[33m[ WARN] [1794384937.479532056]: Transform from odom to base_link was unavailable for the time requested. Using latest instead.
+[0m
+[33m[ WARN] [1794384939.479550867]: Transform from odom to base_link was unavailable for the time requested. Using latest instead.
+[0m
+.
+----------------------------------------------------------------------
+Ran 1 test in 10.931s
+
+OK
+... loading XML
+Added parameter [/gps_fix_to_map_odom/gps_time_mode]
+Added parameter [/gps_fix_to_map_odom/gps_time_clock_verified]
+Added parameter [/gps_fix_to_map_odom/gnss_transport_limit_sec]
+Added parameter [/gps_fix_to_map_odom/gnss_common_utc_verified]
+Added parameter [/gps_fix_to_map_odom/gga_period_sec]
+Added parameter [/gps_fix_to_map_odom/cadence_margin_sec]
+Added parameter [/gps_fix_to_map_odom/fix_topic]
+Added parameter [/gps_fix_to_map_odom/heading_topic]
+Added parameter [/gps_fix_to_map_odom/output_topic]
+Added parameter [/gps_fix_to_map_odom/frame_id]
+Added parameter [/gps_fix_to_map_odom/child_frame_id]
+Added parameter [/gps_fix_to_map_odom/origin_lat]
+Added parameter [/gps_fix_to_map_odom/origin_lon]
+Added parameter [/gps_fix_to_map_odom/zero_altitude]
+Added parameter [/gps_fix_to_map_odom/use_heading]
+Added parameter [/gps_fix_to_map_odom/heading_timeout_sec]
+Added parameter [/gps_fix_to_map_odom/publish_rate]
+Added parameter [/gps_fix_to_map_odom/heading_rotation_deg]
+Added parameter [/gps_fix_to_map_odom/heading_source_is_north_cw]
+Added parameter [/ekf_global/frequency]
+Added parameter [/ekf_global/sensor_timeout]
+Added parameter [/ekf_global/two_d_mode]
+Added parameter [/ekf_global/publish_tf]
+Added parameter [/ekf_global/transform_time_offset]
+Added parameter [/ekf_global/map_frame]
+Added parameter [/ekf_global/odom_frame]
+Added parameter [/ekf_global/base_link_frame]
+Added parameter [/ekf_global/world_frame]
+Added parameter [/ekf_global/odom0]
+Added parameter [/ekf_global/odom0_config]
+Added parameter [/ekf_global/odom0_differential]
+Added parameter [/ekf_global/odom0_queue_size]
+Added parameter [/ekf_global/odom1]
+Added parameter [/ekf_global/odom1_config]
+Added parameter [/ekf_global/odom1_differential]
+Added parameter [/ekf_global/odom1_queue_size]
+Added parameter [/ekf_global/odom1_pose_rejection_threshold]
+Added parameter [/ekf_global/odom1_twist_rejection_threshold]
+Added parameter [/ekf_global/odom2_config]
+Added parameter [/ekf_global/smooth_lagged_data]
+Added parameter [/ekf_global/history_length]
+Added parameter [/ekf_global/predict_to_current_time]
+Added parameter [/ekf_global/odom2]
+Added parameter [/ekf_global/odom2_differential]
+Added parameter [/ekf_global/odom2_queue_size]
+Added parameter [/ekf_global/odom2_pose_rejection_threshold]
+Added node of type [neupan_experiments/gps_always_projection.py] in namespace [/]
+Added node of type [robot_localization/ekf_localization_node] in namespace [/]
+[1mstarted roslaunch server http://nuc15:33849/[0m
+
+SUMMARY
+========
+
+PARAMETERS
+ * /ekf_global/base_link_frame: base_link
+ * /ekf_global/frequency: 30
+ * /ekf_global/history_length: 8.0
+ * /ekf_global/map_frame: map
+ * /ekf_global/odom0: /odometry/local
+ * /ekf_global/odom0_config: [True, True, Fals...
+ * /ekf_global/odom0_differential: True
+ * /ekf_global/odom0_queue_size: 10
+ * /ekf_global/odom1: /odometry/gps
+ * /ekf_global/odom1_config: [True, True, Fals...
+ * /ekf_global/odom1_differential: False
+ * /ekf_global/odom1_pose_rejection_threshold: 1000000.0
+ * /ekf_global/odom1_queue_size: 10
+ * /ekf_global/odom1_twist_rejection_threshold: 1000000.0
+ * /ekf_global/odom2: /experiments/gnss...
+ * /ekf_global/odom2_config: [False, False, Fa...
+ * /ekf_global/odom2_differential: False
+ * /ekf_global/odom2_pose_rejection_threshold: 1000000.0
+ * /ekf_global/odom2_queue_size: 10
+ * /ekf_global/odom_frame: odom
+ * /ekf_global/predict_to_current_time: True
+ * /ekf_global/publish_tf: True
+ * /ekf_global/sensor_timeout: 0.2
+ * /ekf_global/smooth_lagged_data: True
+ * /ekf_global/transform_time_offset: 0.0
+ * /ekf_global/two_d_mode: True
+ * /ekf_global/world_frame: map
+ * /gps_fix_to_map_odom/cadence_margin_sec: 0.3
+ * /gps_fix_to_map_odom/child_frame_id: base_link
+ * /gps_fix_to_map_odom/fix_topic: /gps/fix
+ * /gps_fix_to_map_odom/frame_id: map
+ * /gps_fix_to_map_odom/gga_period_sec: 0.05
+ * /gps_fix_to_map_odom/gnss_common_utc_verified: True
+ * /gps_fix_to_map_odom/gnss_transport_limit_sec: 4.0
+ * /gps_fix_to_map_odom/gps_time_clock_verified: auto
+ * /gps_fix_to_map_odom/gps_time_mode: measurement
+ * /gps_fix_to_map_odom/heading_rotation_deg: 90.0
+ * /gps_fix_to_map_odom/heading_source_is_north_cw: True
+ * /gps_fix_to_map_odom/heading_timeout_sec: 0.5
+ * /gps_fix_to_map_odom/heading_topic: /heading
+ * /gps_fix_to_map_odom/origin_lat: 23.0398
+ * /gps_fix_to_map_odom/origin_lon: 113.39002
+ * /gps_fix_to_map_odom/output_topic: /odometry/gps
+ * /gps_fix_to_map_odom/publish_rate: 30.0
+ * /gps_fix_to_map_odom/use_heading: True
+ * /gps_fix_to_map_odom/zero_altitude: True
+ * /rosdistro: noetic
+ * /rosversion: 1.15.14
+
+NODES
+  /
+    ekf_global (robot_localization/ekf_localization_node)
+    gps_fix_to_map_odom (neupan_experiments/gps_always_projection.py)
+
+[1mROS_MASTER_URI=http://127.0.0.1:44977[0m
+[1mprocess[gps_fix_to_map_odom-1]: started with pid [8393][0m
+[1mprocess[ekf_global-2]: started with pid [8394][0m
+PRIVATE_EKF_PASS: 3s late finite status=-1 GPS fused, Float heading fused, GPS dropout did not quality-stop; no vehicle nodes
+[ekf_global-2] killing on exit
+[gps_fix_to_map_odom-1] killing on exit

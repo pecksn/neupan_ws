@@ -1,0 +1,221 @@
+<launch>
+    <arg name="run_fast_lio_slam" default="true" />
+    <arg name="enable_livox_driver" default="true" />
+    <arg name="enable_rviz" default="true" />
+    <arg name="rviz_config" default="$(find teb_test)/rviz/teb_outdoor.rviz" />
+
+    <arg name="map_origin_lat" default="23.0398" />
+    <arg name="map_origin_lon" default="113.39002" />
+
+    <arg name="outdoor_ekf_tf_time_offset" default="0.0" />
+
+    <arg name="gps_port" default="/dev/wheeltec_gnss" />
+    <arg name="gps_baud" default="115200" />
+    <arg name="gps_frame" default="gps_link" />
+    <arg name="gps_offset_x" default="0.0" />
+    <arg name="gps_offset_y" default="0.0" />
+    <arg name="gps_offset_z" default="0.25" />
+    <arg name="gps_time_ref_source" default="gps" />
+    <arg name="gps_use_rmc" default="false" />
+    <arg name="gps_rotation" default="90.0" />
+    <arg name="gps_heading_source_is_north_cw" default="true" />
+    <arg name="gps_use_gnss_time" default="false" />
+    <arg name="use_global_ekf" default="false" />
+    <arg name="gps_map_projection_rate" default="30.0" />
+    <arg name="global_odom_heading_filter_window_sec" default="10.0" />
+
+    <arg name="align_map_odom_with_global_local" default="true" />
+    <arg name="map_odom_align_timeout" default="2.0" />
+    <arg name="map_odom_align_yaw_bias_deg" default="0.0" />
+    <arg name="map_odom_align_use_global_yaw" default="true" />
+
+    <arg name="osm_lookahead_dist" default="4.0" />
+    <arg name="strict_road_mode" default="true" />
+    <arg name="goal_snap_max_dist" default="50.0" />
+    <arg name="start_snap_max_dist" default="50.0" />
+    <arg name="outdoor_path_straight_spacing" default="2.5" />
+    <arg name="outdoor_path_turn_spacing" default="0.8" />
+    <arg name="outdoor_path_turn_angle_deg_low" default="8.0" />
+    <arg name="outdoor_path_turn_angle_deg_high" default="35.0" />
+    <arg name="outdoor_path_turn_dense_before" default="3.0" />
+    <arg name="outdoor_path_turn_dense_after" default="2.0" />
+    <arg name="outdoor_path_turn_recover_after" default="6.0" />
+    <arg name="outdoor_path_min_points" default="3" />
+    <arg name="osm_vector_map_line_width" default="0.25" />
+    <arg name="osm_vector_map_z" default="0.35" />
+    <arg name="osm_vector_map_alpha" default="1.0" />
+    <arg name="osm_path_point_marker_scale" default="0.85" />
+    <arg name="osm_path_line_marker_width" default="0.10" />
+    <arg name="osm_path_endpoint_marker_scale" default="1.35" />
+    <arg name="osm_snap_marker_scale" default="1.10" />
+    <arg name="osm_snap_link_marker_width" default="0.08" />
+    <arg name="osm_enable_right_lane_offset" default="true" />
+    <arg name="osm_respect_oneway" default="true" />
+    <arg name="osm_default_lane_width" default="3.0" />
+    <arg name="osm_default_road_width" default="6.0" />
+    <arg name="osm_right_lane_offset_ratio" default="0.25" />
+    <arg name="osm_max_right_lane_offset" default="0.0" />
+    <arg name="auto_set_initialpose" default="true" />
+    <arg name="publish_pose_markers" default="true" />
+    <arg name="publish_snap_debug_markers" default="true" />
+    <arg name="gps_marker_timeout" default="2.0" />
+    <arg name="gps_goal_marker_scale" default="1.4" />
+    <arg name="enable_gps_goal_bridge" default="true" />
+    <arg name="enable_system_log" default="true" />
+
+    <include file="$(find robot_base_driver)/launch/navigation_core.launch">
+        <arg name="outdoor_mode" value="true" />
+        <arg name="datum_lat" value="$(arg map_origin_lat)" />
+        <arg name="datum_lon" value="$(arg map_origin_lon)" />
+        <arg name="outdoor_ekf_tf_time_offset" value="$(arg outdoor_ekf_tf_time_offset)" />
+        <arg name="gps_port" value="$(arg gps_port)" />
+        <arg name="gps_baud" value="$(arg gps_baud)" />
+        <arg name="gps_frame" value="$(arg gps_frame)" />
+        <arg name="gps_time_ref_source" value="$(arg gps_time_ref_source)" />
+        <arg name="gps_use_rmc" value="$(arg gps_use_rmc)" />
+        <arg name="gps_rotation" value="$(arg gps_rotation)" />
+        <arg name="gps_heading_source_is_north_cw" value="$(arg gps_heading_source_is_north_cw)" />
+        <arg name="gps_use_gnss_time" value="$(arg gps_use_gnss_time)" />
+        <arg name="use_global_ekf" value="$(arg use_global_ekf)" />
+        <arg name="gps_map_projection_rate" value="$(arg gps_map_projection_rate)" />
+        <arg name="global_odom_heading_filter_window_sec" value="$(arg global_odom_heading_filter_window_sec)" />
+        <arg name="publish_static_map_odom_outdoor" value="false" if="$(arg align_map_odom_with_global_local)" />
+        <arg name="publish_static_map_odom_outdoor" value="true" unless="$(arg align_map_odom_with_global_local)" />
+        <arg name="publish_static_map_odom" value="false" />
+    </include>
+
+    <group if="$(arg align_map_odom_with_global_local)">
+        <group unless="$(arg use_global_ekf)">
+            <node pkg="robot_base_driver" type="map_odom_align_bridge.py" name="map_odom_align_bridge" output="screen">
+                <param name="global_topic" value="/odometry/global" />
+                <param name="local_topic" value="/odometry/local" />
+                <param name="parent_frame" value="map" />
+                <param name="child_frame" value="odom" />
+                <param name="timeout_sec" value="$(arg map_odom_align_timeout)" />
+                <param name="yaw_bias_deg" value="$(arg map_odom_align_yaw_bias_deg)" />
+                <param name="align_yaw_with_global" value="$(arg map_odom_align_use_global_yaw)" />
+                <param name="print_yaw_status" value="false" />
+            </node>
+        </group>
+    </group>
+
+    <node pkg="tf" type="static_transform_publisher" name="base_to_livox" args="0.1 0 0.35 0 0 0 base_link livox_frame 100" />
+    <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.1 0 0.35 0 0 0 base_link body 100" />
+    <node pkg="tf" type="static_transform_publisher" name="base_to_gps" args="$(arg gps_offset_x) $(arg gps_offset_y) $(arg gps_offset_z) 0 0 0 base_link $(arg gps_frame) 100" />
+    <node pkg="tf" type="static_transform_publisher" name="odom_to_camera_init" args="0 0 0 0 0 0 odom camera_init 100" />
+
+    <group if="$(arg enable_livox_driver)">
+        <include file="$(find livox_ros_driver2)/launch_ROS1/rviz_MID360.launch">
+            <arg name="rviz_enable" value="false" />
+            <arg name="msg_frame_id" value="livox_frame" />
+            <arg name="xfer_format" value="1" />
+        </include>
+    </group>
+
+    <group if="$(arg run_fast_lio_slam)">
+        <include file="$(find fast_lio)/launch/mapping_mid360.launch">
+            <arg name="rviz" value="false" />
+            <arg name="pcd_save_en" value="false" />
+        </include>
+    </group>
+
+    <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan" output="screen">
+        <remap from="cloud_in" to="/cloud_registered_body" />
+        <remap from="scan" to="/scan" />
+        <param name="target_frame" value="base_link" />
+        <param name="transform_tolerance" value="0.01" />
+        <param name="min_height" value="0.2" />
+        <param name="max_height" value="0.8" />
+        <param name="angle_min" value="-3.14159" />
+        <param name="angle_max" value="3.14159" />
+        <param name="angle_increment" value="0.0087" />
+        <param name="scan_time" value="0.1" />
+        <param name="range_max" value="30.0" />
+        <param name="range_min" value="0.4" />
+        <param name="use_inf" value="true" />
+    </node>
+
+    <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan_viz" output="screen">
+        <remap from="cloud_in" to="/cloud_registered_body" />
+        <remap from="scan" to="/scan_viz" />
+        <param name="target_frame" value="map" />
+        <param name="transform_tolerance" value="0.25" />
+        <param name="min_height" value="0.2" />
+        <param name="max_height" value="0.8" />
+        <param name="angle_min" value="-3.14159" />
+        <param name="angle_max" value="3.14159" />
+        <param name="angle_increment" value="0.0087" />
+        <param name="scan_time" value="0.1" />
+        <param name="range_max" value="30.0" />
+        <param name="range_min" value="0.4" />
+        <param name="use_inf" value="true" />
+    </node>
+
+    <node pkg="osm_map_handler" type="global_astar_node" name="outdoor_global_astar" output="screen">
+        <param name="default_lat" value="$(arg map_origin_lat)" />
+        <param name="default_lon" value="$(arg map_origin_lon)" />
+        <param name="lookahead_dist" value="$(arg osm_lookahead_dist)" />
+        <param name="strict_road_mode" value="$(arg strict_road_mode)" />
+        <param name="goal_snap_max_dist" value="$(arg goal_snap_max_dist)" />
+        <param name="start_snap_max_dist" value="$(arg start_snap_max_dist)" />
+        <param name="path_straight_spacing" value="$(arg outdoor_path_straight_spacing)" />
+        <param name="path_turn_spacing" value="$(arg outdoor_path_turn_spacing)" />
+        <param name="path_turn_angle_deg_low" value="$(arg outdoor_path_turn_angle_deg_low)" />
+        <param name="path_turn_angle_deg_high" value="$(arg outdoor_path_turn_angle_deg_high)" />
+        <param name="path_turn_dense_before" value="$(arg outdoor_path_turn_dense_before)" />
+        <param name="path_turn_dense_after" value="$(arg outdoor_path_turn_dense_after)" />
+        <param name="path_turn_recover_after" value="$(arg outdoor_path_turn_recover_after)" />
+        <param name="path_min_points" value="$(arg outdoor_path_min_points)" />
+        <param name="enable_right_lane_offset" value="$(arg osm_enable_right_lane_offset)" />
+        <param name="respect_oneway" value="$(arg osm_respect_oneway)" />
+        <param name="default_lane_width" value="$(arg osm_default_lane_width)" />
+        <param name="default_road_width" value="$(arg osm_default_road_width)" />
+        <param name="right_lane_offset_ratio" value="$(arg osm_right_lane_offset_ratio)" />
+        <param name="max_right_lane_offset" value="$(arg osm_max_right_lane_offset)" />
+        <param name="vector_map_line_width" value="$(arg osm_vector_map_line_width)" />
+        <param name="vector_map_z" value="$(arg osm_vector_map_z)" />
+        <param name="vector_map_alpha" value="$(arg osm_vector_map_alpha)" />
+        <param name="path_point_marker_scale" value="$(arg osm_path_point_marker_scale)" />
+        <param name="path_line_marker_width" value="$(arg osm_path_line_marker_width)" />
+        <param name="path_endpoint_marker_scale" value="$(arg osm_path_endpoint_marker_scale)" />
+        <param name="snap_marker_scale" value="$(arg osm_snap_marker_scale)" />
+        <param name="snap_link_marker_width" value="$(arg osm_snap_link_marker_width)" />
+        <param name="auto_set_initialpose" value="$(arg auto_set_initialpose)" />
+        <param name="publish_pose_markers" value="$(arg publish_pose_markers)" />
+        <param name="publish_snap_debug_markers" value="$(arg publish_snap_debug_markers)" />
+        <param name="gps_marker_timeout" value="$(arg gps_marker_timeout)" />
+    </node>
+
+    <node if="$(arg enable_gps_goal_bridge)" pkg="osm_map_handler" type="gps_goal_bridge.py" name="gps_goal_bridge" output="screen">
+        <param name="default_lat" value="$(arg map_origin_lat)" />
+        <param name="default_lon" value="$(arg map_origin_lon)" />
+        <param name="input_topic" value="/gps_goal_ll" />
+        <param name="output_topic" value="/move_base_simple/goal" />
+        <param name="marker_scale" value="$(arg gps_goal_marker_scale)" />
+    </node>
+
+    <node if="$(arg enable_system_log)" pkg="robot_base_driver" type="system_run_logger.py" name="system_run_logger" output="screen">
+        <param name="command_topic" value="/neupan_cmd_vel" />
+        <param name="label" value="system_run_teb" />
+        <param name="log_dir" value="/home/nuc/lxw/neupan_ws/tracker_logs" />
+        <param name="sample_rate" value="10.0" />
+        <param name="flush_interval" value="1.0" />
+        <param name="max_file_size_mb" value="256.0" />
+        <param name="timezone_offset_hours" value="8.0" />
+        <param name="print_to_screen" value="false" />
+    </node>
+
+    <node pkg="move_base" type="move_base" name="move_base" output="screen">
+        <remap from="cmd_vel" to="/neupan_cmd_vel" />
+        <rosparam file="$(find teb_test)/config/common_costmap.yaml" command="load" ns="global_costmap" />
+        <rosparam file="$(find teb_test)/config/common_costmap.yaml" command="load" ns="local_costmap" />
+        <rosparam file="$(find teb_test)/config/global_costmap.yaml" command="load" />
+        <rosparam file="$(find teb_test)/config/local_costmap.yaml" command="load" />
+        <rosparam file="$(find teb_test)/config/move_base.yaml" command="load" />
+        <rosparam file="$(find teb_test)/config/teb_local_planner.yaml" command="load" />
+    </node>
+
+    <group if="$(arg enable_rviz)">
+        <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
+    </group>
+</launch>

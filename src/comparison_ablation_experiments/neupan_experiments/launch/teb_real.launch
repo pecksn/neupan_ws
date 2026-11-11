@@ -1,0 +1,4 @@
+<launch>
+  <node pkg="neupan_experiments" type="run_experiment.py" name="teb_real_experiment"
+        args="teb" output="screen" required="true" />
+</launch>

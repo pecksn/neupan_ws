@@ -1,0 +1,4 @@
+<launch>
+  <node pkg="neupan_experiments" type="run_experiment.py" name="neupan_reference_experiment"
+        args="neupan" output="screen" required="true" />
+</launch>

@@ -1,0 +1,108 @@
+output_directory: /home/nuc/lxw/neupan_ws/rosbags
+bag_prefix: hybridnets_vehicle_data
+timezone_offset_hours: 8.0
+# 每次录制新建 rosbagYYYYMMDD_HHMMSS 子目录，与 vehicle_data.yaml 一致。
+session_subdirectory: true
+
+# 单个 bag 达到 2048 MB 后自动分包；分包仍保存在同一次录制的子目录中。
+split_size_mb: 2048
+compression: lz4
+buffer_size_mb: 1024
+chunk_size_kb: 768
+tcp_nodelay: true
+min_free_space_gb: 8.0
+disk_check_period_sec: 5.0
+
+required_topics:
+  - /livox/lidar
+  - /cloud_registered_body
+  - /camera/remote_image_raw  # GPU 板发送、NUC 解码后的实时彩色画面
+  - /camera/remote_camera_info
+  - /hybridnets/result_json
+  - /hybridnets/valid
+  - /tf
+
+topics:
+  - /scan
+  - /gnss/solution_status
+  - /gnss/serial_diagnostics
+  - /gnss/time_diagnostics
+  - /gps/projection_pairing
+  - /livox/lidar
+  - /livox/imu
+  - /cloud_registered_body
+  - /cloud_registered
+  - /Odometry
+  - /tf
+  - /tf_static
+  - /camera/remote_image_raw
+  - /camera/remote_camera_info
+  - /hybridnets/result_json
+  - /hybridnets/debug_image
+  - /hybridnets/valid
+  - /hybridnets/inference_hz
+  - /hybridnets/network_age_ms
+  - /hybridnets/frame_seq
+  - /hybridnets/confidence
+  - /hybridnets/left_boundary_valid
+  - /hybridnets/right_boundary_valid
+  - /hybridnets/intersection
+  - /hybridnets/capture_header
+  - /odom
+  - /gps/fix
+  - /heading
+  - /osm_global_path
+  - /osm_global_path_ll
+  - /gps_goal_ll
+  - /move_base_simple/goal
+  - /goal_arrived
+  - /osm_global_path_curb_refined
+  - /road_curb/status
+  - /camera_right/reference_path
+  - /camera_right/control_path
+  - /camera_right/status
+  - /camera_right/processing_health
+  - /cmd_vel/selected
+  - /cmd_vel/auto
+  - /vehicle/control_mode/status
+  - /vehicle/control_mode
+  - /vehicle/command_audit
+  - /cmd_vel_remote
+  - /neupan/runtime
+  - /hybridnets/timing_diagnostics
+  - /hybridnets/observations_json
+  - /neupan/failure
+  - /neupan/camera_path_guard
+  - /neupan/route_connection
+  - /neupan_initial_path
+  - /neupan_ref_state
+  - /neupan_plan
+  - /neupan/scan_health
+  - /gps_guard/status
+  - /lio_guard/status
+  - /localization_safe
+  - /odometry/local
+  - /odometry/global
+  - /odometry/gps
+  - /gnss/gpgga
+  - /odometry/lio_guarded
+  - /gps_guard/local_fault_event
+  - /motor/status
+  - /motor/alarm
+  - /neupan/resources
+  - /neupan/config_snapshot
+
+  # Experimental-only topics; production recorder configuration is unchanged.
+  - /experiments/gnss_heading
+  - /experiments/teb_cmd_raw
+  - /move_base/status
+  - /move_base/feedback
+  - /move_base/TebLocalPlannerROS/local_plan
+  - /move_base/TebLocalPlannerROS/global_plan
+  - /move_base/global_costmap/costmap
+  - /move_base/local_costmap/costmap
+
+# 实验专用复制配置，不修改主工程录包配置。
+record_all: false
+exclude_regex: ""
+

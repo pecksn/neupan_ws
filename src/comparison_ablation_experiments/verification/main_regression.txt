@@ -1,0 +1,54 @@
+.Localization unsafe: blocking planner command and holding stop
+................................................/home/nuc/lxw/NeuPAN/neupan/blocks/dune.py:136: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  self.model.load_state_dict(torch.load(self.abs_checkpoint_path, map_location=torch.device('cpu')))
+..............Localization safety stop: local odometry jump detected (local_origin_reset)
+.................................................................................................s............................................................Localization safety stop: local odometry jump detected (message_gap_2.000s)
+.................Localization Fixed conflict: 4.00m; AUTO held. Park, verify localization, restart localization/system and send a new route; no moving realignment.
+........Localization Fixed conflict: 4.00m; AUTO held. Park, verify localization, restart localization/system and send a new route; no moving realignment.
+.......................................................................................................................................................................system_run_logger: serialization failed: Object of type object is not JSON serializable
+.GPS guard: WAITING_FOR_GPS -> LOCAL_DEAD_RECKONING (low_precision_initialized; initialized=True)
+Low precision GPS start: fixed heading, coarse map position; uncorrected budget 100.0m / 600.0s; nonfixed runtime position=False
+.GPS guard: WAITING_FOR_GPS -> LOCAL_DEAD_RECKONING (low_precision_initialized; initialized=True)
+Low precision GPS start: fixed heading, coarse map position; uncorrected budget 100.0m / 600.0s; nonfixed runtime position=False
+GPS guard: WAITING_FOR_GPS -> LOCAL_DEAD_RECKONING (low_precision_initialized; initialized=True)
+Low precision GPS start: fixed heading, coarse map position; uncorrected budget 100.0m / 600.0s; nonfixed runtime position=False
+..GPS guard: WAITING_FOR_GPS -> LOCAL_DEAD_RECKONING (low_precision_initialized; initialized=True)
+Low precision GPS start: fixed heading, coarse map position; uncorrected budget 100.0m / 600.0s; nonfixed runtime position=False
+.GPS guard: WAITING_FOR_GPS -> LOCAL_DEAD_RECKONING (low_precision_initialized; initialized=True)
+Low precision GPS start: fixed heading, coarse map position; uncorrected budget 100.0m / 600.0s; nonfixed runtime position=False
+...GPS guard: WAITING_FOR_GPS -> LOCAL_DEAD_RECKONING (low_precision_initialized; initialized=True)
+Low precision GPS start: fixed heading, coarse map position; uncorrected budget 100.0m / 600.0s; nonfixed runtime position=False
+.GPS guard: WAITING_FOR_GPS -> LOCAL_DEAD_RECKONING (low_precision_initialized; initialized=True)
+Low precision GPS start: fixed heading, coarse map position; uncorrected budget 100.0m / 600.0s; nonfixed runtime position=False
+..GPS guard: WAITING_FOR_GPS -> LOCAL_DEAD_RECKONING (low_precision_initialized; initialized=True)
+Low precision GPS start: fixed heading, coarse map position; uncorrected budget 100.0m / 600.0s; nonfixed runtime position=False
+....................................P1 retained-log step: old 5.934696m -> anchored 0.050000m (0.05m limit)
+NRMP_CAPTURE {"snapshot": "neupan_failure_20261109_092926_wh84759k.npz", "backend": "CLARABEL", "status": "optimal", "max_hard_constraint_violation": 1.7053025658242404e-13, "returned_tensor_residual": 2.8675135240519012e-05, "returned_tensor_limit": 0.0001, "elapsed_sec": 0.08929144700005054}
+NRMP_CAPTURE {"snapshot": "neupan_failure_20261109_094004_nv8mwz13.npz", "backend": "CLARABEL", "status": "optimal", "max_hard_constraint_violation": 1.7053025658242404e-13, "returned_tensor_residual": 2.4759012774211442e-05, "returned_tensor_limit": 0.0001, "elapsed_sec": 0.026227008999740065}
+..down sample the obs points from 202 to 100
+FULL_PAN_CAPTURE {"snapshot": "neupan_failure_20261109_092926_wh84759k.npz", "checkpoint": "/home/nuc/lxw/neupan_ws/src/neupan_ros/example/lxw_car/model/acker_robot_default_7/model_5000.pth", "iterations": 2, "elapsed_sec": 0.16838480900014474, "first_native_action": [0.8692707419395447, 0.061938654631376266], "nrmp": {"backend": "CLARABEL", "status": "optimal", "max_hard_constraint_violation": 1.7053025658242404e-13, "returned_tensor_residual": 2.92968221629053e-05, "returned_tensor_limit": 0.0001, "elapsed_sec": 0.02873821899993345}}
+down sample the obs points from 115 to 100
+FULL_PAN_CAPTURE {"snapshot": "neupan_failure_20261109_094004_nv8mwz13.npz", "checkpoint": "/home/nuc/lxw/neupan_ws/src/neupan_ros/example/lxw_car/model/acker_robot_default_7/model_5000.pth", "iterations": 2, "elapsed_sec": 0.18727212500016321, "first_native_action": [0.832057535648346, 0.2779807448387146], "nrmp": {"backend": "CLARABEL", "status": "optimal", "max_hard_constraint_violation": 1.1368683772161603e-13, "returned_tensor_residual": 2.6791045513618883e-05, "returned_tensor_limit": 0.0001, "elapsed_sec": 0.023907058000077086}}
+/home/nuc/lxw/NeuPAN/neupan/blocks/dune.py:136: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  self.model.load_state_dict(torch.load(self.abs_checkpoint_path, map_location=torch.device('cpu')))
+.........................................................................s..................Cannot persist NeuPAN failure evidence: disk full
+Traceback (most recent call last):
+  File "/home/nuc/lxw/neupan_ws/src/Test/tests/test_reference_and_trajectory_safety.py", line 114, in test_failure_revokes_action_even_when_disk_write_fails
+    try: raise ValueError('solver failure')
+ValueError: solver failure
+.........Existing ROS master detected; leaving it untouched
+.Started independent ROS master; no vehicle nodes
+.....Existing video node/UDP 5000 owner; leaving it untouched
+.Started raw video only: UDP 5000 -> ROS image and /dev/video0
+ROS master changed/lost; reconnecting raw video
+Started raw video only: UDP 5000 -> ROS image and /dev/video0
+.Waiting for ROS master
+............................s................................................................................................................/opt/ros/noetic/lib/python3/dist-packages/rospy/core.py:205: DeprecationWarning: The 'warn' method is deprecated, use 'warning' instead
+  logfunc(msg, *args, **kwargs)
+PVTSLNA host arrival gap exceeds configured 0.400s; inspect /gnss/serial_diagnostics and actual serial output. This does not prove the receiver configuration is slow.
+Rejected GNSS solution status: Invalid PVTSLNA CRC32
+...............
+----------------------------------------------------------------------
+Ran 727 tests in 22.270s
+
+OK (skipped=3)

@@ -1,0 +1,4 @@
+<launch>
+  <node pkg="neupan_experiments" type="run_experiment.py" name="gps_always_experiment"
+        args="gps_always" output="screen" required="true" />
+</launch>

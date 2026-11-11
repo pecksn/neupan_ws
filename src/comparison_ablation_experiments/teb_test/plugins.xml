@@ -1,0 +1,8 @@
+<library path="lib/libosm_path_planner">
+  <class
+      name="teb_test/OSMPathPlanner"
+      type="teb_test::OSMPathPlanner"
+      base_class_type="nav_core::BaseGlobalPlanner">
+    <description>Passes move_base goals to osm_map_handler/global_astar_node and reuses /osm_global_path as the global plan.</description>
+  </class>
+</library>
