@@ -797,7 +797,8 @@ class neupan_core:
                     'reference_frame','localization_safe')}
                 solution = value.get('gnss_solution') or {}
                 summary['gnss_solution'] = {key: solution.get(key) for key in
-                    ('heading_type', 'receiver_heading_fixed', 'heading_fixed', 'heading_valid', 'clock_gate_reason')}
+                    ('position_type','position_fixed','heading_type','baseline_m','heading_satellites',
+                     'receiver_heading_fixed','heading_fixed','heading_valid','clock_gate_reason')}
                 self.localization_startup_status = (time.monotonic(), summary)
         except (ValueError, TypeError):
             pass  # Diagnostic-only; never changes localization authorization.
@@ -854,6 +855,7 @@ class neupan_core:
                 (status[1].get('diagnostic_summary') or {}).get('heading_type',(status[1].get('gnss_solution') or {}).get('heading_type','unknown')),
                 (status[1].get('latest_heading_health') or {}).get('valid',(status[1].get('gnss_solution') or {}).get('heading_valid')),now-status[0])
             headline=reason
+            simple_startup=False
             if status is not None:
                 summary=status[1].get('diagnostic_summary') or {}
                 detail+='; receiver_position_Fixed=%s receiver_heading_Fixed=%s transport=%ss limit=%ss late_mode=%s UTC_asserted=%s' % (
@@ -863,14 +865,29 @@ class neupan_core:
                 detail+='; initialized=%s phase=%s GGA=%s HDOP=%s cov=[%s,%s]' % (
                     status[1].get('initialized'),summary.get('phase','unknown'),
                     status[1].get('gga_quality'),status[1].get('hdop'),status[1].get('cov_x'),status[1].get('cov_y'))
+                pvt=summary.get('latest_pvt') or {}
                 source_stamp=status[1].get('stamp')
                 if (reason=='vehicle TF unavailable' and 0<=now-status[0]<=2.
                         and status[1].get('initialized') is False
                         and isinstance(source_stamp,(int,float))
                         and -.05<=rospy.Time.now().to_sec()-source_stamp<=2.
-                        and summary.get('phase')=='waiting_first_map_heading'):
-                    headline='waiting for first map heading (receiver heading not Fixed); '+reason
-            rospy.logwarn_throttle(0.,yellow_terminal_text('NeuPAN input STOP: %s%s; waiting for fresh stable inputs'),headline,detail)
+                        and str(summary.get('phase','')).startswith('waiting_')):
+                    if summary.get('startup_message'):
+                        headline=summary['startup_message']
+                        def readable(value,unit):
+                            return ('%.2f %s' % (value,unit)) if isinstance(value,(int,float)) and float('-inf')<value<float('inf') else 'n/a'
+                        received=pvt.get('receive_age_sec')
+                        if received is None:received=summary.get('solution_receive_age_sec')
+                        clock_text='error' if summary.get('clock_fault') else 'ready' if summary.get('clock_ready') is True else 'not ready'
+                        detail='baseline=%s, heading satellites=%s, measured %s ago, received %s ago, clock=%s' % (
+                            readable(summary.get('baseline_m'),'m'),
+                            summary.get('heading_satellites') if isinstance(summary.get('heading_satellites'),int) else 'n/a',
+                            readable(pvt.get('source_age_sec'),'s'),readable(received,'s'),clock_text)
+                        simple_startup=True
+                    elif summary.get('phase')=='waiting_first_map_heading':
+                        headline='waiting for first map heading (receiver heading not Fixed); '+reason
+            text='NeuPAN waiting for localization: %s | %s' if simple_startup else 'NeuPAN input STOP: %s%s; waiting for fresh stable inputs'
+            rospy.logwarn_throttle(0.,yellow_terminal_text(text),headline,detail)
             self.last_input_wait_reason=reason;self.last_input_wait_log=now
 
     def check_publication_inputs(self, checked_scan):

@@ -1798,19 +1798,55 @@ class GlobalOdomBridge:
         transport=(read_ns-source_ns)*1.e-9 if type(read_ns) is int and type(source_ns) is int else None
         receiver_fixed=solution.get('receiver_heading_fixed',solution.get('heading_fixed')) is True
         reason=(latest['reason'] if not latest['valid'] else health['reason'] if not health['valid'] else self.reason)
+        local_age=None if self.last_local_recv is None else (now-self.last_local_recv).to_sec()
+        local_ready=(self.last_local_odom is not None and local_age is not None
+                     and 0<=local_age<=self.data_timeout_sec and now>=self.local_bad_until)
+        position_text=('Position Fixed' if solution.get('position_fixed') is True else
+                       'Position quality unknown' if solution.get('position_fixed') is None else
+                       'Position not Fixed (%s)' % solution.get('position_type','unknown'))
+        heading_type=solution.get('heading_type','unknown')
+        heading_text=('heading unavailable (no solution)' if heading_type=='NONE' else
+                      'heading not fixed (Float)' if heading_type in ('NARROW_FLOAT','L1_FLOAT') else
+                      'heading not fixed')
         if not self.transform_initialized:
-            if solution.get('heading_geometry_valid') is False:
+            if gate.mode=='measurement' and (not gate.clock_ready or gate.fault):
+                phase='waiting_measurement_clock'
+            elif not solution:
+                phase='waiting_gnss_solution'
+            elif gate.mode=='measurement' and not latest['valid']:
+                phase='waiting_gnss_observation'
+            elif solution.get('heading_geometry_valid') is False:
                 phase='waiting_heading_geometry'
             elif not receiver_fixed:
                 phase='waiting_first_map_heading'
-            elif gate.mode=='measurement' and not gate.clock_ready:
-                phase='waiting_measurement_clock'
+            elif not health['valid']:
+                phase='waiting_heading_observation'
+            elif not local_ready:
+                phase='waiting_local_odometry'
             else:phase='waiting_initial_position_or_stability'
         elif not localization_safe:phase='localization_unsafe'
         else:phase={self.DEAD_RECKONING:'local_position_continuation',
                     self.POSITION_TRACKING:'position_only_correction',
                     self.TRACKING:'high_precision_tracking'}.get(self.mode,self.mode)
+        startup_message={
+            'waiting_measurement_clock':'GNSS time not confirmed; waiting for valid time evidence; '+position_text,
+            'waiting_gnss_solution':'Waiting for GNSS position and heading reports',
+            'waiting_gnss_observation':'Waiting for a fresh valid GNSS measurement; '+position_text,
+            'waiting_heading_geometry':position_text+'; heading baseline/geometry check failed; waiting for initial map heading',
+            'waiting_first_map_heading':position_text+'; '+heading_text+'; waiting for initial map heading',
+            'waiting_heading_observation':position_text+'; heading report invalid or old; waiting for initial map heading',
+            'waiting_local_odometry':'Waiting for fresh local odometry (LiDAR/wheel); '+position_text,
+            'waiting_initial_position_or_stability':'Waiting for initial position/stability check; '+position_text,
+        }.get(phase,'')
         return dict(phase=phase,reason=reason,guard_reason=self.reason,
+            startup_message=startup_message,position_type=solution.get('position_type'),
+            baseline_m=solution.get('baseline_m'),heading_satellites=solution.get('heading_satellites'),
+            clock_ready=gate.clock_ready,clock_wait_reason=gate.wait_reason,clock_fault=gate.fault,
+            local_odom_ready=bool(local_ready),local_odom_receive_age_sec=local_age,
+            solution_receive_age_sec=None if self.last_solution_recv is None else (now-self.last_solution_recv).to_sec(),
+            gga_diff_age_sec=None if self.last_gga is None else self.last_gga.diff_age,
+            gga_station_id=None if self.last_gga is None else self.last_gga.station_id,
+            diff_age_note='missing/zero alone does not certify RTCM health',
             position_reason=self.runtime_position_reason,
             initialized=self.transform_initialized,localization_safe=localization_safe,
             heading_type=solution.get('heading_type'),latest_pvt=latest,selected_heading=selected,
@@ -1926,6 +1962,16 @@ class GlobalOdomBridge:
             "yaw_frozen": bool(self.transform_initialized and self.mode in (self.DEAD_RECKONING, self.POSITION_TRACKING)),
         }
         self.status_pub.publish(String(data=json.dumps(payload, separators=(",", ":"))))
+        if self.print_status_to_screen and not self.transform_initialized:
+            def readable(value,unit):
+                return ('%.2f %s' % (value,unit)) if isinstance(value,(int,float)) and float('-inf')<value<float('inf') else 'n/a'
+            clock_text='error' if summary['clock_fault'] else 'ready' if summary['clock_ready'] else 'not ready'
+            received=summary['latest_pvt']['receive_age_sec']
+            if received is None:received=summary['solution_receive_age_sec']
+            rospy.loginfo_throttle(8.,'GPS waiting: %s | baseline=%s, heading satellites=%s, measured %s ago, received %s ago, clock=%s',
+                summary['startup_message'],readable(summary['baseline_m'],'m'),summary['heading_satellites'],
+                readable(summary['latest_pvt']['source_age_sec'],'s'),readable(received,'s'),clock_text)
+            return  # Only suppress the verbose diagnostic print below, not navigation.
         if self.print_status_to_screen:
             rospy.loginfo_throttle(
                 8.0,

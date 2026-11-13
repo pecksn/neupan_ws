@@ -19,11 +19,11 @@ def param(node, name, value):
 def compose(mode, workspace, navigation_file):
     if mode not in ('gps_always','teb','neupan'):raise ValueError('unknown experiment')
     root=ET.parse(workspace/'src/neupan_ros/example/lxw_car/launch/full_system_run.launch').getroot()
-    settings=dict(outdoor_mode='true',low_precision_startup='true',enable_rviz='false',
+    settings=dict(outdoor_mode='true',low_precision_startup='true',enable_rviz='true',
         enable_camera_right_path='false',enable_camera_right_control='false',
         enable_hybridnets_overlay='false',enable_system_log='true',gps_transport_limit_sec='4.0',
         gps_common_utc_verified='true',gps_raw_capture_sec='60',neupan_result_publish_timeout='0.60',
-        neupan_result_compute_timeout='0.50',max_forward_speed_mps='0.8',max_reverse_speed_mps='0.45')
+        neupan_result_compute_timeout='0.50',max_forward_speed_mps='1.5',max_reverse_speed_mps='1.5')
     if mode=='gps_always':settings.update(use_global_ekf='true',low_precision_startup='false')
     for name,value in settings.items():
         node=next(v for v in root.findall('arg') if v.get('name')==name)
