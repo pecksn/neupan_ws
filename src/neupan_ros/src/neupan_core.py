@@ -101,9 +101,9 @@ class neupan_core:
         )
         self.stop_on_scan_fault = bool(rospy.get_param("~stop_on_scan_fault", True))
         self.scan_timeout = max(0.1, float(rospy.get_param("~scan_timeout", 0.5)))
-        # A result-age candidate is distinct from CURRENT stream deadlines.
-        # Default remains the original scan deadline; 0.60 s is opt-in only.
-        self.result_publish_timeout=float(rospy.get_param('~result_publish_timeout',self.scan_timeout))
+        # Result source age is distinct from CURRENT stream deadlines.
+        # Keep the 0.60 s default consistent with production and experiments.
+        self.result_publish_timeout=float(rospy.get_param('~result_publish_timeout',.60))
         self.result_compute_timeout=float(rospy.get_param('~result_compute_timeout',.50))
         self.auto_command_timeout=float(rospy.get_param('~auto_command_timeout',.50))
         if (not np.isfinite([self.result_publish_timeout,self.result_compute_timeout,self.auto_command_timeout]).all()

@@ -168,7 +168,7 @@
     <!-- NeuPAN雷达失效保护：空旷全inf允许通过，scan/TF失效则停车。 -->
     <arg name="neupan_stop_on_scan_fault" default="true" />
     <arg name="neupan_scan_timeout" default="0.5" />
-    <arg name="neupan_result_publish_timeout" default="$(arg neupan_scan_timeout)" doc="结果快照发布源龄；0.60仅为显式实测候选，不改当前输入期限" />
+    <arg name="neupan_result_publish_timeout" default="0.60" doc="结果快照发布源龄上限；不改当前扫描、计算预算或命令超时" />
     <arg name="neupan_result_compute_timeout" default="0.50" doc="单轮准备到发布的总计算预算，最大0.50秒" />
     <arg name="neupan_scan_transform_timeout" default="0.5" />
     <arg name="neupan_scan_recovery_stable_sec" default="0.5" />

@@ -167,7 +167,7 @@ class LaunchBudgetTests(unittest.TestCase):
                 config=roslaunch.config.load_config_default([(str(path),args)],None,verbose=False)
                 params={k:v.value for k,v in config.params.items()}
                 values=lambda suffix:[v for k,v in params.items() if k.endswith(suffix)]
-                self.assertEqual(values('/result_publish_timeout'),[age or .5])
+                self.assertEqual(values('/result_publish_timeout'),[age or .6])
                 self.assertEqual(values('/result_compute_timeout'),[.5])
                 self.assertEqual(values('/auto_timeout'),[.5])
                 self.assertEqual(values('/auto_command_timeout'),[.5])
