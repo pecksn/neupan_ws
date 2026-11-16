@@ -403,6 +403,80 @@ class AlignmentContinuityTests(unittest.TestCase):
         node.alignment_status_cb(NS(data=data))
         return json.loads(data)
 
+    def completed_connection_consumer(self,node,guard,clock,frozen):
+        """Real native loaded path includes an already executed off-road prefix."""
+        from neupan.blocks.initial_path import InitialPath
+        ipath=InitialPath(10,.1,1.,NS(kinematics='acker',L=.67,max_speed=[1.,.35]))
+        prefix=np.array([[-2.,1.],[-1.,.5]])
+        ipath.set_initial_path([np.array([[x],[y],[0.],[1.]]) for x,y in np.vstack((prefix,frozen))])
+        ipath.point_index=42;ipath.arrive_flag=False
+        planner=NS(ipath=ipath,initial_path=ipath.initial_path,reset=Mock(),set_initial_path=Mock())
+        adapter=NS(camera_guard=guard,refresh_camera_hazard_scope=Mock(),
+            camera_guard_signature=None,camera_guard_last_state=None,camera_guard_last_publish=0.,
+            camera_guard_pub=NS(publish=Mock()),path_callback=Mock(return_value=True),
+            start_connector=NS(phase='following_route',prefix_count=2),neupan_planner=planner,
+            goal_arrived_state=False,arrive=False,waiting_for_new_goal=False,
+            pending_route_update=None,arrival_path_key=('map',node.path.header.stamp.to_nsec()),
+            reference_receipt=dict(selected_reference_version=node.reference_version,
+                loaded_endpoint_map=ipath.initial_path[-1][:2,0].tolist()))
+        source=ROOT/'src/neupan_ros/src/neupan_core.py'
+        cls=next(x for x in ast.parse(source.read_text()).body if isinstance(x,ast.ClassDef) and x.name=='neupan_core')
+        method=next(x for x in cls.body if isinstance(x,ast.FunctionDef) and x.name=='apply_camera_path_guard')
+        ns=dict(np=np,copy=copy,json=json,atan2=math.atan2,cos=math.cos,sin=math.sin,
+            time=NS(monotonic=lambda:clock[0]),String=lambda **kw:NS(**kw),
+            rospy=NS(Time=NS(now=lambda:stable.Stamp(clock[0])),logwarn_throttle=Mock(),logdebug=Mock()))
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
+        apply=ns['apply_camera_path_guard'].__get__(adapter)
+        self.assertTrue(apply());adapter.path_callback.reset_mock()
+        return adapter,apply
+
+    def test_gps_translation_corrects_vehicle_error_without_transporting_loaded_reference(self):
+        b,node,guard,clock,frozen,context=self.scene()
+        with context:
+            self.status(b,node,clock);node.tick(None)
+            adapter,apply=self.completed_connection_consumer(node,guard,clock,frozen)
+            local_vehicle=frozen[40]-[0.,1.]
+            loaded=adapter.neupan_planner.ipath.initial_path
+            original=np.array([p.copy() for p in loaded]);version=node.reference_version
+            entrance=n['planar_transform']([node.reference_transition_end_odom],node.map_anchor)[0]
+            self.assertAlmostEqual(np.linalg.norm(local_vehicle-loaded[42][:2,0]),1.)
+            # Existing gradual position-only recovery, without heading recovery.
+            for step in range(10):
+                clock[0]+=.1;node.safe_received=clock[0]
+                b.move_transform_toward((0.,1.,0.),.1,1.,math.radians(8))
+                self.status(b,node,clock);node.tick(None)
+                self.assertTrue(apply())
+                np.testing.assert_array_equal(np.array(loaded),original)
+                np.testing.assert_array_equal(node.frozen_reference_map,frozen)
+                np.testing.assert_allclose(n['planar_transform']([node.reference_transition_end_odom],node.map_anchor)[0],entrance)
+                selected=guard.select(clock[0])[0]
+                np.testing.assert_allclose([selected.poses[-1].pose.position.x,selected.poses[-1].pose.position.y],loaded[-1][:2,0])
+                self.assertEqual(node.reference_version,version)
+                self.assertEqual(adapter.neupan_planner.ipath.point_index,42)
+            vehicle_map=n['planar_transform']([local_vehicle],node.map_anchor)[0]
+            self.assertAlmostEqual(np.linalg.norm(vehicle_map-loaded[42][:2,0]),0.,places=9)
+            adapter.path_callback.assert_not_called();adapter.neupan_planner.reset.assert_not_called()
+            adapter.neupan_planner.set_initial_path.assert_not_called()
+            self.assertIsNone(adapter.pending_route_update)
+
+    def test_completed_connection_prefix_does_not_wait_during_position_and_heading_recovery(self):
+        b,node,guard,clock,frozen,context=self.scene()
+        with context:
+            self.status(b,node,clock);node.tick(None)
+            adapter,apply=self.completed_connection_consumer(node,guard,clock,frozen)
+            ipath=adapter.neupan_planner.ipath;loaded=np.array([p.copy() for p in ipath.initial_path])
+            adapter.goal_arrived_state=True;adapter.arrive=True;adapter.waiting_for_new_goal=True;ipath.arrive_flag=True
+            for step in range(20):
+                clock[0]+=.1;node.safe_received=clock[0]
+                b.move_transform_toward((1.,0.,math.radians(15)),.1,.5,math.radians(8))
+                self.status(b,node,clock);node.tick(None)
+                self.assertTrue(apply())
+                np.testing.assert_array_equal(np.array(ipath.initial_path),loaded)
+                self.assertEqual((ipath.curve_index,ipath.point_index),(0,42))
+                self.assertTrue(adapter.goal_arrived_state and adapter.arrive and adapter.waiting_for_new_goal and ipath.arrive_flag)
+            adapter.path_callback.assert_not_called();adapter.neupan_planner.reset.assert_not_called()
+            self.assertEqual(node.reference_version,1)
+
     def test_legal_point_eight_degree_recovery_keeps_reference_and_consumer_version(self):
         b,node,guard,clock,frozen,context=self.scene()
         with context:

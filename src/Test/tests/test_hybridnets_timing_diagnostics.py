@@ -12,6 +12,7 @@ import unittest
 import numpy as np
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'hybridnets_receiver/scripts'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'hybridnets_receiver/src'))
 from hybridnets_binding import ReceiverBinding
 
 ROOT = Path(__file__).resolve().parents[2]

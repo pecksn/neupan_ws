@@ -13,6 +13,8 @@ find_package(catkin REQUIRED COMPONENTS
   tf
 )
 
+catkin_python_setup()
+
 add_message_files(FILES
   MotorStatus.msg
 )
@@ -42,6 +44,5 @@ catkin_install_python(PROGRAMS
 
 # Imported helper: use a normal module, not a catkin executable relay (whose
 # exec context does not export classes when imported by another relay).
-configure_file(scripts/gnss_timebase.py
-  ${CATKIN_DEVEL_PREFIX}/${CATKIN_PACKAGE_BIN_DESTINATION}/gnss_timebase.py COPYONLY)
-install(FILES scripts/gnss_timebase.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+configure_file(src/gnss_timebase.py
+  ${CATKIN_DEVEL_PREFIX}/${CATKIN_GLOBAL_PYTHON_DESTINATION}/gnss_timebase.py COPYONLY)

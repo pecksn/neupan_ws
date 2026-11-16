@@ -88,6 +88,83 @@ def planar_transform(points, anchor, inverse=False):
     return (points-translation)@rotation if inverse else points@rotation.T+translation
 
 
+def capture_reference_gap_summary(reference_map,observation,packet,now_ns,camera_y=0.,max_age_ms=800.,localization_frame_key=None):
+    """Read-only evidence, never a reference selection or motion permission.
+
+    Compare the published map reference against ONE projected capture. Split
+    near/far support; no old cache, extrapolation, latest-TF fallback or claim
+    that forward reference clearance measures the vehicle's current tire gap.
+    """
+    def unknown(reason):
+        return dict(median_m=None,range_m=None,forward_range_m=None,support_length_m=0.,point_count=0,reason=reason)
+    report=dict(status='unknown',reason='current_capture_not_projected',time_basis='capture_time_tf',
+        coordinate_frame='capture_base_link',distance_reference='camera_center',camera_y_offset_m=float(camera_y),
+        reference_kind='producer_published_reference',used_cached_observations=False,used_for_control=False,
+        near=unknown('no_continuous_support_in_window'),far=unknown('no_continuous_support_in_window'),
+        nearest_continuous=unknown('no_continuous_support_in_window'),preferred_near_window_m=[2.,4.],
+        far_window_m=[4.,8.],diagnostic_support_policy=dict(min_points=3,min_span_m=.5,max_point_gap_m=1.))
+    if not isinstance(observation,dict) or not isinstance(packet,dict):return report
+    if observation.get('localization_frame_key')!=localization_frame_key:
+        report['reason']='localization_generation_mismatch';return report
+    identity=('capture_timestamp_ns','frame_seq','receiver_session_id','camera_time_epoch')
+    if any(observation.get(key)!=packet.get(key) for key in identity):
+        report['reason']='capture_identity_mismatch';return report
+    capture=observation.get('capture_timestamp_ns')
+    report.update(capture_timestamp_ns=capture,frame_seq=observation.get('frame_seq'),
+        receiver_session_fingerprint=hashlib.sha256(str(observation.get('receiver_session_id')).encode()).hexdigest()[:16],
+        camera_time_epoch=observation.get('camera_time_epoch'))
+    if type(capture) is not int or capture<=0 or not -50.e6<=now_ns-capture<=max_age_ms*1.e6:
+        report['reason']='capture_stale_or_future';return report
+    report['capture_age_ms']=(now_ns-capture)/1.e6
+    pose=observation.get('capture_pose_map');anchor=observation.get('capture_map_anchor')
+    if pose is None or anchor is None:
+        report['reason']='capture_tf_unavailable';return report
+    pose=np.asarray(pose,float)
+    if pose.shape!=(3,) or not np.isfinite(np.r_[pose,anchor[0],anchor[1]]).all():
+        report['reason']='capture_tf_unavailable';return report
+    report.update(capture_pose_map=pose.tolist(),capture_map_anchor=copy.deepcopy(anchor))
+    reference=planar_transform(np.asarray(reference_map,float),(pose[:2],pose[2]),True)
+    right=np.asarray(observation.get('right_base',[]),float)
+    if (reference.ndim!=2 or reference.shape[1]!=2 or len(reference)<2 or not np.isfinite(reference).all()
+            or right.ndim!=2 or right.shape[1]!=2 or len(right)<3 or not np.isfinite(right).all()
+            or np.any(np.diff(right[:,0])<=0)):
+        report['reason']='reference_or_current_boundary_invalid';return report
+    report['observed_forward_range_m']=[float(right[0,0]),float(right[-1,0])]
+    report['projected_boundary_point_count']=len(right)
+    edges=np.diff(reference,axis=0);valid=edges[:,0]>1.e-6
+    samples=[];ambiguous=0
+    for index,point in enumerate(right):
+        x=point[0]
+        hits=np.flatnonzero(valid&(reference[:-1,0]<=x+1.e-8)&(reference[1:,0]>=x-1.e-8))
+        if not len(hits):continue
+        fraction=np.clip((x-reference[hits,0])/edges[hits,0],0,1)
+        matches=reference[hits]+fraction[:,None]*edges[hits]
+        if np.max(np.linalg.norm(matches-matches[0],axis=1))>1.e-5:
+            ambiguous+=1;continue
+        i=hits[0];normal=np.array([-edges[i,1],edges[i,0]])/np.linalg.norm(edges[i])
+        samples.append((index,float(x),float((matches[0]-point)@normal+camera_y)))
+    report['ambiguous_boundary_points']=ambiguous
+    if not samples:
+        report['reason']='reference_branch_ambiguous_or_unsupported';return report
+    def continuous_stats(items):
+        if not items:return unknown('no_continuous_support_in_window')
+        splits=[i for i in range(1,len(items)) if items[i][0]!=items[i-1][0]+1 or items[i][1]-items[i-1][1]>1.]
+        runs=np.split(np.asarray(items,float),splits)
+        runs=[run for run in runs if len(run)>=3 and run[-1,1]-run[0,1]>=.5-1.e-9]
+        if not runs:return unknown('no_continuous_support_in_window')
+        run=min(runs,key=lambda r:r[0,1]);gaps=run[:,2]
+        return dict(median_m=float(np.median(gaps)),range_m=[float(gaps.min()),float(gaps.max())],
+            forward_range_m=[float(run[0,1]),float(run[-1,1])],support_length_m=float(run[-1,1]-run[0,1]),
+            point_count=len(run),reason=None,continuous_runs=len(runs),sample_basis='projected_boundary_vertices')
+    report['near']=continuous_stats([item for item in samples if 2.<=item[1]<=4.])
+    report['far']=continuous_stats([item for item in samples if 4.<item[1]<=8.])
+    report['nearest_continuous']=copy.deepcopy(report['near']) if report['near']['median_m'] is not None else continuous_stats(samples)
+    report['nearest_continuous']['outside_preferred_window']=report['near']['median_m'] is None
+    report.update(status='ok' if report['near']['median_m'] is not None and report['far']['median_m'] is not None else 'partial',
+        reason=None if report['nearest_continuous']['median_m'] is not None else 'no_continuous_reference_support')
+    return report
+
+
 class CorridorUnsafe(ValueError):
     """Known observed corridor cannot admit the actual delivered reference."""
 
@@ -1525,7 +1602,10 @@ class CameraRightPath:
             road=np.column_stack((x,ry))@np.array([[c,s],[-s,c]])+np.asarray(position[:2])
             self.raw_road_observation=dict(points_odom=planar_transform(road,self.capture_map_anchor,True),
                 capture_timestamp_ns=capture,receiver_session_id=p.get('receiver_session_id'),
-                camera_time_epoch=p.get('camera_time_epoch'))
+                camera_time_epoch=p.get('camera_time_epoch'),frame_seq=p.get('frame_seq'),
+                localization_frame_key=getattr(self,'alignment_frame_key',None),
+                capture_pose_map=[float(position[0]),float(position[1]),float(yaw)],
+                capture_map_anchor=copy.deepcopy(self.capture_map_anchor),right_base=curves[1].copy())
             history=getattr(self,'raw_road_observations',None)
             if history is None:self.raw_road_observations=history=deque(maxlen=32)
             if not any(item['capture_timestamp_ns']==capture for item in history):
@@ -1929,6 +2009,17 @@ class CameraRightPath:
             last_capture_timestamp_ns=None if event is None else event['last_capture'],
             source_key=None if event is None else event['source_key'],
             decision=diagnostic.get('reason'))
+        # Describe the evidence actually used by the UNCHANGED decision, not
+        # a promise that cached/mixed-distance support is this capture's road.
+        capture=(getattr(self,'packet',None) or {}).get('capture_timestamp_ns')
+        stamps=[geometry[i].get('capture_timestamp_ns') for i in local_keys if i in geometry]
+        stamps=[stamp for stamp in stamps if isinstance(stamp,int)]
+        diagnostic['decision_evidence']=dict(selection='existing_forward_route_cache_window',
+            near_far_split_used_for_control=False,used_points=len(stamps),
+            capture_frame_count=len(set(stamps)),oldest_capture_timestamp_ns=min(stamps) if stamps else None,
+            newest_capture_timestamp_ns=max(stamps) if stamps else None,
+            current_capture_point_count=sum(stamp==capture for stamp in stamps),
+            route_window_m=window.get('route_interval_m'))
         self.final_path_diagnostics=diagnostic
         self.applied=np.linalg.norm(candidate-points,axis=1)
         self.shift=float(np.max(self.applied))
@@ -2385,7 +2476,7 @@ class CameraRightPath:
                 route_frame_id=result.header.frame_id,control_enabled=self.control,
                 corridor_stop_required=True,corridor_verified=False,active=False,reason=reason,
                 hazard_regions=getattr(getattr(self,'hazards',None),'regions',{})))))
-        reference_gaps=[];current_gap=None;best_distance=math.inf
+        reference_gaps=[];current_gap=None;best_distance=math.inf;near_vehicle_candidates=0
         anchor=getattr(self,'map_anchor',None) or ([0.,0.],0.)
         for i,evidence in getattr(self,'cache_geometry',{}).items():
             if i>=len(delivered):continue
@@ -2398,12 +2489,26 @@ class CameraRightPath:
                 forward=np.array([normal[1],-normal[0]])
                 distance=abs(float((np.asarray(position)-right)@forward))
                 age_ns=rospy.Time.now().to_nsec()-evidence.get('capture_timestamp_ns',0)
+                if distance<=.3:near_vehicle_candidates+=1
                 if distance<=.3 and distance<best_distance and 0<=age_ns<=getattr(self,'max_capture_age_ms',800)*1.e6:
                     current_gap=float((np.asarray(position)-right)@normal+camera_y);best_distance=distance
         achieved=current_gap is not None and getattr(self,'clearance_min',1.)<=current_gap<=getattr(self,'clearance_max',2.)
         capture = packet.get('capture_timestamp_ns')
         capture_age = ((rospy.Time.now().to_nsec()-capture)/1.e6
                        if isinstance(capture, int) and capture > 0 else None)
+        try:
+            clearance_diagnostics=capture_reference_gap_summary(delivered,getattr(self,'raw_road_observation',None),
+                packet,rospy.Time.now().to_nsec(),float(getattr(self,'origin',np.zeros(3))[1]),
+                getattr(self,'max_capture_age_ms',800),getattr(self,'alignment_frame_key',None))
+        except Exception as error:
+            # Diagnostic failure may not change publication/control behavior.
+            clearance_diagnostics=dict(status='unknown',reason='diagnostic_error_'+type(error).__name__,used_for_control=False)
+        clearance_diagnostics.update(reference_path_digest=digest,control_distance_reference=getattr(self,'distance_reference','camera_center'))
+        missing_reason=(None if current_gap is not None else
+            'current_vehicle_position_unavailable' if getattr(self,'current_vehicle_position',None) is None else
+            'no_cached_boundary_geometry' if not getattr(self,'cache_geometry',{}) else
+            'no_boundary_within_0.3m_longitudinal_window' if not near_vehicle_candidates else
+            'near_vehicle_boundary_stale_or_future')
         inference_diagnostics = {
             'initial_reference':self.initial_reference_status(reason),
             'advisory_clearance_band_m':[getattr(self,'clearance_min',1.),getattr(self,'clearance_max',3.)],
@@ -2433,6 +2538,8 @@ class CameraRightPath:
             'selected_clearance_m':getattr(self,'selected_clearance',None),
             'target_achieved':bool(achieved),
             'current_camera_clearance_estimate_m':current_gap,
+            'current_camera_clearance_missing_reason':missing_reason,
+            'capture_reference_clearance':clearance_diagnostics,
             'reference_clearance_range_m':[min(reference_gaps),max(reference_gaps)] if reference_gaps else None,
             'constraint_version':1,
             'phase':'stopped' if getattr(self,'corridor_stop_required',False) else 'return_to_osm' if active and getattr(self,'final_path_diagnostics',{}).get('return_to_osm') else 'within_target' if achieved else 'transition' if active else 'osm_fallback',

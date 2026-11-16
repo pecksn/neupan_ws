@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT/'src/robot_base_driver/scripts'))
+sys.path.insert(0, str(ROOT/'src/robot_base_driver/src'))
 sys.path.insert(0, str(ROOT/'src/wheeltec_gps_driver/src'))
 from gnss_timebase import GnssTimebase
 from test_gnss_observation_time import NS, pvts, nmea, stamp

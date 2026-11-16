@@ -34,7 +34,7 @@ GNSS位置/航向/质量 → GPS投影 + 全局定位保护 → /odometry/global
 自动速度 / 云端遥控 → mux → /cmd_vel/selected → 底盘限幅与校验 → MCU
 ```
 
-主线默认 `use_global_ekf=false`，使用全局定位保护桥。相机靠右控制和路沿控制默认关闭；只有显式启用后，参考路径才走对应修正分支。室外局部掉头连接默认开启，但仅满足反向路线条件时触发，并非全程替代OSM规划。
+主线默认 `use_global_ekf=false`，使用全局定位保护桥。相机靠右控制默认关闭，只有显式启用后参考路径才走相机修正分支；雷达路缘检测及修正已移除。室外局部掉头连接默认开启，但仅满足反向路线条件时触发，并非全程替代OSM规划。
 
 ### 2.2 “跑完全程再停止”的准确含义
 
@@ -76,7 +76,6 @@ GNSS位置/航向/质量 → GPS投影 + 全局定位保护 → /odometry/global
 | `hybrid-a-star-annotation` | 共享C++车辆运动学搜索核心 | `hybrid_astar`包及其HYAS库 |
 | `neupan_ros` | 原生求解编排、参考装载、输入/数值校验与诊断 | `src/neupan_core.py`、`neupan_safety.py`、`neupan_navigation.py` |
 | `hybridnets_receiver` | 接收GPU视频与视觉结果JSON | `launch/receiver.launch` |
-| `lidar_curb_refinement` | 路沿检测及可选路径修正 | `road_curb_debug.launch` |
 | `usb_camera` / `FAST-Calib` | 相机输入、内外参及标定 | 各包config与launch |
 | `vehicle_bag_recorder` / `Test` | 数据记录、开环与离线回归 | 录包配置及tests目录 |
 
@@ -119,9 +118,9 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 
 旧 `outdoor_use_hybrid_astar` 是另一整段栅格分支，不等于局部掉头开关。
 
-### 5.3 相机与路沿
+### 5.3 相机道路参考
 
-路径选择优先级为相机控制路径、路沿修正路径、原始路径；同时开启多个开关不代表融合两个修正源。
+显式启用相机控制时选择相机控制路径，否则使用原始路径。雷达路缘修正分支已移除。
 
 相机控制默认关闭。启用后的默认`segment_reference`只为OSM提供粗略稳定参考，接受相机光学中心距右边界约1–3 m；范围内不持续追2 m。可靠单右边界可用，双侧缺失暂不生成新修正，保持同任务已接受参考，不默认回到零偏移OSM；尚无修正则明确标记未建立。普通参考边界/区域/形状失败不创建危险历史或停车，不进入旧视觉执行恢复合同。原生NeuPAN继续局部避障，已有独立真实危险保留并按其来源处理，不能由普通参考成功清空；旧`segment_cache`显式合同与普通主线分离。
 
@@ -147,7 +146,6 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 
 末点随参考修正的接口已同步：原OSM的`route_key()`和加密前`original_path_digest`仍绑定原任务；普通advisory候选验证原摘要、frame/stamp、候选摘要及版本，不再要求其末点等于原OSM。装载回执区分原末点、所选末点及装载末点，原生NeuPAN使用装载路径末点判断到达。同任务更新重新匹配几何位置，不把原弧长/索引生搬到新曲线；到达后排队或迟到更新不复位完成状态。只在已确认道路段内新增偏移，已知路口/不连续路段后保留原有下游参考，终点所在段按当地证据再评估，不将出发段偏移套用所有后续道路。软件离线验证不替代实车验收，1.1对齐误清参考已完成软件修复，待实车验证。
 
-路沿检测和路沿控制是两个开关；仅运行检测不改变NeuPAN路径。
 
 ## 6. 关键接口与车辆参数
 
@@ -230,7 +228,7 @@ OSM A*生成道路参考路线，NeuPAN根据当前位姿与障碍循环计算�
 
 | 文件/目录 | 含义及新增内容 | 普通室外运行关系 |
 | --- | --- | --- |
-| [launch/full_system_run.launch](src/neupan_ros/example/lxw_car/launch/full_system_run.launch) | 整车组合：定位、扫描转换、OSM、NeuPAN、mux、日志及可选相机/路沿；传入执行段和反馈参数 | 当前主入口。`outdoor_mode=true`且`outdoor_use_hybrid_astar=false`为本次审查主线 |
+| [launch/full_system_run.launch](src/neupan_ros/example/lxw_car/launch/full_system_run.launch) | 整车组合：定位、扫描转换、OSM、NeuPAN、mux、日志及可选相机；传入执行段和反馈参数 | 当前主入口。`outdoor_mode=true`且`outdoor_use_hybrid_astar=false`为本次审查主线 |
 | [launch/neupan_lxwcar.launch](src/neupan_ros/example/lxw_car/launch/neupan_lxwcar.launch) | 较早的本车组合，连接底盘、LIO、雷达、扫描与NeuPAN | 独立入口，不自动具备主入口的全部室外接线 |
 | [launch/neupan_lxwcar_norviz.launch](src/neupan_ros/example/lxw_car/launch/neupan_lxwcar_norviz.launch) | 较早的无RViz启动组合 | 同上，不与当前主线混用验收结论 |
 | [launch/outdoor_global_only_test.launch](src/neupan_ros/example/lxw_car/launch/outdoor_global_only_test.launch) | GNSS/全局路线跟踪诊断及可选NeuPAN的独立入口 | 专项测试入口，不是主线的别名 |

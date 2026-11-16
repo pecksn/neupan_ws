@@ -53,8 +53,6 @@ topics:
   - /gps_goal_ll
   - /move_base_simple/goal
   - /goal_arrived
-  - /osm_global_path_curb_refined
-  - /road_curb/status
   - /camera_right/reference_path
   - /camera_right/control_path
   - /camera_right/status

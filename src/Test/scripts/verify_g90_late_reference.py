@@ -13,6 +13,7 @@ from collections import Counter
 
 ROOT=Path(__file__).resolve().parents[3]
 sys.path[:0]=[str(ROOT/'src/robot_base_driver/scripts'),str(ROOT/'src/wheeltec_gps_driver/src')]
+sys.path.insert(0,str(ROOT/'src/robot_base_driver/src'))
 from gnss_timebase import GnssTimebase
 from libnmea_navsat_driver.observation_time import ObservationTiming
 

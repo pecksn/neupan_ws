@@ -3,6 +3,8 @@
 import copy
 import json
 import math
+import os
+import sys
 import statistics
 import threading
 import time
@@ -16,6 +18,8 @@ from sensor_msgs.msg import NavSatFix
 from nmea_msgs.msg import Gpgga
 from std_msgs.msg import Bool, String
 from tf.transformations import quaternion_from_euler
+# Also support direct execution from the source tree before a catkin build.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'src'))
 from gnss_timebase import GnssTimebase
 
 

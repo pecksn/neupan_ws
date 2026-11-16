@@ -7,10 +7,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-scripts = Path(__file__).resolve().parents[1]/'scripts'
-if not (scripts/'hybridnets_binding.py').exists():
-    scripts = Path(__file__).resolve().parents[2]/'hybridnets_receiver/scripts'
-sys.path.insert(0,str(scripts))
+modules = Path(__file__).resolve().parents[2]/'hybridnets_receiver/src'
+sys.path.insert(0,str(modules))
 from hybridnets_binding import ProducerAuthority, ReceiverBinding
 
 PEER=('192.168.10.21',12345)

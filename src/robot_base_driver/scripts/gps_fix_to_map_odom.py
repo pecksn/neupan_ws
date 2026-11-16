@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 
 import math
+import os
+import sys
 import json
 import time
 import threading
 import copy
 from collections import OrderedDict, Counter
+# Also support direct execution from the source tree before a catkin build.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'src'))
 from gnss_timebase import GnssTimebase
 
 import rospy

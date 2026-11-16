@@ -17,7 +17,7 @@ min_free_space_gb: 8.0
 disk_check_period_sec: 5.0
 
 # 这些话题必须在录制期间实际出现。缺失时录包仍继续，但终端会周期告警。
-# /cloud_registered_body 是路缘检测离线复现的核心点云；
+# /cloud_registered_body 保留定位/避障所需的去畸变点云；
 # /camera/image_raw 和 /camera/camera_info 用于回放后向 HybridNets 提供彩色图像及标定信息。
 required_topics:
   - /cloud_registered_body
@@ -29,7 +29,7 @@ required_topics:
   - /camera/camera_info
 
 topics:
-  # MID360 原始数据和 FAST-LIO 输出（路缘离线测试必须保留 cloud_registered_body）
+  # MID360 原始数据和 FAST-LIO 输出
   - /livox/lidar
   - /livox/imu
   - /cloud_registered_body
@@ -61,16 +61,10 @@ topics:
   - /scan
   - /osm_global_path
   - /osm_global_path_ll
-  - /osm_global_path_curb_refined
   - /move_base_simple/goal
   - /gps_goal_ll
   - /goal_arrived
   - /neupan_goal
-  - /road_curb/right_edge
-  - /road_curb/lateral_error
-  - /road_curb/status
-  - /road_curb/roi_cloud
-  - /road_curb/candidate_cloud
   - /cmd_vel/auto
   - /cmd_vel_remote
   - /cmd_vel/remote

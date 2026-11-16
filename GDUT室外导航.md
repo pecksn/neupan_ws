@@ -226,7 +226,7 @@ JSONL 除 10 Hz 快照外，直接保存原始自动指令、规划耗时、模�
 
 同时录制原视频和调试图会增加 bag 大小。仅在 NUC 本地相机调试时使用 `/camera/image_raw` 和 `/camera/camera_info`；不要与远程相机话题混用。
 
-## 1.4 Rosbag 离线路缘测试
+## 1.4 Rosbag 离线回放
 
 查看 bag 内容：
 
@@ -240,23 +240,12 @@ rosbag info /home/nuc/lxw/neupan_ws/rosbags/vehicle_data_*.bag
 roscore
 ```
 
-终端 2，启动路缘检测：
+终端 2，启用bag时间并回放：
 
 ```bash
 source /opt/ros/noetic/setup.bash
 source /home/nuc/lxw/neupan_ws/devel/setup.bash
 rosparam set use_sim_time true
-roslaunch lidar_curb_refinement road_curb_debug.launch \
-  start_path_refine:=true \
-  input_path_topic:=/osm_global_path \
-  output_path_topic:=/osm_global_path_curb_refined
-```
-
-终端 3，回放：
-
-```bash
-source /opt/ros/noetic/setup.bash
-source /home/nuc/lxw/neupan_ws/devel/setup.bash
 rosbag play --clock -d 2 /home/nuc/lxw/neupan_ws/rosbags/具体文件.bag
 ```
 
@@ -267,8 +256,7 @@ rosbag play --clock -d 2 /home/nuc/lxw/neupan_ws/rosbags/具体文件.bag
 rosbag play --clock --pause -r 0.5 /path/to/test.bag
 ```
 
-如果 bag 里已经包含 `/cloud_registered_body`，离线测试路缘时不需要再次运行 FAST-LIO；如果只
-录了 `/livox/lidar` 和 `/livox/imu`，则需要先启动 FAST-LIO，再播放原始数据。
+回放已有FAST-LIO输出时无需重复运行FAST-LIO；需要从原始雷达/IMU重算定位时，再启动对应处理节点。不要同时启动实车控制链。
 
 回放结束后恢复实时系统：
 
@@ -1769,37 +1757,11 @@ GGA 中 `gps_qual=4` 为位置固定解，`5` 为浮动解，`1` 为单点定位
 
 # 十二、道路视觉与相机
 
-当前主导航使用 MID360 避障、OSM 和 NeuPAN。GPU 板负责相机与 HybridNets 推理；NUC 接收视频和 JSON，可生成叠加图、输出 `/dev/video0` 并录包。雷达路缘与摄像头靠右控制均默认关闭；摄像头控制已提供显式开关，见下文“摄像头靠右控制”，尚未完成实车验收。
+当前主导航使用 MID360 避障、OSM 和 NeuPAN。GPU 板负责相机与 HybridNets 推理；NUC 接收视频和 JSON，可生成叠加图、输出 `/dev/video0` 并录包。雷达路缘检测及参考修正已移除；摄像头靠右控制默认关闭，已提供显式开关，见下文“摄像头靠右控制”，尚未完成实车验收。
 
-## 12.1 MID360 激光雷达路缘检测
+## 12.1 雷达与相机职责
 
-路缘检测相关包：
-
-| 路径 | 定位 | 是否直接用于当前 MID360 系统 |
-|---|---|---|
-| `src/lidar_curb_detection` | 上游固定扫描线算法参考源码 | 否；MID360 没有可直接套用的固定线束排列 |
-| `src/lidar_curb_refinement` | MID360 高程栅格检测、误差滤波、路径修正 | 是 |
-
-主要文件：
-
-| 文件 | 作用 |
-|---|---|
-| `lidar_curb_refinement/scripts/lidar_curb_node.py` | 从右前方点云检测连续高度台阶，输出右侧路缘和横向误差 |
-| `lidar_curb_refinement/scripts/path_refine_node.py` | 沿路径行驶方向的右法向量修正 OSM 路径 |
-| `lidar_curb_refinement/scripts/curb_run_logger.py` | 持续写入路缘状态、误差、边缘点和路径概况 |
-| `lidar_curb_refinement/launch/road_curb_debug.launch` | 单独检测及离线调试入口 |
-
-主要话题：
-
-| 话题 | 消息类型 | 作用 |
-|---|---|---|
-| `/cloud_registered_body` | `sensor_msgs/PointCloud2` | FAST-LIO 去畸变后的车体点云输入 |
-| `/road_curb/right_edge` | `geometry_msgs/PointStamped` | 检测到的右侧路缘代表点 |
-| `/road_curb/lateral_error` | `std_msgs/Float32` | 路径横向修正量 |
-| `/road_curb/status` | `std_msgs/String` | JSON 格式的有效性、置信度和拒绝原因 |
-| `/osm_global_path_curb_refined` | `nav_msgs/Path` | 供 NeuPAN 或直跟控制器使用的靠右路径 |
-
-录包和 rosbag 离线回放命令见 [1.3](#13-rosbag-一键录制) 和 [1.4](#14-rosbag-离线路缘测试)。
+MID360保留定位和障碍物检测职责，不再检测道路边界或生成路缘修正路径。道路右边界来自Jetson相机推理；NUC负责接收和相机参考修正。录包与回放见[1.3](#13-rosbag-一键录制)和[1.4](#14-rosbag-离线回放)。
 
 ## 12.2 USB Camera3、远程图像与 `/dev/video0`
 
@@ -2450,7 +2412,7 @@ roslaunch neupan_ros full_system_run.launch outdoor_mode:=true \
 rostopic echo /camera_right/status
 ```
 
-`active: true` 只表示产生视觉候选，不保证消费端已授权或实车间距达标；需同时核对`/neupan/camera_path_guard`和`/neupan/runtime`。`guidance_source: osm` 表示使用原路线，`reason`给出回退/停车原因。影子路径为`/camera_right/reference_path`，启用控制后NeuPAN的`/initial_path`接收`/camera_right/control_path`。无需开启绘图或RViz，不要同时启用`enable_lidar_curb_control`。
+`active: true` 只表示产生视觉候选，不保证消费端已授权或实车间距达标；需同时核对`/neupan/camera_path_guard`和`/neupan/runtime`。`guidance_source: osm` 表示使用原路线，`reason`给出回退/停车原因。影子路径为`/camera_right/reference_path`，启用控制后NeuPAN的`/initial_path`接收`/camera_right/control_path`。无需开启绘图或RViz。
 
 原视频由宿主机`neupan-remote-video.service`开机独立接收，Master由`neupan-ros-master.service`维持；退出NeuPAN不关闭原视频。整车默认`enable_hybridnets_video:=false`，`enable_hybridnets_receiver:=true`仍接收JSON。独立服务不启动推理处理、靠右节点、底盘或规划，GPU命令不变；`receiver.launch`默认也不重复启动视频。安装、停用和故障日志见[视频服务说明](src/hybridnets_receiver/README.md)。
 

@@ -5,6 +5,7 @@ import unittest
 import math
 from unittest.mock import patch,Mock
 sys.path.insert(0,str(Path(__file__).resolve().parents[3]/'src/robot_base_driver/scripts'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[3]/'src/robot_base_driver/src'))
 from test_gnss_observation_time import ObservationTiming,NS,pvts,stamp,nmea
 from gnss_timebase import GnssTimebase
 import test_gnss_measurement_contract as pipeline
