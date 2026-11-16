@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+# Module contract: Chassis serial I/O and motor telemetry boundary. Twist angular.z
+# follows the configured Ackermann steering-angle convention, not differential-drive yaw
+# rate.
+
 import rospy
 import tf
 from geometry_msgs.msg import Twist, Quaternion
@@ -6,7 +10,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, String
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from robot_base_driver.msg import MotorStatus
-import serial # 需要安装 pyserial
+import serial  # 需要安装 pyserial
 import math
 import re
 import json
@@ -62,10 +66,20 @@ def parse_motor_telemetry(line):
         states.append((code, text))
     return values, states
 
+
+# The driver is the hardware boundary: command units and serial framing must
+# match the chassis firmware. For this Ackermann interface angular.z represents
+# front-wheel steering angle in radians, not differential-drive yaw rate.
+# Telemetry and protection checks remain independent of the upstream planner.
+# Own chassis serial commands, telemetry parsing, and hardware-facing protection checks
+# independently of the upstream planner.
 class RobotBaseDriver:
     SPEED_DEAD_ZONE_MPS = 0.05
     MAX_STEERING_DEG = 25.0
 
+    # Validate hardware/vehicle limits, configure serial communication and ROS I/O, and
+    # initialize telemetry/watchdog state.
+    # Explicit rejection paths: ValueError.
     def __init__(self):
         rospy.init_node('robot_base_driver')
 
@@ -74,18 +88,26 @@ class RobotBaseDriver:
         self.baudrate = rospy.get_param('~baudrate', 115200)
         self.base_frame = rospy.get_param('~base_frame', 'base_link')
         self.odom_frame = rospy.get_param('~odom_frame', 'odom')
-        
+
         # 机器人运动学参数 (Ackermann)
-        self.wheelbase = rospy.get_param('~wheelbase', 0.67) # 轴距 (m)
+        self.wheelbase = rospy.get_param('~wheelbase', 0.67)  # 轴距 (m)
         # Validate before opening the serial port or installing callbacks.
         self.wheel_radius = self.positive_finite_parameter('wheel_radius', 0.1275)
-        self.max_forward_speed_mps = self.positive_finite_parameter('max_forward_speed_mps', 1.5)
-        self.max_reverse_speed_mps = self.positive_finite_parameter('max_reverse_speed_mps', 1.5)
+        self.max_forward_speed_mps = self.positive_finite_parameter(
+            'max_forward_speed_mps', 1.5
+        )
+        self.max_reverse_speed_mps = self.positive_finite_parameter(
+            'max_reverse_speed_mps', 1.5
+        )
         self.max_forward_wheel_speed = self.max_forward_speed_mps / self.wheel_radius
         self.max_reverse_wheel_speed = self.max_reverse_speed_mps / self.wheel_radius
-        if not all(math.isfinite(v) and v > 0.0 for v in (
-                self.max_forward_wheel_speed, self.max_reverse_wheel_speed)):
-            rospy.logfatal('Invalid wheel radius/speed limits: converted wheel limits must be finite and positive')
+        if not all(
+            math.isfinite(v) and v > 0.0
+            for v in (self.max_forward_wheel_speed, self.max_reverse_wheel_speed)
+        ):
+            rospy.logfatal(
+                'Invalid wheel radius/speed limits: converted wheel limits must be finite and positive'
+            )
             raise ValueError('wheel radius/speed limits cannot be represented in rad/s')
         self.enable_localization_safety_stop = rospy.get_param(
             '~enable_localization_safety_stop', False
@@ -98,7 +120,8 @@ class RobotBaseDriver:
         self.cmd_topic = rospy.get_param('~cmd_topic', '/neupan_cmd_vel')
         # Best-effort telemetry only: never use this publisher as a control gate.
         self.command_audit_pub = rospy.Publisher(
-            '/vehicle/command_audit', String, queue_size=100)
+            '/vehicle/command_audit', String, queue_size=100
+        )
 
         # 电机保护阈值（应按电机/控制器手册调整）
         self.motor_torque_limit = rospy.get_param('~motor_torque_limit', 7.0)
@@ -122,7 +145,9 @@ class RobotBaseDriver:
 
         if self.enable_localization_safety_stop:
             self.send_serial_command(0.0, 0.0, reasons=['startup_localization_hold'])
-            rospy.logwarn("Localization safety gate enabled; holding stop until localization is ready")
+            rospy.logwarn(
+                "Localization safety gate enabled; holding stop until localization is ready"
+            )
 
         # 订阅上层选定的最终速度指令
         rospy.Subscriber(self.cmd_topic, Twist, self.cmd_vel_callback)
@@ -130,7 +155,7 @@ class RobotBaseDriver:
             rospy.Subscriber(
                 self.localization_safety_topic, Bool, self.localization_safety_callback
             )
-        
+
         # 发布里程计
         self.odom_pub = rospy.Publisher('/odom', Odometry, queue_size=10)
         self.motor_status_pub = rospy.Publisher(
@@ -144,13 +169,13 @@ class RobotBaseDriver:
         )
         self.tf_broadcaster = tf.TransformBroadcaster()
         self.motor_alarm_pub.publish(Bool(data=False))
-        
+
         # 机器人状态
         self.x = 0.0
         self.y = 0.0
         self.th = 0.0
         self.last_time = rospy.Time.now()
-        
+
         # 里程计零点偏移,用于初始化
         self.offset_init = False
         self.offset_x = 0.0
@@ -162,6 +187,10 @@ class RobotBaseDriver:
         self.last_odom_stamp = None
         self.odom_speed_mps = 0.0
 
+    # Read a positive finite configuration value so invalid limits cannot enter hardware
+    # protection calculations.
+    # Inputs: name, default.
+    # Explicit rejection paths: ValueError.
     @staticmethod
     def positive_finite_parameter(name, default):
         raw = rospy.get_param('~' + name, default)
@@ -172,10 +201,14 @@ class RobotBaseDriver:
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError('must be finite and positive')
         except (TypeError, ValueError, OverflowError):
-            rospy.logfatal('Invalid ~%s=%r: expected a finite positive number', name, raw)
+            rospy.logfatal(
+                'Invalid ~%s=%r: expected a finite positive number', name, raw
+            )
             raise ValueError('invalid ~' + name)
         return value
 
+    # Check whether speed/steering control values are finite before serial encoding.
+    # Inputs: *values.
     @staticmethod
     def finite_controls(*values):
         try:
@@ -191,15 +224,19 @@ class RobotBaseDriver:
         转向 (Steering): deg
         """
         v = msg.linear.x
-        
+
         # 【修改】Neupan 直接输出的是转向角 (rad)
-        steering_angle = msg.angular.z 
+        steering_angle = msg.angular.z
         request = {'speed_mps': v, 'steering_rad': steering_angle}
         reasons = []
 
         if not self.finite_controls(v, steering_angle):
-            rospy.logwarn_throttle(2.0, 'Rejected non-finite Twist control: speed=%r m/s, steering=%r rad; sending stop',
-                                   v, steering_angle)
+            rospy.logwarn_throttle(
+                2.0,
+                'Rejected non-finite Twist control: speed=%r m/s, steering=%r rad; sending stop',
+                v,
+                steering_angle,
+            )
             self.send_serial_command(0.0, 0.0, request, ['non_finite_twist'])
             return
 
@@ -219,18 +256,24 @@ class RobotBaseDriver:
                 reasons.append('speed_limit')
             if bounded_steering != steering_angle:
                 reasons.append('steering_limit')
-            rospy.logwarn_throttle(2.0, 'Clamped Twist control: speed=%r -> %r m/s, steering=%r -> %r rad',
-                                   v, bounded_v, steering_angle, bounded_steering)
+            rospy.logwarn_throttle(
+                2.0,
+                'Clamped Twist control: speed=%r -> %r m/s, steering=%r -> %r rad',
+                v,
+                bounded_v,
+                steering_angle,
+                bounded_steering,
+            )
         v, steering_angle = bounded_v, bounded_steering
 
         # Preserve the existing speed dead zone and stationary steering reset.
         if abs(v) < self.SPEED_DEAD_ZONE_MPS:
-             if v != 0.0 or steering_angle != 0.0:
-                 reasons.append('speed_dead_zone')
-             v = 0.0
-             # 处于静止状态时，强制回正方向，避免原地左右摆头
-             steering_angle = 0.0
-        
+            if v != 0.0 or steering_angle != 0.0:
+                reasons.append('speed_dead_zone')
+            v = 0.0
+            # 处于静止状态时，强制回正方向，避免原地左右摆头
+            steering_angle = 0.0
+
         # 计算轮子转速 (rad/s)
         throttle = v / self.wheel_radius
 
@@ -240,6 +283,9 @@ class RobotBaseDriver:
         # 构造指令: CMD,<油门>,<转向>
         self.send_serial_command(throttle, steering_deg, request, reasons)
 
+    # Retain localization-safety evidence for the driver's existing command admission
+    # policy.
+    # Inputs: msg.
     def localization_safety_callback(self, msg):
         was_safe = self.localization_safe
         self.localization_safe = bool(msg.data)
@@ -249,6 +295,9 @@ class RobotBaseDriver:
         elif not was_safe and self.localization_safe:
             rospy.loginfo("Localization recovered; planner commands are enabled")
 
+    # Encode and send the admitted speed/steering command using the chassis serial
+    # protocol.
+    # Inputs: throttle, steering_deg (degrees), request, reasons.
     def send_serial_command(self, throttle, steering_deg, request=None, reasons=None):
         reasons = list(reasons or [])
         serial_input = {'wheel_rad_s': throttle, 'steering_deg': steering_deg}
@@ -257,17 +306,31 @@ class RobotBaseDriver:
         # Final defense also covers callers that bypass cmd_vel_callback.
         if not self.finite_controls(throttle, steering_deg):
             reasons.append('non_finite_serial_control')
-            rospy.logwarn_throttle(2.0, 'Rejected non-finite serial control: wheel=%r rad/s, steering=%r deg; sending stop',
-                                   throttle, steering_deg)
+            rospy.logwarn_throttle(
+                2.0,
+                'Rejected non-finite serial control: wheel=%r rad/s, steering=%r deg; sending stop',
+                throttle,
+                steering_deg,
+            )
             throttle, steering_deg = 0.0, 0.0
         else:
-            bounded_throttle = max(-self.max_reverse_wheel_speed,
-                                   min(self.max_forward_wheel_speed, throttle))
-            bounded_steering = max(-self.MAX_STEERING_DEG, min(self.MAX_STEERING_DEG, steering_deg))
+            bounded_throttle = max(
+                -self.max_reverse_wheel_speed,
+                min(self.max_forward_wheel_speed, throttle),
+            )
+            bounded_steering = max(
+                -self.MAX_STEERING_DEG, min(self.MAX_STEERING_DEG, steering_deg)
+            )
             if bounded_throttle != throttle or bounded_steering != steering_deg:
                 reasons.append('serial_limit')
-                rospy.logwarn_throttle(2.0, 'Clamped serial control: wheel=%r -> %r rad/s, steering=%r -> %r deg',
-                                       throttle, bounded_throttle, steering_deg, bounded_steering)
+                rospy.logwarn_throttle(
+                    2.0,
+                    'Clamped serial control: wheel=%r -> %r rad/s, steering=%r -> %r deg',
+                    throttle,
+                    bounded_throttle,
+                    steering_deg,
+                    bounded_steering,
+                )
             throttle, steering_deg = bounded_throttle, bounded_steering
             if abs(throttle) < self.SPEED_DEAD_ZONE_MPS / self.wheel_radius:
                 if throttle != 0.0 or steering_deg != 0.0:
@@ -294,7 +357,9 @@ class RobotBaseDriver:
                 written = self.serial.write(encoded)
                 status = 'written' if written == len(encoded) else 'short_write'
                 if status == 'short_write':
-                    rospy.logerr('Serial short write: %s/%d bytes', written, len(encoded))
+                    rospy.logerr(
+                        'Serial short write: %s/%d bytes', written, len(encoded)
+                    )
                 if self.print_sent_command:
                     rospy.loginfo_throttle(1, f"Send to MCU: {command.strip()}")
             except Exception as e:
@@ -302,31 +367,58 @@ class RobotBaseDriver:
                 rospy.logerr(f"Serial write failed: {e}")
         # Publish after the write. A ROS/logging failure must never suppress it.
         try:
+
+            # Extract the supported diagnostic values without allowing invalid telemetry
+            # numbers to masquerade as normal measurements.
+            # Inputs: values.
             def safe_values(values):
-                return {key: value if self.finite_controls(value) else repr(value)
-                        for key, value in values.items()}
-            self.command_audit_pub.publish(String(data=json.dumps({
-                'schema_version': 1, 'stamp': stamp,
-                'wall_stamp': time.time(), 'send_duration_ms': (time.monotonic()-started)*1000.0,
-                'source': 'twist' if request is not None else 'direct',
-                'command_topic': rospy.resolve_name(self.cmd_topic),
-                'request': safe_values(request) if request is not None else None,
-                'serial_input': safe_values(serial_input),
-                'reasons': reasons, 'protocol': command,
-                'wheel_rad_s': float(command.split(',')[1]),
-                'steering_deg': float(command.split(',')[2]),
-                'command_speed_mps': float(command.split(',')[1]) * self.wheel_radius,
-                'wheel_radius_m': self.wheel_radius,
-                'limits': {'forward_mps': self.max_forward_speed_mps,
-                           'reverse_mps': self.max_reverse_speed_mps,
-                           'steering_deg': self.MAX_STEERING_DEG,
-                           'dead_zone_mps': self.SPEED_DEAD_ZONE_MPS},
-                'write_status': status, 'expected_bytes': len(encoded),
-                'written_bytes': written, 'error': error,
-                'mcu_execution_confirmed': False,
-            }, allow_nan=False, separators=(',', ':'))))
+                return {
+                    key: value if self.finite_controls(value) else repr(value)
+                    for key, value in values.items()
+                }
+
+            self.command_audit_pub.publish(
+                String(
+                    data=json.dumps(
+                        {
+                            'schema_version': 1,
+                            'stamp': stamp,
+                            'wall_stamp': time.time(),
+                            'send_duration_ms': (time.monotonic() - started) * 1000.0,
+                            'source': 'twist' if request is not None else 'direct',
+                            'command_topic': rospy.resolve_name(self.cmd_topic),
+                            'request': (
+                                safe_values(request) if request is not None else None
+                            ),
+                            'serial_input': safe_values(serial_input),
+                            'reasons': reasons,
+                            'protocol': command,
+                            'wheel_rad_s': float(command.split(',')[1]),
+                            'steering_deg': float(command.split(',')[2]),
+                            'command_speed_mps': float(command.split(',')[1])
+                            * self.wheel_radius,
+                            'wheel_radius_m': self.wheel_radius,
+                            'limits': {
+                                'forward_mps': self.max_forward_speed_mps,
+                                'reverse_mps': self.max_reverse_speed_mps,
+                                'steering_deg': self.MAX_STEERING_DEG,
+                                'dead_zone_mps': self.SPEED_DEAD_ZONE_MPS,
+                            },
+                            'write_status': status,
+                            'expected_bytes': len(encoded),
+                            'written_bytes': written,
+                            'error': error,
+                            'mcu_execution_confirmed': False,
+                        },
+                        allow_nan=False,
+                        separators=(',', ':'),
+                    )
+                )
+            )
         except Exception as exc:
-            rospy.logwarn_throttle(5.0, 'Command audit publish failed (control unchanged): %s', exc)
+            rospy.logwarn_throttle(
+                5.0, 'Command audit publish failed (control unchanged): %s', exc
+            )
 
     def handle_motor_line(self, line):
         """解析带标签的左右电机扭矩、温度和状态。"""
@@ -337,7 +429,9 @@ class RobotBaseDriver:
             return
 
         left_torque, right_torque, left_mos, left_coil, right_mos, right_coil = values
-        (left_state_code, left_state_text), (right_state_code, right_state_text) = states
+        (left_state_code, left_state_text), (right_state_code, right_state_text) = (
+            states
+        )
         torque_peak = max(abs(left_torque), abs(right_torque))
         mos_peak = max(left_mos, right_mos)
         coil_peak = max(left_coil, right_coil)
@@ -348,17 +442,32 @@ class RobotBaseDriver:
         if right_state_code != '1':
             reasons.append("RIGHT state %s (%s)" % (right_state_code, right_state_text))
         if abs(left_torque) >= self.motor_torque_limit:
-            reasons.append("LEFT torque %.2f >= %.2f" % (abs(left_torque), self.motor_torque_limit))
+            reasons.append(
+                "LEFT torque %.2f >= %.2f" % (abs(left_torque), self.motor_torque_limit)
+            )
         if abs(right_torque) >= self.motor_torque_limit:
-            reasons.append("RIGHT torque %.2f >= %.2f" % (abs(right_torque), self.motor_torque_limit))
+            reasons.append(
+                "RIGHT torque %.2f >= %.2f"
+                % (abs(right_torque), self.motor_torque_limit)
+            )
         if left_mos >= self.motor_mos_temp_limit:
-            reasons.append("LEFT MOS temp %.1f >= %.1f C" % (left_mos, self.motor_mos_temp_limit))
+            reasons.append(
+                "LEFT MOS temp %.1f >= %.1f C" % (left_mos, self.motor_mos_temp_limit)
+            )
         if right_mos >= self.motor_mos_temp_limit:
-            reasons.append("RIGHT MOS temp %.1f >= %.1f C" % (right_mos, self.motor_mos_temp_limit))
+            reasons.append(
+                "RIGHT MOS temp %.1f >= %.1f C" % (right_mos, self.motor_mos_temp_limit)
+            )
         if left_coil >= self.motor_coil_temp_limit:
-            reasons.append("LEFT coil temp %.1f >= %.1f C" % (left_coil, self.motor_coil_temp_limit))
+            reasons.append(
+                "LEFT coil temp %.1f >= %.1f C"
+                % (left_coil, self.motor_coil_temp_limit)
+            )
         if right_coil >= self.motor_coil_temp_limit:
-            reasons.append("RIGHT coil temp %.1f >= %.1f C" % (right_coil, self.motor_coil_temp_limit))
+            reasons.append(
+                "RIGHT coil temp %.1f >= %.1f C"
+                % (right_coil, self.motor_coil_temp_limit)
+            )
 
         if reasons:
             alarm = True
@@ -405,12 +514,24 @@ class RobotBaseDriver:
         diagnostic.hardware_id = self.port
         diagnostic.level = DiagnosticStatus.ERROR if alarm else DiagnosticStatus.OK
         diagnostic.message = status.alarm_reason if alarm else 'OK'
-        names = ('left_torque', 'right_torque', 'left_mos_temperature',
-                 'left_coil_temperature', 'right_mos_temperature',
-                 'right_coil_temperature', 'left_state_code', 'left_state_text',
-                 'right_state_code', 'right_state_text')
-        diagnostic_data = values + [left_state_code, left_state_text,
-                                    right_state_code, right_state_text]
+        names = (
+            'left_torque',
+            'right_torque',
+            'left_mos_temperature',
+            'left_coil_temperature',
+            'right_mos_temperature',
+            'right_coil_temperature',
+            'left_state_code',
+            'left_state_text',
+            'right_state_code',
+            'right_state_text',
+        )
+        diagnostic_data = values + [
+            left_state_code,
+            left_state_text,
+            right_state_code,
+            right_state_text,
+        ]
         diagnostic.values = [
             KeyValue(key=name, value=str(value))
             for name, value in zip(names, diagnostic_data)
@@ -420,6 +541,8 @@ class RobotBaseDriver:
         array.status = [diagnostic]
         self.motor_diagnostics_pub.publish(array)
 
+    # Dispatch one received MCU line into the supported telemetry/odometry parsing path.
+    # Inputs: line.
     def handle_mcu_line(self, line):
         if line.startswith("MOTOR,"):
             self.handle_motor_line(line)
@@ -437,60 +560,95 @@ class RobotBaseDriver:
                 except ValueError:
                     rospy.logwarn("Invalid data format from MCU: %s", line)
 
+    # Convert parsed chassis odometry into the existing ROS odometry representation.
+    # Inputs: raw_x, raw_y, raw_heading_deg (degrees).
     def handle_odom(self, raw_x, raw_y, raw_heading_deg):
-                            raw_th = math.radians(raw_heading_deg)
+        raw_th = math.radians(raw_heading_deg)
 
-                            if not self.offset_init:
-                                self.offset_x = raw_x
-                                self.offset_y = raw_y
-                                self.offset_th = raw_th
-                                self.offset_init = True
+        if not self.offset_init:
+            self.offset_x = raw_x
+            self.offset_y = raw_y
+            self.offset_th = raw_th
+            self.offset_init = True
 
-                            dx = raw_x - self.offset_x
-                            dy = raw_y - self.offset_y
-                            c_th = math.cos(-self.offset_th)
-                            s_th = math.sin(-self.offset_th)
-                            self.x = dx * c_th - dy * s_th
-                            self.y = dx * s_th + dy * c_th
-                            self.th = raw_th - self.offset_th
+        dx = raw_x - self.offset_x
+        dy = raw_y - self.offset_y
+        c_th = math.cos(-self.offset_th)
+        s_th = math.sin(-self.offset_th)
+        self.x = dx * c_th - dy * s_th
+        self.y = dx * s_th + dy * c_th
+        self.th = raw_th - self.offset_th
 
-                            current_time = rospy.Time.now()
-                            if self.last_odom_stamp is not None:
-                                dt_odom = (current_time - self.last_odom_stamp).to_sec()
-                                if dt_odom > 1e-3:
-                                    ds = math.hypot(self.x - self.last_odom_x, self.y - self.last_odom_y)
-                                    self.odom_speed_mps = ds / dt_odom
-                            self.last_odom_x = self.x
-                            self.last_odom_y = self.y
-                            self.last_odom_stamp = current_time
+        current_time = rospy.Time.now()
+        if self.last_odom_stamp is not None:
+            dt_odom = (current_time - self.last_odom_stamp).to_sec()
+            if dt_odom > 1e-3:
+                ds = math.hypot(self.x - self.last_odom_x, self.y - self.last_odom_y)
+                self.odom_speed_mps = ds / dt_odom
+        self.last_odom_x = self.x
+        self.last_odom_y = self.y
+        self.last_odom_stamp = current_time
 
-                            quat = tf.transformations.quaternion_from_euler(0, 0, self.th)
-                            if rospy.get_param("~publish_tf", False):
-                                self.tf_broadcaster.sendTransform(
-                                    (self.x, self.y, 0), quat, current_time,
-                                    self.base_frame, self.odom_frame
-                                )
+        quat = tf.transformations.quaternion_from_euler(0, 0, self.th)
+        if rospy.get_param("~publish_tf", False):
+            self.tf_broadcaster.sendTransform(
+                (self.x, self.y, 0),
+                quat,
+                current_time,
+                self.base_frame,
+                self.odom_frame,
+            )
 
-                            odom = Odometry()
-                            odom.header.stamp = current_time
-                            odom.header.frame_id = self.odom_frame
-                            odom.child_frame_id = self.base_frame
-                            odom.pose.pose.position.x = self.x
-                            odom.pose.pose.position.y = self.y
-                            odom.pose.pose.orientation = Quaternion(*quat)
-                            odom.twist.twist.linear.x = 0.0
-                            odom.twist.twist.angular.z = 0.0
-                            odom.pose.covariance = [
-                                0.05, 0, 0, 0, 0, 0,
-                                0, 0.05, 0, 0, 0, 0,
-                                0, 0, 99999, 0, 0, 0,
-                                0, 0, 0, 99999, 0, 0,
-                                0, 0, 0, 0, 99999, 0,
-                                0, 0, 0, 0, 0, 0.05
-                            ]
-                            odom.twist.covariance = odom.pose.covariance
-                            self.odom_pub.publish(odom)
-                            self.last_time = current_time
+        odom = Odometry()
+        odom.header.stamp = current_time
+        odom.header.frame_id = self.odom_frame
+        odom.child_frame_id = self.base_frame
+        odom.pose.pose.position.x = self.x
+        odom.pose.pose.position.y = self.y
+        odom.pose.pose.orientation = Quaternion(*quat)
+        odom.twist.twist.linear.x = 0.0
+        odom.twist.twist.angular.z = 0.0
+        odom.pose.covariance = [
+            0.05,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.05,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            99999,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            99999,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            99999,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.05,
+        ]
+        odom.twist.covariance = odom.pose.covariance
+        self.odom_pub.publish(odom)
+        self.last_time = current_time
 
     def read_from_mcu(self):
         """
@@ -514,11 +672,14 @@ class RobotBaseDriver:
         except Exception as e:
             rospy.logwarn(f"Serial read error: {e}")
 
+    # Service serial reception and the driver's existing periodic protection behavior
+    # until shutdown.
     def run(self):
-        rate = rospy.Rate(20) # 20Hz
+        rate = rospy.Rate(20)  # 20Hz
         while not rospy.is_shutdown():
             self.read_from_mcu()
             rate.sleep()
+
 
 if __name__ == '__main__':
     try:

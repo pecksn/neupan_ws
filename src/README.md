@@ -31,6 +31,14 @@ OSM 公共模块直接平铺在 `osm_map_handler/src/`，不再创建内层同�
 
 业务节点计算并发布状态，`robot_base_driver/scripts/system_run_logger.py` 统一写入运行 JSONL；`vehicle_bag_recorder` 单独录制 ROS 话题。`Test/scripts/analyze_bridge_reference_log.py` 只离线分析已有日志，不新增常驻记录节点。
 
+## 业务代码格式与注释
+
+Python 使用根目录 `pyproject.toml` 的 Black 配置：4 空格缩进、88 字符目标行宽、Python 3.8 语法；本次保留字符串引号写法。C++ 使用根目录 `.clang-format`：4 空格缩进、88 字符目标行宽，不自动重排 include。不要对厂家/第三方目录执行全仓库批量排版。
+
+英文注释优先解释职责边界、坐标系及正负号、物理单位、源时间与接收时间、线程/锁约束、拒绝条件和回退原因；不把配置偏好写成强制控制保证，不把离线验证写成实车验收。已有协议字符串、日志字段、参数默认值与控制逻辑不随格式整理改变。
+
+2026-11-16 注释补全范围：自维护业务及实验入口的 45 个 Python 文件、4 个 C++ 文件和 5 个 Shell 文件。Python 共 598 个类/函数：保留 105 处已有文档，补充 493 处英文说明，包括嵌套辅助函数；每个文件均注明模块职责。C++ 补充类型/函数职责，Shell 注明执行环境、进程归属及副作用。仅纳入 Wheeltec 包中自维护的 4 个 GNSS 辅助模块，厂家实现、第三方依赖及测试文件不属于此次逐函数补注范围。逐文件覆盖清单和语法等价检查依据保存在 `tracker_logs/review_20261116/business_comments/coverage.json`。
+
 ## 编译和安全回归
 
 进入 `Neupan`、按 `e` 后，在 ROS1 `lxw` 环境执行：

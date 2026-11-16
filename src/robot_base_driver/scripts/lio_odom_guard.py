@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Module contract: Guard local LiDAR odometry against discontinuities using local-motion
+# evidence. Corrections preserve continuity; they do not prove absolute map position.
+
 
 import copy
 import json
@@ -16,6 +19,8 @@ class LioOdomGuard:
     TRACKING = "TRACKING"
     RECOVERING = "RECOVERING"
 
+    # Configure local-motion checks and recovery limits, then initialize continuity
+    # offsets and LiDAR/wheel odometry I/O.
     def __init__(self):
         rospy.init_node("lio_odom_guard")
 
@@ -60,8 +65,12 @@ class LioOdomGuard:
         self.published_samples = 0
 
         self.output_pub = rospy.Publisher(self.output_topic, Odometry, queue_size=20)
-        self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=2, latch=True)
-        self.healthy_pub = rospy.Publisher(self.healthy_topic, Bool, queue_size=2, latch=True)
+        self.status_pub = rospy.Publisher(
+            self.status_topic, String, queue_size=2, latch=True
+        )
+        self.healthy_pub = rospy.Publisher(
+            self.healthy_topic, Bool, queue_size=2, latch=True
+        )
         rospy.Subscriber(self.input_topic, Odometry, self.lio_cb, queue_size=50)
         rospy.Subscriber(self.wheel_topic, Odometry, self.wheel_cb, queue_size=50)
         rospy.Timer(rospy.Duration(self.status_period), self.status_timer)
@@ -75,16 +84,24 @@ class LioOdomGuard:
             math.degrees(self.max_yaw_rate),
         )
 
+    # Wrap a heading difference into the signed-pi interval before comparing
+    # orientations.
+    # Inputs: angle.
     @staticmethod
     def normalize_angle(angle):
         return math.atan2(math.sin(angle), math.cos(angle))
 
+    # Extract planar yaw in radians from a ROS quaternion; callers remain responsible
+    # for validating measurement provenance.
+    # Inputs: q.
     @staticmethod
     def yaw_from_quaternion(q):
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
+    # Extract the planar pose representation from the supplied ROS odometry message.
+    # Inputs: msg.
     @classmethod
     def pose_from_odom(cls, msg):
         pose = msg.pose.pose
@@ -99,13 +116,21 @@ class LioOdomGuard:
         )
         if not all(math.isfinite(value) for value in values):
             return None
-        return (pose.position.x, pose.position.y, cls.yaw_from_quaternion(pose.orientation))
+        return (
+            pose.position.x,
+            pose.position.y,
+            cls.yaw_from_quaternion(pose.orientation),
+        )
 
+    # Retain wheel-odometry evidence for local-motion consistency checks.
+    # Inputs: msg.
     def wheel_cb(self, msg):
         pose = self.pose_from_odom(msg)
         if pose is not None:
             self.last_wheel_pose = pose
 
+    # Evaluate a pose transition against the configured local-motion limits.
+    # Inputs: pose, sample_time.
     def assess_motion(self, pose, sample_time):
         self.speed = None
         self.lateral_speed = None
@@ -138,6 +163,8 @@ class LioOdomGuard:
             reasons.append("yaw_rate_{:.1f}deg_s".format(math.degrees(self.yaw_rate)))
         return not reasons, "ok" if not reasons else "+".join(reasons)
 
+    # Apply the retained planar continuity offset to an odometry pose.
+    # Inputs: raw_pose.
     def apply_offset(self, raw_pose):
         c = math.cos(self.offset_yaw)
         s = math.sin(self.offset_yaw)
@@ -147,6 +174,8 @@ class LioOdomGuard:
             self.normalize_angle(raw_pose[2] + self.offset_yaw),
         )
 
+    # Construct the wheel-supported target used by the existing continuity-recovery
+    # logic.
     def wheel_extrapolated_target(self):
         if self.output_anchor is None:
             return self.last_output_pose
@@ -167,6 +196,8 @@ class LioOdomGuard:
             self.normalize_angle(oyaw + self.normalize_angle(wyaw1 - wyaw0)),
         )
 
+    # Update the continuity offset from the observed local pose and selected target.
+    # Inputs: raw_pose, target_pose.
     def align_offset(self, raw_pose, target_pose):
         self.offset_yaw = self.normalize_angle(target_pose[2] - raw_pose[2])
         c = math.cos(self.offset_yaw)
@@ -175,6 +206,8 @@ class LioOdomGuard:
         self.offset_y = target_pose[1] - (s * raw_pose[0] + c * raw_pose[1])
         self.offset_initialized = True
 
+    # Publish local odometry with the currently selected continuity transform.
+    # Inputs: msg, output_pose.
     def publish_corrected(self, msg, output_pose):
         out = copy.deepcopy(msg)
         out.pose.pose.position.x = output_pose[0]
@@ -190,6 +223,8 @@ class LioOdomGuard:
         self.wheel_anchor = self.last_wheel_pose
         self.published_samples += 1
 
+    # Update guard state and its diagnostic transition reason.
+    # Inputs: mode, reason, now.
     def set_mode(self, mode, reason, now):
         changed = mode != self.mode or reason != self.reason
         self.mode = mode
@@ -201,6 +236,9 @@ class LioOdomGuard:
         else:
             rospy.logwarn("LIO guard rejected FAST-LIO: %s", reason)
 
+    # Evaluate one LiDAR odometry update, handle faults, and publish the supported
+    # corrected output.
+    # Inputs: msg.
     def lio_cb(self, msg):
         now = rospy.Time.now()
         sample_time = msg.header.stamp if msg.header.stamp != rospy.Time() else now
@@ -243,6 +281,8 @@ class LioOdomGuard:
         if self.reason in ("waiting_for_lio", "first_sample"):
             self.set_mode(self.TRACKING, "lio_ok", now)
 
+    # Build the local-odometry guard's status representation.
+    # Inputs: now.
     def status_payload(self, now):
         stable_sec = None
         if self.stable_since is not None:
@@ -255,7 +295,9 @@ class LioOdomGuard:
             "sample_dt": self.sample_dt,
             "speed_mps": self.speed,
             "lateral_speed_mps": self.lateral_speed,
-            "yaw_rate_deg_s": None if self.yaw_rate is None else math.degrees(self.yaw_rate),
+            "yaw_rate_deg_s": (
+                None if self.yaw_rate is None else math.degrees(self.yaw_rate)
+            ),
             "stable_sec": stable_sec,
             "rejected_samples": self.rejected_samples,
             "published_samples": self.published_samples,
@@ -270,9 +312,13 @@ class LioOdomGuard:
         ):
             payload[prefix + "_x"] = None if pose is None else pose[0]
             payload[prefix + "_y"] = None if pose is None else pose[1]
-            payload[prefix + "_yaw_deg"] = None if pose is None else math.degrees(pose[2])
+            payload[prefix + "_yaw_deg"] = (
+                None if pose is None else math.degrees(pose[2])
+            )
         return payload
 
+    # Publish current local-odometry health and reason fields on the diagnostic timer.
+    # Inputs: _event.
     def status_timer(self, _event):
         now = rospy.Time.now()
         payload = self.status_payload(now)

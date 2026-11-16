@@ -1,3 +1,7 @@
+// Module contract: OSM graph planning and map-frame reference publication. Geographic
+// coordinates are projected around the configured origin; graph connectivity and
+// occupancy evidence remain separate constraints.
+
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -30,11 +34,14 @@
 
 namespace pt = boost::property_tree;
 
+// Planar map point in metres, with x/y using the shared local geographic projection.
 struct XYPoint {
     double x{0.0};
     double y{0.0};
 };
 
+// Road-graph edge metadata retained for connectivity, direction, and road-width
+// decisions.
 struct EdgeInfo {
     std::string start_id;
     std::string end_id;
@@ -45,6 +52,7 @@ struct EdgeInfo {
     bool backward_allowed{true};
 };
 
+// Nearest supported graph projection and distance evidence for endpoint admission.
 struct SnapInfo {
     XYPoint point;
     double dist{std::numeric_limits<double>::infinity()};
@@ -57,10 +65,15 @@ struct SnapInfo {
     bool valid{false};
 };
 
+// Load the drivable OSM graph, admit task endpoints, and publish global/tracking
+// references plus diagnostic markers.
 class OSMGraphAStarPlanner {
-public:
+  public:
+    // Load the drivable OSM graph, admit task endpoints, and publish global/tracking
+    // references plus diagnostic markers.
     OSMGraphAStarPlanner() : private_nh_("~") {
-        private_nh_.param("osm_file", osm_file_, std::string("/home/nuc/lxw/ros_maps/map.osm"));
+        private_nh_.param("osm_file", osm_file_,
+                          std::string("/home/nuc/lxw/ros_maps/map.osm"));
         private_nh_.param("default_lat", origin_lat_, 23.0398);
         private_nh_.param("default_lon", origin_lon_, 113.39002);
         private_nh_.param("lookahead_dist", lookahead_dist_, 4.0);
@@ -76,12 +89,14 @@ public:
         private_nh_.param("path_turn_recover_after", path_turn_recover_after_, 6.0);
         private_nh_.param("path_min_points", path_min_points_, 3);
         private_nh_.param("cloud_path_simplify", cloud_path_simplify_, true);
-        private_nh_.param("cloud_path_simplify_tolerance", cloud_path_simplify_tolerance_, 0.10);
+        private_nh_.param("cloud_path_simplify_tolerance",
+                          cloud_path_simplify_tolerance_, 0.10);
         private_nh_.param("auto_set_initialpose", auto_set_initialpose_, true);
         private_nh_.param("initialpose_cov_xy", initialpose_cov_xy_, 2.0);
         private_nh_.param("initialpose_cov_yaw", initialpose_cov_yaw_, 0.25);
         private_nh_.param("publish_pose_markers", publish_pose_markers_, true);
-        private_nh_.param("publish_snap_debug_markers", publish_snap_debug_markers_, true);
+        private_nh_.param("publish_snap_debug_markers", publish_snap_debug_markers_,
+                          true);
         private_nh_.param("gps_marker_timeout", gps_marker_timeout_, 2.0);
         private_nh_.param("enable_right_lane_offset", enable_right_lane_offset_, false);
         private_nh_.param("respect_oneway", respect_oneway_, true);
@@ -94,25 +109,30 @@ public:
         private_nh_.param("vector_map_alpha", vector_map_alpha_, 1.0);
         private_nh_.param("path_point_marker_scale", path_point_marker_scale_, 0.85);
         private_nh_.param("path_line_marker_width", path_line_marker_width_, 0.10);
-        private_nh_.param("path_endpoint_marker_scale", path_endpoint_marker_scale_, 1.35);
+        private_nh_.param("path_endpoint_marker_scale", path_endpoint_marker_scale_,
+                          1.35);
         private_nh_.param("snap_marker_scale", snap_marker_scale_, 1.10);
         private_nh_.param("snap_link_marker_width", snap_link_marker_width_, 0.08);
 
         gps_marker_timeout_ = std::max(0.2, gps_marker_timeout_);
         path_straight_spacing_ = std::max(0.3, path_straight_spacing_);
-        path_turn_spacing_ = std::max(0.2, std::min(path_turn_spacing_, path_straight_spacing_));
+        path_turn_spacing_ =
+            std::max(0.2, std::min(path_turn_spacing_, path_straight_spacing_));
         vector_map_line_width_ = std::max(0.05, vector_map_line_width_);
         vector_map_alpha_ = std::max(0.0, std::min(1.0, vector_map_alpha_));
         path_turn_angle_low_rad_ = degToRad(path_turn_angle_deg_low_);
-        path_turn_angle_high_rad_ = degToRad(std::max(path_turn_angle_deg_low_, path_turn_angle_deg_high_));
+        path_turn_angle_high_rad_ =
+            degToRad(std::max(path_turn_angle_deg_low_, path_turn_angle_deg_high_));
         path_min_points_ = std::max(2, path_min_points_);
-        if (!std::isfinite(cloud_path_simplify_tolerance_) || cloud_path_simplify_tolerance_ < 0.0) {
+        if (!std::isfinite(cloud_path_simplify_tolerance_) ||
+            cloud_path_simplify_tolerance_ < 0.0) {
             ROS_WARN("Invalid cloud_path_simplify_tolerance; using 0.10m");
             cloud_path_simplify_tolerance_ = 0.10;
         }
         default_lane_width_ = std::max(1.5, default_lane_width_);
         default_road_width_ = std::max(default_lane_width_, default_road_width_);
-        right_lane_offset_ratio_ = std::max(0.0, std::min(0.5, right_lane_offset_ratio_));
+        right_lane_offset_ratio_ =
+            std::max(0.0, std::min(0.5, right_lane_offset_ratio_));
         max_right_lane_offset_ = std::max(0.0, max_right_lane_offset_);
         path_point_marker_scale_ = std::max(0.2, path_point_marker_scale_);
         path_line_marker_width_ = std::max(0.02, path_line_marker_width_);
@@ -120,42 +140,47 @@ public:
         snap_marker_scale_ = std::max(0.2, snap_marker_scale_);
         snap_link_marker_width_ = std::max(0.02, snap_link_marker_width_);
 
-        wheelable_ways_ = {
-            "primary", "secondary", "tertiary", "unclassified",
-            "residential", "service", "living_street", "trunk"
-        };
+        wheelable_ways_ = {"primary",     "secondary", "tertiary",      "unclassified",
+                           "residential", "service",   "living_street", "trunk"};
 
         path_pub_ = nh_.advertise<nav_msgs::Path>("/osm_global_path", 1, true);
         path_ll_pub_ = nh_.advertise<std_msgs::String>("/osm_global_path_ll", 1, true);
-        marker_pub_ = nh_.advertise<visualization_msgs::Marker>("/osm_vector_map", 1, true);
-        subgoal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/hybrid_astar_subgoal", 1);
-        initialpose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>("/initialpose", 1, true);
+        marker_pub_ =
+            nh_.advertise<visualization_msgs::Marker>("/osm_vector_map", 1, true);
+        subgoal_pub_ =
+            nh_.advertise<geometry_msgs::PoseStamped>("/hybrid_astar_subgoal", 1);
+        initialpose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>(
+            "/initialpose", 1, true);
 
         map_sub_ = nh_.subscribe("/map", 1, &OSMGraphAStarPlanner::mapCallback, this);
-        odom_sub_ = nh_.subscribe("/odometry/global", 1, &OSMGraphAStarPlanner::odomCallback, this);
-        gps_sub_ = nh_.subscribe("/gps/fix", 1, &OSMGraphAStarPlanner::gpsCallback, this);
-        goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &OSMGraphAStarPlanner::goalCallback, this);
-        clicked_point_sub_ = nh_.subscribe("/clicked_point", 1, &OSMGraphAStarPlanner::clickedPointCallback, this);
+        odom_sub_ = nh_.subscribe("/odometry/global", 1,
+                                  &OSMGraphAStarPlanner::odomCallback, this);
+        gps_sub_ =
+            nh_.subscribe("/gps/fix", 1, &OSMGraphAStarPlanner::gpsCallback, this);
+        goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1,
+                                  &OSMGraphAStarPlanner::goalCallback, this);
+        clicked_point_sub_ = nh_.subscribe(
+            "/clicked_point", 1, &OSMGraphAStarPlanner::clickedPointCallback, this);
 
         loadGraph();
         ROS_INFO(
-            "OSM C++ planner config: strict_road_mode=%s, start_snap_max_dist=%.2fm, goal_snap_max_dist=%.2fm, path_spacing=%.2f/%.2fm, right_lane_offset=%s (ratio=%.2f max=%.2fm), respect_oneway=%s",
-            strict_road_mode_ ? "true" : "false",
-            start_snap_max_dist_,
-            goal_snap_max_dist_,
-            path_straight_spacing_,
-            path_turn_spacing_,
-            enable_right_lane_offset_ ? "true" : "false",
-            right_lane_offset_ratio_,
-            max_right_lane_offset_,
-            respect_oneway_ ? "true" : "false");
+            "OSM C++ planner config: strict_road_mode=%s, start_snap_max_dist=%.2fm, "
+            "goal_snap_max_dist=%.2fm, path_spacing=%.2f/%.2fm, right_lane_offset=%s "
+            "(ratio=%.2f max=%.2fm), respect_oneway=%s",
+            strict_road_mode_ ? "true" : "false", start_snap_max_dist_,
+            goal_snap_max_dist_, path_straight_spacing_, path_turn_spacing_,
+            enable_right_lane_offset_ ? "true" : "false", right_lane_offset_ratio_,
+            max_right_lane_offset_, respect_oneway_ ? "true" : "false");
 
-        timer_ = nh_.createTimer(ros::Duration(0.1), &OSMGraphAStarPlanner::timerCallback, this);
-        ROS_INFO("Cloud path simplification: %s, tolerance=%.3fm; local tracking path unchanged",
-                 cloud_path_simplify_ ? "enabled" : "disabled", cloud_path_simplify_tolerance_);
+        timer_ = nh_.createTimer(ros::Duration(0.1),
+                                 &OSMGraphAStarPlanner::timerCallback, this);
+        ROS_INFO("Cloud path simplification: %s, tolerance=%.3fm; local tracking path "
+                 "unchanged",
+                 cloud_path_simplify_ ? "enabled" : "disabled",
+                 cloud_path_simplify_tolerance_);
     }
 
-private:
+  private:
     ros::NodeHandle nh_;
     ros::NodeHandle private_nh_;
     ros::Publisher path_pub_;
@@ -216,7 +241,8 @@ private:
 
     std::set<std::string> wheelable_ways_;
     std::unordered_map<std::string, XYPoint> nodes_;
-    std::unordered_map<std::string, std::vector<std::pair<std::string, double>>> adjacency_;
+    std::unordered_map<std::string, std::vector<std::pair<std::string, double>>>
+        adjacency_;
     std::vector<EdgeInfo> edges_;
     std::vector<XYPoint> current_path_;
     geometry_msgs::PoseStamped pending_goal_;
@@ -233,15 +259,17 @@ private:
     ros::Time last_gps_recv_;
     bool initialpose_sent_{false};
 
+    // Return Euclidean distance in metres between two planar points.
     static double hypot2d(double x1, double y1, double x2, double y2) {
         return std::hypot(x1 - x2, y1 - y2);
     }
 
-    static double degToRad(double deg) {
-        return deg * M_PI / 180.0;
-    }
+    // Convert degrees to radians before trigonometric geometry calculations.
+    static double degToRad(double deg) { return deg * M_PI / 180.0; }
 
-    static geometry_msgs::Point toRosPoint(const XYPoint& point, double z = 0.0) {
+    // Convert a planar map point into a ROS visualization point with the requested
+    // height.
+    static geometry_msgs::Point toRosPoint(const XYPoint &point, double z = 0.0) {
         geometry_msgs::Point ros_point;
         ros_point.x = point.x;
         ros_point.y = point.y;
@@ -249,12 +277,14 @@ private:
         return ros_point;
     }
 
-    double yawFromQuaternion(const geometry_msgs::Quaternion& q) const {
+    // Extract planar heading in radians from a ROS quaternion.
+    double yawFromQuaternion(const geometry_msgs::Quaternion &q) const {
         const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
         const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
         return std::atan2(siny_cosp, cosy_cosp);
     }
 
+    // Create a ROS quaternion from planar yaw in radians.
     geometry_msgs::Quaternion quaternionFromYaw(double yaw) const {
         geometry_msgs::Quaternion q;
         const double half = 0.5 * yaw;
@@ -263,32 +293,44 @@ private:
         return q;
     }
 
+    // Project latitude/longitude to local x/y metres using the configured geographic
+    // origin.
     XYPoint latLonToXY(double lat, double lon) const {
         // Must stay identical to robot_base_driver/src/gps_fix_to_map_odom.py.
         // OSM roads, GPS odometry, and global path tracking all share this map
         // projection; using navsat_transform for GPS introduced a stable
         // meter-level offset because it used a different odom/datum/yaw basis.
         XYPoint point;
-        point.x = (lon - origin_lon_) * (M_PI / 180.0) * earth_radius_ * std::cos(origin_lat_ * M_PI / 180.0);
+        point.x = (lon - origin_lon_) * (M_PI / 180.0) * earth_radius_ *
+                  std::cos(origin_lat_ * M_PI / 180.0);
         point.y = (lat - origin_lat_) * (M_PI / 180.0) * earth_radius_;
         return point;
     }
 
-    static double parsePositiveNumber(const std::string& value, double fallback = 0.0) {
+    // Parse a positive numeric road attribute, using the supplied fallback when the
+    // representation is unusable.
+    static double parsePositiveNumber(const std::string &value, double fallback = 0.0) {
         if (value.empty()) {
             return fallback;
         }
-        char* end = nullptr;
+        char *end = nullptr;
         const double parsed = std::strtod(value.c_str(), &end);
-        return (end != value.c_str() && std::isfinite(parsed) && parsed > 0.0) ? parsed : fallback;
+        return (end != value.c_str() && std::isfinite(parsed) && parsed > 0.0)
+                   ? parsed
+                   : fallback;
     }
 
-    static int parsePositiveInt(const std::string& value, int fallback = 0) {
+    // Parse a positive integer road attribute without accepting invalid/nonpositive
+    // values as valid road metadata.
+    static int parsePositiveInt(const std::string &value, int fallback = 0) {
         const double parsed = parsePositiveNumber(value, static_cast<double>(fallback));
-        return parsed > 0.0 ? std::max(1, static_cast<int>(std::lround(parsed))) : fallback;
+        return parsed > 0.0 ? std::max(1, static_cast<int>(std::lround(parsed)))
+                            : fallback;
     }
 
-    double fallbackRoadWidth(const std::string& highway) const {
+    // Estimate road width from the supported highway category when explicit usable
+    // width metadata is unavailable.
+    double fallbackRoadWidth(const std::string &highway) const {
         if (highway == "trunk" || highway == "primary") {
             return 10.5;
         }
@@ -304,24 +346,26 @@ private:
         return default_road_width_;
     }
 
+    // Read OSM nodes/ways and build the supported drivable graph with
+    // road-direction/width metadata.
     void loadGraph() {
         ROS_INFO("Filtering OSM for drivable roads: %s", osm_file_.c_str());
 
         pt::ptree tree;
         try {
             pt::read_xml(osm_file_, tree);
-        } catch (const std::exception& exc) {
+        } catch (const std::exception &exc) {
             ROS_ERROR("Failed to load OSM file %s: %s", osm_file_.c_str(), exc.what());
             return;
         }
 
         std::unordered_map<std::string, XYPoint> temp_nodes;
-        const auto& root = tree.get_child("osm");
-        for (const auto& child : root) {
+        const auto &root = tree.get_child("osm");
+        for (const auto &child : root) {
             if (child.first != "node") {
                 continue;
             }
-            const auto& attrs = child.second.get_child("<xmlattr>");
+            const auto &attrs = child.second.get_child("<xmlattr>");
             const std::string id = attrs.get<std::string>("id", "");
             const double lat = attrs.get<double>("lat", 0.0);
             const double lon = attrs.get<double>("lon", 0.0);
@@ -343,17 +387,17 @@ private:
         marker.pose.orientation.w = 1.0;
 
         int way_count = 0;
-        for (const auto& child : root) {
+        for (const auto &child : root) {
             if (child.first != "way") {
                 continue;
             }
 
             std::unordered_map<std::string, std::string> tags;
-            for (const auto& way_child : child.second) {
+            for (const auto &way_child : child.second) {
                 if (way_child.first != "tag") {
                     continue;
                 }
-                const auto& attrs = way_child.second.get_child("<xmlattr>");
+                const auto &attrs = way_child.second.get_child("<xmlattr>");
                 tags[attrs.get<std::string>("k", "")] = attrs.get<std::string>("v", "");
             }
 
@@ -379,20 +423,22 @@ private:
                 const bool roundabout = tags["junction"] == "roundabout";
                 if (oneway == "-1") {
                     forward_allowed = false;
-                } else if (oneway == "yes" || oneway == "true" || oneway == "1" || roundabout) {
+                } else if (oneway == "yes" || oneway == "true" || oneway == "1" ||
+                           roundabout) {
                     backward_allowed = false;
                 }
             }
 
             std::vector<std::string> refs;
-            for (const auto& way_child : child.second) {
+            for (const auto &way_child : child.second) {
                 if (way_child.first == "nd") {
-                    refs.push_back(way_child.second.get_child("<xmlattr>").get<std::string>("ref", ""));
+                    refs.push_back(way_child.second.get_child("<xmlattr>")
+                                       .get<std::string>("ref", ""));
                 }
             }
 
             for (size_t i = 0; i < refs.size(); ++i) {
-                const std::string& n1 = refs[i];
+                const std::string &n1 = refs[i];
                 if (temp_nodes.find(n1) == temp_nodes.end()) {
                     continue;
                 }
@@ -405,7 +451,7 @@ private:
                     continue;
                 }
 
-                const std::string& n2 = refs[i + 1];
+                const std::string &n2 = refs[i + 1];
                 if (temp_nodes.find(n2) == temp_nodes.end()) {
                     continue;
                 }
@@ -414,14 +460,16 @@ private:
                     adjacency_[n2] = {};
                 }
 
-                const double dist = hypot2d(temp_nodes[n1].x, temp_nodes[n1].y, temp_nodes[n2].x, temp_nodes[n2].y);
+                const double dist = hypot2d(temp_nodes[n1].x, temp_nodes[n1].y,
+                                            temp_nodes[n2].x, temp_nodes[n2].y);
                 if (forward_allowed) {
                     adjacency_[n1].push_back({n2, dist});
                 }
                 if (backward_allowed) {
                     adjacency_[n2].push_back({n1, dist});
                 }
-                edges_.push_back({n1, n2, dist, road_width, lanes, forward_allowed, backward_allowed});
+                edges_.push_back({n1, n2, dist, road_width, lanes, forward_allowed,
+                                  backward_allowed});
                 marker.points.push_back(toRosPoint(temp_nodes[n1], vector_map_z_));
                 marker.points.push_back(toRosPoint(temp_nodes[n2], vector_map_z_));
             }
@@ -429,21 +477,25 @@ private:
         }
 
         marker_pub_.publish(marker);
-        ROS_INFO("Drivable Graph loaded: %d ways, %zu nodes, %zu edges.", way_count, nodes_.size(), edges_.size());
+        ROS_INFO("Drivable Graph loaded: %d ways, %zu nodes, %zu edges.", way_count,
+                 nodes_.size(), edges_.size());
     }
 
-    void mapCallback(const nav_msgs::OccupancyGrid::ConstPtr& msg) {
+    // Retain occupancy-map evidence for the existing map checks.
+    void mapCallback(const nav_msgs::OccupancyGrid::ConstPtr &msg) {
         has_map_ = (msg->info.width > 0 && msg->info.height > 0);
     }
 
-    void odomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
+    // Retain vehicle pose evidence for endpoint projection and route visualization.
+    void odomCallback(const nav_msgs::Odometry::ConstPtr &msg) {
         robot_x_ = msg->pose.pose.position.x;
         robot_y_ = msg->pose.pose.position.y;
         robot_yaw_ = yawFromQuaternion(msg->pose.pose.orientation);
         has_odom_ = true;
     }
 
-    void gpsCallback(const sensor_msgs::NavSatFix::ConstPtr& msg) {
+    // Receive the GPS position evidence used by the configured start-position path.
+    void gpsCallback(const sensor_msgs::NavSatFix::ConstPtr &msg) {
         if (!std::isfinite(msg->latitude) || !std::isfinite(msg->longitude)) {
             return;
         }
@@ -457,10 +509,11 @@ private:
         has_gps_ = true;
     }
 
+    // Find the closest retained graph node to a planar query point.
     std::pair<std::string, double> findNearestNode(double x, double y) const {
         double min_dist = std::numeric_limits<double>::infinity();
         std::string closest;
-        for (const auto& node : nodes_) {
+        for (const auto &node : nodes_) {
             const double dist = hypot2d(node.second.x, node.second.y, x, y);
             if (dist < min_dist) {
                 min_dist = dist;
@@ -470,7 +523,10 @@ private:
         return {closest, min_dist};
     }
 
-    XYPoint projectPointToSegment(double x, double y, const XYPoint& a, const XYPoint& b, double& t) const {
+    // Project a planar query onto the bounded segment rather than its infinite
+    // supporting line.
+    XYPoint projectPointToSegment(double x, double y, const XYPoint &a,
+                                  const XYPoint &b, double &t) const {
         const double dx = b.x - a.x;
         const double dy = b.y - a.y;
         const double seg_len_sq = dx * dx + dy * dy;
@@ -483,11 +539,13 @@ private:
         return {a.x + t * dx, a.y + t * dy};
     }
 
+    // Find the nearest supported road-graph projection and retain its
+    // endpoint-admission distance.
     SnapInfo findNearestGraphPoint(double x, double y) const {
         SnapInfo best;
-        for (const auto& edge : edges_) {
-            const XYPoint& a = nodes_.at(edge.start_id);
-            const XYPoint& b = nodes_.at(edge.end_id);
+        for (const auto &edge : edges_) {
+            const XYPoint &a = nodes_.at(edge.start_id);
+            const XYPoint &b = nodes_.at(edge.end_id);
             double t = 0.0;
             const XYPoint projected = projectPointToSegment(x, y, a, b, t);
             const double dist = hypot2d(projected.x, projected.y, x, y);
@@ -522,9 +580,10 @@ private:
         return best;
     }
 
-    std::vector<std::string> reconstructNodePath(
-        const std::unordered_map<std::string, std::string>& came_from,
-        const std::string& goal_id) const {
+    // Reconstruct graph-node order from predecessor links after graph search.
+    std::vector<std::string>
+    reconstructNodePath(const std::unordered_map<std::string, std::string> &came_from,
+                        const std::string &goal_id) const {
         std::vector<std::string> path_ids{goal_id};
         std::string current = goal_id;
         while (came_from.find(current) != came_from.end()) {
@@ -535,11 +594,12 @@ private:
         return path_ids;
     }
 
-    std::pair<std::vector<std::string>, double> shortestNodePath(
-        const std::string& start_id,
-        const std::string& goal_id) const {
+    // Search the directed graph for a route between the selected graph nodes.
+    std::pair<std::vector<std::string>, double>
+    shortestNodePath(const std::string &start_id, const std::string &goal_id) const {
         using QueueItem = std::pair<double, std::string>;
-        std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> open_set;
+        std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>>
+            open_set;
         std::unordered_map<std::string, std::string> came_from;
         std::unordered_map<std::string, double> g_score;
         open_set.push({0.0, start_id});
@@ -557,13 +617,14 @@ private:
                 continue;
             }
 
-            for (const auto& neighbor : found->second) {
+            for (const auto &neighbor : found->second) {
                 const double tentative_g = g_score[current] + neighbor.second;
-                if (g_score.find(neighbor.first) == g_score.end() || tentative_g < g_score[neighbor.first]) {
+                if (g_score.find(neighbor.first) == g_score.end() ||
+                    tentative_g < g_score[neighbor.first]) {
                     came_from[neighbor.first] = current;
                     g_score[neighbor.first] = tentative_g;
-                    const XYPoint& goal = nodes_.at(goal_id);
-                    const XYPoint& node = nodes_.at(neighbor.first);
+                    const XYPoint &goal = nodes_.at(goal_id);
+                    const XYPoint &node = nodes_.at(neighbor.first);
                     const double h = hypot2d(goal.x, goal.y, node.x, node.y);
                     open_set.push({tentative_g + h, neighbor.first});
                 }
@@ -573,32 +634,39 @@ private:
         if (goal_id != start_id && came_from.find(goal_id) == came_from.end()) {
             return {{}, std::numeric_limits<double>::infinity()};
         }
-        const double total_cost = (g_score.find(goal_id) != g_score.end()) ? g_score[goal_id] : 0.0;
+        const double total_cost =
+            (g_score.find(goal_id) != g_score.end()) ? g_score[goal_id] : 0.0;
         return {reconstructNodePath(came_from, goal_id), total_cost};
     }
 
-    std::vector<XYPoint> dedupePathPoints(const std::vector<XYPoint>& path, double min_spacing = 1e-3) const {
+    // Remove consecutive degenerate path points while preserving route order.
+    std::vector<XYPoint> dedupePathPoints(const std::vector<XYPoint> &path,
+                                          double min_spacing = 1e-3) const {
         std::vector<XYPoint> compact;
-        for (const auto& point : path) {
+        for (const auto &point : path) {
             if (compact.empty()) {
                 compact.push_back(point);
                 continue;
             }
-            if (hypot2d(point.x, point.y, compact.back().x, compact.back().y) > min_spacing) {
+            if (hypot2d(point.x, point.y, compact.back().x, compact.back().y) >
+                min_spacing) {
                 compact.push_back(point);
             }
         }
         return compact;
     }
 
-    std::vector<XYPoint> buildGraphPath(const SnapInfo& start_snap, const SnapInfo& goal_snap) const {
-        const XYPoint& start = start_snap.point;
-        const XYPoint& goal = goal_snap.point;
+    // Join admitted start/goal projections to the graph route in travel order.
+    std::vector<XYPoint> buildGraphPath(const SnapInfo &start_snap,
+                                        const SnapInfo &goal_snap) const {
+        const XYPoint &start = start_snap.point;
+        const XYPoint &goal = goal_snap.point;
 
         std::vector<XYPoint> best_path;
         double best_cost = std::numeric_limits<double>::infinity();
 
-        if (start_snap.start_id == goal_snap.start_id && start_snap.end_id == goal_snap.end_id) {
+        if (start_snap.start_id == goal_snap.start_id &&
+            start_snap.end_id == goal_snap.end_id) {
             const bool direction_allowed =
                 (goal_snap.t >= start_snap.t && start_snap.forward_allowed) ||
                 (goal_snap.t < start_snap.t && start_snap.backward_allowed);
@@ -611,29 +679,35 @@ private:
         std::vector<std::pair<std::string, double>> start_candidates;
         std::vector<std::pair<std::string, double>> goal_candidates;
         if (start_snap.backward_allowed) {
-            start_candidates.push_back({start_snap.start_id, start_snap.t * start_snap.edge_len});
+            start_candidates.push_back(
+                {start_snap.start_id, start_snap.t * start_snap.edge_len});
         }
         if (start_snap.forward_allowed) {
-            start_candidates.push_back({start_snap.end_id, (1.0 - start_snap.t) * start_snap.edge_len});
+            start_candidates.push_back(
+                {start_snap.end_id, (1.0 - start_snap.t) * start_snap.edge_len});
         }
         if (goal_snap.forward_allowed) {
-            goal_candidates.push_back({goal_snap.start_id, goal_snap.t * goal_snap.edge_len});
+            goal_candidates.push_back(
+                {goal_snap.start_id, goal_snap.t * goal_snap.edge_len});
         }
         if (goal_snap.backward_allowed) {
-            goal_candidates.push_back({goal_snap.end_id, (1.0 - goal_snap.t) * goal_snap.edge_len});
+            goal_candidates.push_back(
+                {goal_snap.end_id, (1.0 - goal_snap.t) * goal_snap.edge_len});
         }
 
-        for (const auto& start_candidate : start_candidates) {
-            for (const auto& goal_candidate : goal_candidates) {
-                const auto result = shortestNodePath(start_candidate.first, goal_candidate.first);
+        for (const auto &start_candidate : start_candidates) {
+            for (const auto &goal_candidate : goal_candidates) {
+                const auto result =
+                    shortestNodePath(start_candidate.first, goal_candidate.first);
                 if (result.first.empty()) {
                     continue;
                 }
 
-                const double total_cost = start_candidate.second + result.second + goal_candidate.second;
+                const double total_cost =
+                    start_candidate.second + result.second + goal_candidate.second;
                 std::vector<XYPoint> candidate;
                 candidate.push_back(start);
-                for (const auto& node_id : result.first) {
+                for (const auto &node_id : result.first) {
                     candidate.push_back(nodes_.at(node_id));
                 }
                 candidate.push_back(goal);
@@ -649,14 +723,16 @@ private:
         return dedupePathPoints(best_path);
     }
 
-    double rightLaneOffsetAt(const XYPoint& point) const {
+    // Compute the optional road-width-based lateral offset at the queried map
+    // position.
+    double rightLaneOffsetAt(const XYPoint &point) const {
         double nearest_dist = std::numeric_limits<double>::infinity();
         double road_width = default_road_width_;
         int lanes = 0;
         bool one_way = false;
-        for (const auto& edge : edges_) {
-            const XYPoint& a = nodes_.at(edge.start_id);
-            const XYPoint& b = nodes_.at(edge.end_id);
+        for (const auto &edge : edges_) {
+            const XYPoint &a = nodes_.at(edge.start_id);
+            const XYPoint &b = nodes_.at(edge.end_id);
             double t = 0.0;
             const XYPoint projected = projectPointToSegment(point.x, point.y, a, b, t);
             const double dist = hypot2d(point.x, point.y, projected.x, projected.y);
@@ -670,19 +746,24 @@ private:
         if (one_way && lanes <= 1) {
             return 0.0;
         }
-        return std::min(max_right_lane_offset_, std::max(0.0, road_width * right_lane_offset_ratio_));
+        return std::min(max_right_lane_offset_,
+                        std::max(0.0, road_width * right_lane_offset_ratio_));
     }
 
-    std::vector<XYPoint> applyRightLaneOffset(const std::vector<XYPoint>& center_path) const {
-        if (!enable_right_lane_offset_ || center_path.size() < 2 || max_right_lane_offset_ <= 0.0) {
+    // Apply the configured OSM lane offset to the center path; this is separate from
+    // camera boundary refinement.
+    std::vector<XYPoint>
+    applyRightLaneOffset(const std::vector<XYPoint> &center_path) const {
+        if (!enable_right_lane_offset_ || center_path.size() < 2 ||
+            max_right_lane_offset_ <= 0.0) {
             return center_path;
         }
 
         std::vector<XYPoint> shifted;
         shifted.reserve(center_path.size());
         for (size_t i = 0; i < center_path.size(); ++i) {
-            const XYPoint& prev = center_path[i == 0 ? 0 : i - 1];
-            const XYPoint& next = center_path[i + 1 < center_path.size() ? i + 1 : i];
+            const XYPoint &prev = center_path[i == 0 ? 0 : i - 1];
+            const XYPoint &next = center_path[i + 1 < center_path.size() ? i + 1 : i];
             const double dx = next.x - prev.x;
             const double dy = next.y - prev.y;
             const double length = std::hypot(dx, dy);
@@ -691,14 +772,14 @@ private:
                 continue;
             }
             const double offset = rightLaneOffsetAt(center_path[i]);
-            shifted.push_back({
-                center_path[i].x + offset * dy / length,
-                center_path[i].y - offset * dx / length
-            });
+            shifted.push_back({center_path[i].x + offset * dy / length,
+                               center_path[i].y - offset * dx / length});
         }
         return dedupePathPoints(shifted);
     }
 
+    // Publish the configured initial-pose representation through the existing ROS
+    // initialization interface.
     void publishInitialpose() {
         geometry_msgs::PoseWithCovarianceStamped init;
         init.header.frame_id = "map";
@@ -706,7 +787,7 @@ private:
         init.pose.pose.position.x = robot_x_;
         init.pose.pose.position.y = robot_y_;
         init.pose.pose.orientation = quaternionFromYaw(robot_yaw_);
-        for (double& value : init.pose.covariance) {
+        for (double &value : init.pose.covariance) {
             value = 0.0;
         }
         init.pose.covariance[0] = initialpose_cov_xy_;
@@ -719,7 +800,8 @@ private:
         initialpose_sent_ = true;
     }
 
-    void publishMarkerDelete(const std::string& ns, int id) {
+    // Remove an obsolete visualization marker by namespace and identifier.
+    void publishMarkerDelete(const std::string &ns, int id) {
         visualization_msgs::Marker marker;
         marker.header.frame_id = "map";
         marker.header.stamp = ros::Time::now();
@@ -729,7 +811,8 @@ private:
         marker_pub_.publish(marker);
     }
 
-    void publishPoseMarkers(bool has_start, const XYPoint& start_xy) {
+    // Publish start/vehicle/task pose markers without altering the planned route.
+    void publishPoseMarkers(bool has_start, const XYPoint &start_xy) {
         if (!publish_pose_markers_) {
             return;
         }
@@ -776,7 +859,7 @@ private:
             path_points_marker.color.g = 0.55;
             path_points_marker.color.b = 0.05;
             path_points_marker.color.a = 0.92;
-            for (const auto& point : current_path_) {
+            for (const auto &point : current_path_) {
                 path_points_marker.points.push_back(toRosPoint(point, 0.55));
             }
             marker_pub_.publish(path_points_marker);
@@ -794,7 +877,7 @@ private:
             path_line_marker.color.g = 0.35;
             path_line_marker.color.b = 0.10;
             path_line_marker.color.a = 0.90;
-            for (const auto& point : current_path_) {
+            for (const auto &point : current_path_) {
                 path_line_marker.points.push_back(toRosPoint(point, 0.45));
             }
             marker_pub_.publish(path_line_marker);
@@ -844,15 +927,12 @@ private:
         publishCurrentSnapMarker();
     }
 
-    void publishSnapDebugMarkers(
-        bool has_raw_start,
-        const XYPoint& raw_start,
-        bool has_snap_start,
-        const XYPoint& snap_start,
-        bool has_raw_goal,
-        const XYPoint& raw_goal,
-        bool has_snap_goal,
-        const XYPoint& snap_goal) {
+    // Visualize raw endpoint locations and their graph projections for alignment
+    // diagnosis.
+    void publishSnapDebugMarkers(bool has_raw_start, const XYPoint &raw_start,
+                                 bool has_snap_start, const XYPoint &snap_start,
+                                 bool has_raw_goal, const XYPoint &raw_goal,
+                                 bool has_snap_goal, const XYPoint &snap_goal) {
         if (!publish_snap_debug_markers_) {
             return;
         }
@@ -863,7 +943,8 @@ private:
         start_marker.ns = "osm_snap";
         start_marker.id = 1101;
         start_marker.type = visualization_msgs::Marker::SPHERE;
-        start_marker.action = has_snap_start ? visualization_msgs::Marker::ADD : visualization_msgs::Marker::DELETE;
+        start_marker.action = has_snap_start ? visualization_msgs::Marker::ADD
+                                             : visualization_msgs::Marker::DELETE;
         if (has_snap_start) {
             start_marker.pose.position = toRosPoint(snap_start, 0.7);
             start_marker.pose.orientation.w = 1.0;
@@ -882,7 +963,8 @@ private:
         goal_marker.ns = "osm_snap";
         goal_marker.id = 1102;
         goal_marker.type = visualization_msgs::Marker::SPHERE;
-        goal_marker.action = has_snap_goal ? visualization_msgs::Marker::ADD : visualization_msgs::Marker::DELETE;
+        goal_marker.action = has_snap_goal ? visualization_msgs::Marker::ADD
+                                           : visualization_msgs::Marker::DELETE;
         if (has_snap_goal) {
             goal_marker.pose.position = toRosPoint(snap_goal, 0.7);
             goal_marker.pose.orientation.w = 1.0;
@@ -901,13 +983,16 @@ private:
         start_link.ns = "osm_snap";
         start_link.id = 1103;
         start_link.type = visualization_msgs::Marker::LINE_LIST;
-        start_link.action = (has_raw_start && has_snap_start) ? visualization_msgs::Marker::ADD : visualization_msgs::Marker::DELETE;
+        start_link.action = (has_raw_start && has_snap_start)
+                                ? visualization_msgs::Marker::ADD
+                                : visualization_msgs::Marker::DELETE;
         if (start_link.action == visualization_msgs::Marker::ADD) {
             start_link.scale.x = snap_link_marker_width_;
             start_link.color.g = 1.0;
             start_link.color.b = 1.0;
             start_link.color.a = 0.85;
-            start_link.points = {toRosPoint(raw_start, 0.35), toRosPoint(snap_start, 0.35)};
+            start_link.points = {toRosPoint(raw_start, 0.35),
+                                 toRosPoint(snap_start, 0.35)};
         }
         marker_pub_.publish(start_link);
 
@@ -917,17 +1002,21 @@ private:
         goal_link.ns = "osm_snap";
         goal_link.id = 1104;
         goal_link.type = visualization_msgs::Marker::LINE_LIST;
-        goal_link.action = (has_raw_goal && has_snap_goal) ? visualization_msgs::Marker::ADD : visualization_msgs::Marker::DELETE;
+        goal_link.action = (has_raw_goal && has_snap_goal)
+                               ? visualization_msgs::Marker::ADD
+                               : visualization_msgs::Marker::DELETE;
         if (goal_link.action == visualization_msgs::Marker::ADD) {
             goal_link.scale.x = snap_link_marker_width_;
             goal_link.color.r = 1.0;
             goal_link.color.b = 1.0;
             goal_link.color.a = 0.85;
-            goal_link.points = {toRosPoint(raw_goal, 0.35), toRosPoint(snap_goal, 0.35)};
+            goal_link.points = {toRosPoint(raw_goal, 0.35),
+                                toRosPoint(snap_goal, 0.35)};
         }
         marker_pub_.publish(goal_link);
     }
 
+    // Update the current vehicle-to-graph projection marker.
     void publishCurrentSnapMarker() {
         if (!publish_snap_debug_markers_) {
             return;
@@ -980,14 +1069,14 @@ private:
         link_marker.color.r = 1.0;
         link_marker.color.g = 0.55;
         link_marker.color.a = 0.85;
-        link_marker.points = {
-            toRosPoint({robot_x_, robot_y_}, 0.30),
-            toRosPoint(snap_info.point, 0.30)
-        };
+        link_marker.points = {toRosPoint({robot_x_, robot_y_}, 0.30),
+                              toRosPoint(snap_info.point, 0.30)};
         marker_pub_.publish(link_marker);
     }
 
-    double computeTurnAngle(const XYPoint& prev, const XYPoint& curr, const XYPoint& next) const {
+    // Compute the unsigned change in local path direction in radians.
+    double computeTurnAngle(const XYPoint &prev, const XYPoint &curr,
+                            const XYPoint &next) const {
         const double v1x = curr.x - prev.x;
         const double v1y = curr.y - prev.y;
         const double v2x = next.x - curr.x;
@@ -1002,6 +1091,7 @@ private:
         return std::acos(cos_theta);
     }
 
+    // Select configured path sampling spacing from the measured turn angle.
     double spacingFromTurnAngle(double angle_rad) const {
         if (angle_rad <= path_turn_angle_low_rad_) {
             return path_straight_spacing_;
@@ -1012,19 +1102,27 @@ private:
         const double ratio =
             (angle_rad - path_turn_angle_low_rad_) /
             std::max(1e-6, path_turn_angle_high_rad_ - path_turn_angle_low_rad_);
-        return path_straight_spacing_ + ratio * (path_turn_spacing_ - path_straight_spacing_);
+        return path_straight_spacing_ +
+               ratio * (path_turn_spacing_ - path_straight_spacing_);
     }
 
-    std::vector<double> computeCumulativeLengths(const std::vector<XYPoint>& path) const {
+    // Accumulate planar segment lengths in metres along the reference.
+    std::vector<double>
+    computeCumulativeLengths(const std::vector<XYPoint> &path) const {
         std::vector<double> cumulative;
         cumulative.push_back(0.0);
         for (size_t i = 1; i < path.size(); ++i) {
-            cumulative.push_back(cumulative.back() + hypot2d(path[i].x, path[i].y, path[i - 1].x, path[i - 1].y));
+            cumulative.push_back(cumulative.back() + hypot2d(path[i].x, path[i].y,
+                                                             path[i - 1].x,
+                                                             path[i - 1].y));
         }
         return cumulative;
     }
 
-    XYPoint interpolateAlongPath(const std::vector<XYPoint>& path, const std::vector<double>& cumulative, double target_s) const {
+    // Interpolate a planar point at the requested reference arclength.
+    XYPoint interpolateAlongPath(const std::vector<XYPoint> &path,
+                                 const std::vector<double> &cumulative,
+                                 double target_s) const {
         const double total_len = cumulative.back();
         if (target_s <= 0.0) {
             return path.front();
@@ -1040,21 +1138,23 @@ private:
                     return path[i];
                 }
                 const double ratio = (target_s - seg_start) / seg_len;
-                return {
-                    path[i - 1].x + ratio * (path[i].x - path[i - 1].x),
-                    path[i - 1].y + ratio * (path[i].y - path[i - 1].y)
-                };
+                return {path[i - 1].x + ratio * (path[i].x - path[i - 1].x),
+                        path[i - 1].y + ratio * (path[i].y - path[i - 1].y)};
             }
         }
         return path.back();
     }
 
+    // Arclength interval over which a detected turn affects path sampling density.
     struct TurnInfluence {
         double vertex_s;
         double dense_spacing;
     };
 
-    std::vector<TurnInfluence> buildTurnInfluences(const std::vector<XYPoint>& path, const std::vector<double>& cumulative) const {
+    // Build the arclength windows that require denser tracking samples around turns.
+    std::vector<TurnInfluence>
+    buildTurnInfluences(const std::vector<XYPoint> &path,
+                        const std::vector<double> &cumulative) const {
         std::vector<TurnInfluence> influences;
         if (path.size() <= 2) {
             return influences;
@@ -1070,9 +1170,12 @@ private:
         return influences;
     }
 
-    double spacingAtArcLength(double arc_s, const std::vector<TurnInfluence>& influences) const {
+    // Choose the sampling spacing at the requested arclength from active
+    // turn-influence windows.
+    double spacingAtArcLength(double arc_s,
+                              const std::vector<TurnInfluence> &influences) const {
         double spacing = path_straight_spacing_;
-        for (const auto& influence : influences) {
+        for (const auto &influence : influences) {
             const double dense_start = influence.vertex_s - path_turn_dense_before_;
             const double dense_end = influence.vertex_s + path_turn_dense_after_;
             const double recover_end = dense_end + path_turn_recover_after_;
@@ -1080,16 +1183,22 @@ private:
             double local_spacing = path_straight_spacing_;
             if (dense_start <= arc_s && arc_s <= dense_end) {
                 local_spacing = influence.dense_spacing;
-            } else if (dense_end < arc_s && arc_s < recover_end && path_turn_recover_after_ > 1e-6) {
+            } else if (dense_end < arc_s && arc_s < recover_end &&
+                       path_turn_recover_after_ > 1e-6) {
                 const double ratio = (arc_s - dense_end) / path_turn_recover_after_;
-                local_spacing = influence.dense_spacing + ratio * (path_straight_spacing_ - influence.dense_spacing);
+                local_spacing =
+                    influence.dense_spacing +
+                    ratio * (path_straight_spacing_ - influence.dense_spacing);
             }
             spacing = std::min(spacing, local_spacing);
         }
         return std::max(path_turn_spacing_, std::min(path_straight_spacing_, spacing));
     }
 
-    std::vector<XYPoint> resamplePathForTracking(const std::vector<XYPoint>& path) const {
+    // Resample the route with straight/turn spacing while retaining route geometry and
+    // ordering.
+    std::vector<XYPoint>
+    resamplePathForTracking(const std::vector<XYPoint> &path) const {
         std::vector<XYPoint> deduped = dedupePathPoints(path);
         if (deduped.size() < 2) {
             return deduped;
@@ -1101,7 +1210,8 @@ private:
             return deduped;
         }
 
-        const std::vector<TurnInfluence> influences = buildTurnInfluences(deduped, cumulative);
+        const std::vector<TurnInfluence> influences =
+            buildTurnInfluences(deduped, cumulative);
         std::vector<XYPoint> resampled;
         resampled.push_back(deduped.front());
 
@@ -1113,27 +1223,33 @@ private:
                 break;
             }
             const XYPoint point = interpolateAlongPath(deduped, cumulative, next_s);
-            if (hypot2d(point.x, point.y, resampled.back().x, resampled.back().y) > 0.05) {
+            if (hypot2d(point.x, point.y, resampled.back().x, resampled.back().y) >
+                0.05) {
                 resampled.push_back(point);
             }
             arc_s = next_s;
         }
 
-        if (resampled.size() < static_cast<size_t>(path_min_points_) && resampled.size() >= 2) {
+        if (resampled.size() < static_cast<size_t>(path_min_points_) &&
+            resampled.size() >= 2) {
             std::vector<XYPoint> padded;
             for (int i = 0; i < path_min_points_; ++i) {
-                const double t = (path_min_points_ == 1) ? 0.0 : static_cast<double>(i) / static_cast<double>(path_min_points_ - 1);
-                padded.push_back({
-                    resampled.front().x + t * (resampled.back().x - resampled.front().x),
-                    resampled.front().y + t * (resampled.back().y - resampled.front().y)
-                });
+                const double t = (path_min_points_ == 1)
+                                     ? 0.0
+                                     : static_cast<double>(i) /
+                                           static_cast<double>(path_min_points_ - 1);
+                padded.push_back({resampled.front().x +
+                                      t * (resampled.back().x - resampled.front().x),
+                                  resampled.front().y +
+                                      t * (resampled.back().y - resampled.front().y)});
             }
             return padded;
         }
         return resampled;
     }
 
-    nav_msgs::Path buildPathMessage(const std::vector<XYPoint>& path) const {
+    // Convert the planar reference to a map-frame ROS Path with tangent headings.
+    nav_msgs::Path buildPathMessage(const std::vector<XYPoint> &path) const {
         nav_msgs::Path nav_path;
         nav_path.header.frame_id = "map";
         nav_path.header.stamp = ros::Time::now();
@@ -1145,7 +1261,8 @@ private:
             pose.pose.position = toRosPoint(path[i]);
             pose.pose.orientation.w = 1.0;
             if (i + 1 < path.size()) {
-                last_yaw = std::atan2(path[i + 1].y - path[i].y, path[i + 1].x - path[i].x);
+                last_yaw =
+                    std::atan2(path[i + 1].y - path[i].y, path[i + 1].x - path[i].x);
                 has_last_yaw = true;
                 pose.pose.orientation = quaternionFromYaw(last_yaw);
             } else if (has_last_yaw) {
@@ -1157,9 +1274,11 @@ private:
         return nav_path;
     }
 
-    std_msgs::String buildLatLonPathMessage(const std::vector<XYPoint>& path) const {
+    // Encode the reference's geographic representation for external logging/display.
+    std_msgs::String buildLatLonPathMessage(const std::vector<XYPoint> &path) const {
         const double meters_per_degree = earth_radius_ * (M_PI / 180.0);
-        const double longitude_scale = meters_per_degree * std::cos(origin_lat_ * M_PI / 180.0);
+        const double longitude_scale =
+            meters_per_degree * std::cos(origin_lat_ * M_PI / 180.0);
         std::ostringstream json;
         json << std::fixed << std::setprecision(8) << "{\"points\":[";
         for (size_t i = 0; i < path.size(); ++i) {
@@ -1168,7 +1287,8 @@ private:
             }
             const double latitude = origin_lat_ + path[i].y / meters_per_degree;
             const double longitude = origin_lon_ + path[i].x / longitude_scale;
-            json << "{\"latitude\":" << latitude << ",\"longitude\":" << longitude << '}';
+            json << "{\"latitude\":" << latitude << ",\"longitude\":" << longitude
+                 << '}';
         }
         json << "]}";
         std_msgs::String message;
@@ -1176,7 +1296,9 @@ private:
         return message;
     }
 
-    bool prepareGoalRequest(const geometry_msgs::PoseStamped& goal) {
+    // Validate and prepare a new goal request against the available task/input
+    // context.
+    bool prepareGoalRequest(const geometry_msgs::PoseStamped &goal) {
         if (!has_odom_ || nodes_.empty()) {
             std::vector<std::string> missing;
             if (!has_odom_) {
@@ -1197,12 +1319,16 @@ private:
         }
 
         if (!goal.header.frame_id.empty() && goal.header.frame_id != "map") {
-            ROS_WARN("Goal frame is '%s', expected 'map'. Coordinates are used as-is.", goal.header.frame_id.c_str());
+            ROS_WARN("Goal frame is '%s', expected 'map'. Coordinates are used as-is.",
+                     goal.header.frame_id.c_str());
         }
 
-        ROS_INFO("Goal accepted: (%.2f, %.2f)", goal.pose.position.x, goal.pose.position.y);
+        ROS_INFO("Goal accepted: (%.2f, %.2f)", goal.pose.position.x,
+                 goal.pose.position.y);
         if (!has_map_) {
-            ROS_WARN_THROTTLE(1.0, "No /map yet. OSM graph path can still be generated, but occupancy map checks are unavailable.");
+            ROS_WARN_THROTTLE(1.0,
+                              "No /map yet. OSM graph path can still be generated, but "
+                              "occupancy map checks are unavailable.");
         }
 
         if (auto_set_initialpose_) {
@@ -1211,28 +1337,37 @@ private:
         return true;
     }
 
-    void clickedPointCallback(const geometry_msgs::PointStamped::ConstPtr& msg) {
+    // Convert an RViz clicked point into the existing goal-processing flow.
+    void clickedPointCallback(const geometry_msgs::PointStamped::ConstPtr &msg) {
         geometry_msgs::PoseStamped goal;
-        goal.header.frame_id = msg->header.frame_id.empty() ? "map" : msg->header.frame_id;
+        goal.header.frame_id =
+            msg->header.frame_id.empty() ? "map" : msg->header.frame_id;
         goal.header.stamp = ros::Time::now();
         goal.pose.position = msg->point;
         goal.pose.orientation.w = 1.0;
-        ROS_INFO("Clicked point received: (%.2f, %.2f) frame=%s", goal.pose.position.x, goal.pose.position.y, goal.header.frame_id.c_str());
+        ROS_INFO("Clicked point received: (%.2f, %.2f) frame=%s", goal.pose.position.x,
+                 goal.pose.position.y, goal.header.frame_id.c_str());
         cacheGoalRequest(goal);
     }
 
-    void cacheGoalRequest(const geometry_msgs::PoseStamped& goal) {
-        if (!std::isfinite(goal.pose.position.x) || !std::isfinite(goal.pose.position.y)) {
+    // Retain a pending goal request until the required route/start context is
+    // available.
+    void cacheGoalRequest(const geometry_msgs::PoseStamped &goal) {
+        if (!std::isfinite(goal.pose.position.x) ||
+            !std::isfinite(goal.pose.position.y)) {
             ROS_WARN("Ignoring non-finite map goal");
             return;
         }
         // Latest goal wins while localization/road graph is not ready.
         pending_goal_ = goal;
         has_pending_goal_ = true;
-        ROS_INFO("Latest goal cached: (%.2f, %.2f)", goal.pose.position.x, goal.pose.position.y);
+        ROS_INFO("Latest goal cached: (%.2f, %.2f)", goal.pose.position.x,
+                 goal.pose.position.y);
         tryPendingGoal();
     }
 
+    // Retry the retained goal through the existing admission path when input context
+    // becomes available.
     void tryPendingGoal() {
         if (!has_pending_goal_ || !prepareGoalRequest(pending_goal_)) {
             return;
@@ -1242,19 +1377,22 @@ private:
         processGoal(goal);
     }
 
-    void processGoal(const geometry_msgs::PoseStamped& goal) {
+    // Admit graph endpoints, plan the route, and publish its supported reference
+    // representations.
+    void processGoal(const geometry_msgs::PoseStamped &goal) {
         const double gx = goal.pose.position.x;
         const double gy = goal.pose.position.y;
         const SnapInfo start_snap = findNearestGraphPoint(robot_x_, robot_y_);
         const SnapInfo goal_snap = findNearestGraphPoint(gx, gy);
-        const double start_dist = start_snap.valid ? start_snap.dist : std::numeric_limits<double>::infinity();
-        const double goal_dist = goal_snap.valid ? goal_snap.dist : std::numeric_limits<double>::infinity();
+        const double start_dist = start_snap.valid
+                                      ? start_snap.dist
+                                      : std::numeric_limits<double>::infinity();
+        const double goal_dist =
+            goal_snap.valid ? goal_snap.dist : std::numeric_limits<double>::infinity();
 
-        publishSnapDebugMarkers(
-            true, {robot_x_, robot_y_},
-            start_snap.valid, start_snap.point,
-            true, {gx, gy},
-            goal_snap.valid, goal_snap.point);
+        publishSnapDebugMarkers(true, {robot_x_, robot_y_}, start_snap.valid,
+                                start_snap.point, true, {gx, gy}, goal_snap.valid,
+                                goal_snap.point);
 
         ROS_INFO("Snap distance: start=%.2fm, goal=%.2fm", start_dist, goal_dist);
 
@@ -1265,11 +1403,15 @@ private:
 
         if (strict_road_mode_) {
             if (start_dist > start_snap_max_dist_) {
-                ROS_WARN("Start is too far from drivable graph (%.2fm > %.2fm). Check GPS/TF alignment or road graph coverage.", start_dist, start_snap_max_dist_);
+                ROS_WARN("Start is too far from drivable graph (%.2fm > %.2fm). Check "
+                         "GPS/TF alignment or road graph coverage.",
+                         start_dist, start_snap_max_dist_);
                 return;
             }
             if (goal_dist > goal_snap_max_dist_) {
-                ROS_WARN("Goal is too far from drivable graph (%.2fm > %.2fm). Please click near blue road lines.", goal_dist, goal_snap_max_dist_);
+                ROS_WARN("Goal is too far from drivable graph (%.2fm > %.2fm). Please "
+                         "click near blue road lines.",
+                         goal_dist, goal_snap_max_dist_);
                 return;
             }
         }
@@ -1280,7 +1422,8 @@ private:
             return;
         }
 
-        std::vector<XYPoint> raw_path = applyRightLaneOffset(resamplePathForTracking(graph_path));
+        std::vector<XYPoint> raw_path =
+            applyRightLaneOffset(resamplePathForTracking(graph_path));
         if (!strict_road_mode_) {
             raw_path.push_back({gx, gy});
             raw_path = dedupePathPoints(raw_path);
@@ -1288,33 +1431,38 @@ private:
 
         current_path_ = resamplePathForTracking(raw_path);
         if (current_path_.size() < 2) {
-            ROS_WARN("OSM graph path degenerated to %zu point(s); rejecting this request.", current_path_.size());
+            ROS_WARN(
+                "OSM graph path degenerated to %zu point(s); rejecting this request.",
+                current_path_.size());
             return;
         }
 
         path_pub_.publish(buildPathMessage(current_path_));
-        const std::vector<XYPoint> cloud_path = cloud_path_simplify_
-            ? osm_map_handler::simplifyCloudPath(current_path_, cloud_path_simplify_tolerance_)
-            : current_path_;
+        const std::vector<XYPoint> cloud_path =
+            cloud_path_simplify_ ? osm_map_handler::simplifyCloudPath(
+                                       current_path_, cloud_path_simplify_tolerance_)
+                                 : current_path_;
         path_ll_pub_.publish(buildLatLonPathMessage(cloud_path));
-        ROS_INFO("Cloud path published: %zu -> %zu points, tolerance=%.3fm, simplification=%s",
-                 current_path_.size(), cloud_path.size(), cloud_path_simplify_tolerance_,
+        ROS_INFO("Cloud path published: %zu -> %zu points, tolerance=%.3fm, "
+                 "simplification=%s",
+                 current_path_.size(), cloud_path.size(),
+                 cloud_path_simplify_tolerance_,
                  cloud_path_simplify_ ? "enabled" : "disabled");
         publishPoseMarkers(true, current_path_.front());
-        ROS_INFO(
-            "Road path planned: graph=%zu points, tracking=%zu points, start snap %.2fm, goal snap %.2fm, right lane offset=%s",
-            graph_path.size(),
-            current_path_.size(),
-            start_dist,
-            goal_dist,
-            enable_right_lane_offset_ ? "enabled" : "disabled");
+        ROS_INFO("Road path planned: graph=%zu points, tracking=%zu points, start snap "
+                 "%.2fm, goal snap %.2fm, right lane offset=%s",
+                 graph_path.size(), current_path_.size(), start_dist, goal_dist,
+                 enable_right_lane_offset_ ? "enabled" : "disabled");
     }
 
-    void goalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
+    // Receive a ROS goal and pass it into task processing.
+    void goalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg) {
         cacheGoalRequest(*msg);
     }
 
-    void timerCallback(const ros::TimerEvent&) {
+    // Refresh pending-goal and visualization/status work without replacing the
+    // planner's task semantics.
+    void timerCallback(const ros::TimerEvent &) {
         tryPendingGoal();
         if (!has_odom_) {
             return;
@@ -1330,7 +1478,8 @@ private:
         }
 
         while (current_path_.size() > 1) {
-            if (hypot2d(current_path_.front().x, current_path_.front().y, robot_x_, robot_y_) < std::max(0.8, lookahead_dist_ * 0.5)) {
+            if (hypot2d(current_path_.front().x, current_path_.front().y, robot_x_,
+                        robot_y_) < std::max(0.8, lookahead_dist_ * 0.5)) {
                 current_path_.erase(current_path_.begin());
             } else {
                 break;
@@ -1369,7 +1518,8 @@ private:
     }
 };
 
-int main(int argc, char** argv) {
+// Initialize the OSM ROS node and service its callbacks until shutdown.
+int main(int argc, char **argv) {
     ros::init(argc, argv, "global_astar_planner");
     OSMGraphAStarPlanner planner;
     ros::spin();

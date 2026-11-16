@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Module contract: Convert geographic goals into the local OSM map convention and
+# publish goal markers. Map origin consistency is required across producer and consumer.
+
 import math
 import rospy
 from sensor_msgs.msg import NavSatFix
@@ -6,7 +9,10 @@ from geometry_msgs.msg import PoseStamped
 from visualization_msgs.msg import Marker
 
 
+# Bridge geographic goal input to planar map goals using the configured map origin.
 class GPSGoalBridge:
+    # Read the shared geographic map origin and configure geographic-goal input,
+    # planar-goal output, and visualization.
     def __init__(self):
         rospy.init_node('gps_goal_bridge')
 
@@ -23,24 +29,35 @@ class GPSGoalBridge:
         self.earth_radius = 6378137.0
 
         self.goal_pub = rospy.Publisher(self.output_topic, PoseStamped, queue_size=1)
-        self.marker_pub = rospy.Publisher(self.marker_topic, Marker, queue_size=1, latch=True)
+        self.marker_pub = rospy.Publisher(
+            self.marker_topic, Marker, queue_size=1, latch=True
+        )
         rospy.Subscriber(self.input_topic, NavSatFix, self.goal_ll_callback)
 
         rospy.loginfo(
             f"GPS goal bridge ready: {self.input_topic} (lat/lon) -> {self.output_topic} (map goal)"
         )
 
+    # Project geographic coordinates into local x/y metres using the configured origin.
+    # Inputs: lat, lon.
     def _latlon_to_xy(self, lat, lon):
-        x = (lon - self.origin_lon) * (math.pi / 180.0) * self.earth_radius * math.cos(
-            self.origin_lat * math.pi / 180.0
+        x = (
+            (lon - self.origin_lon)
+            * (math.pi / 180.0)
+            * self.earth_radius
+            * math.cos(self.origin_lat * math.pi / 180.0)
         )
         y = (lat - self.origin_lat) * (math.pi / 180.0) * self.earth_radius
         return x, y
 
+    # Build a planar quaternion from yaw in radians for the outgoing goal.
+    # Inputs: yaw.
     def _quat_from_yaw(self, yaw):
         half = 0.5 * yaw
         return (0.0, 0.0, math.sin(half), math.cos(half))
 
+    # Publish the goal marker for visualization without changing the navigation task.
+    # Inputs: x, y.
     def _publish_marker(self, x, y):
         if not self.publish_marker:
             return
@@ -65,6 +82,9 @@ class GPSGoalBridge:
         marker.color.a = 0.95
         self.marker_pub.publish(marker)
 
+    # Convert an incoming latitude/longitude goal and publish its planar goal
+    # representation.
+    # Inputs: msg.
     def goal_ll_callback(self, msg):
         if math.isnan(msg.latitude) or math.isnan(msg.longitude):
             rospy.logwarn('GPS goal bridge received NaN lat/lon, ignored')

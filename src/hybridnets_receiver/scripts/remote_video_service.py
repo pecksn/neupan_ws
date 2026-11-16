@@ -1,4 +1,7 @@
 #!/usr/bin/python3
+# Module contract: Supervise raw-video reception independently of navigation startup.
+# Detect existing owners before opening the video port or ROS node name.
+
 """Supervise ONLY a local ROS master or the raw-video launch inside Neupan.
 
 Existing masters/video owners are never killed or taken over. Stop requests
@@ -20,13 +23,18 @@ RUNTIME = Path('/run/neupan-remote-video')
 MASTER = 'http://127.0.0.1:11311'
 
 
+# Use a bounded XML-RPC transport when checking ROS master availability.
 class TimeoutTransport(xmlrpc.client.Transport):
+    # Create the XML-RPC HTTP connection with the configured request timeout.
+    # Inputs: host.
     def make_connection(self, host):
         connection = super().make_connection(host)
-        connection.timeout = .5
+        connection.timeout = 0.5
         return connection
 
 
+# Query the ROS master process identity without launching navigation or replacing an
+# existing master.
 def master_pid():
     try:
         with xmlrpc.client.ServerProxy(MASTER, transport=TimeoutTransport()) as proxy:
@@ -36,11 +44,15 @@ def master_pid():
         return None
 
 
+# Check whether the video node or receive endpoint already has an owner before starting
+# a second receiver.
 def video_busy():
     # Do not let rospy.init_node replace a live, same-name node either.
     try:
         with xmlrpc.client.ServerProxy(MASTER, transport=TimeoutTransport()) as proxy:
-            code, _, uri = proxy.lookupNode('/remote_video_service', '/rtp_camera_receiver')
+            code, _, uri = proxy.lookupNode(
+                '/remote_video_service', '/rtp_camera_receiver'
+            )
         if code == 1:
             with xmlrpc.client.ServerProxy(uri, transport=TimeoutTransport()) as node:
                 if node.getPid('/remote_video_service')[0] == 1:
@@ -55,6 +67,8 @@ def video_busy():
     return False
 
 
+# Stop an owned child process and wait for its termination.
+# Inputs: child.
 def stop_child(child):
     if child is None or child.poll() is not None:
         return
@@ -69,15 +83,22 @@ def stop_child(child):
             pass
 
 
+# Monitor the owned raw-video receiver and react to master changes or process
+# termination.
+# Inputs: mode, stopped.
 def supervise(mode, stopped):
     child = None
     owner = None
     previous_notice = None
+
+    # Emit the service's operator-facing status notification.
+    # Inputs: message.
     def notice(message):
         nonlocal previous_notice
         if message != previous_notice:
             print(message, flush=True)
             previous_notice = message
+
     try:
         while not stopped.is_set():
             pid = master_pid()
@@ -88,8 +109,15 @@ def supervise(mode, stopped):
                     break
             if mode == 'master':
                 if child is None and pid is None:
-                    child = subprocess.Popen(['/usr/bin/python3', '/opt/ros/noetic/bin/roscore', '-p', '11311'],
-                                             start_new_session=True)
+                    child = subprocess.Popen(
+                        [
+                            '/usr/bin/python3',
+                            '/opt/ros/noetic/bin/roscore',
+                            '-p',
+                            '11311',
+                        ],
+                        start_new_session=True,
+                    )
                     notice('Started independent ROS master; no vehicle nodes')
                 elif child is None:
                     notice('Existing ROS master detected; leaving it untouched')
@@ -104,35 +132,53 @@ def supervise(mode, stopped):
                     elif not Path('/dev/video0').exists():
                         notice('Waiting for /dev/video0')
                     elif video_busy():
-                        notice('Existing video node/UDP 5000 owner; leaving it untouched')
+                        notice(
+                            'Existing video node/UDP 5000 owner; leaving it untouched'
+                        )
                     else:
-                        child = subprocess.Popen(['/usr/bin/python3', '/opt/ros/noetic/bin/roslaunch',
-                            '--wait', '--sigint-timeout', '8', '--sigterm-timeout', '3',
-                            'hybridnets_receiver', 'video_only.launch'], start_new_session=True)
+                        child = subprocess.Popen(
+                            [
+                                '/usr/bin/python3',
+                                '/opt/ros/noetic/bin/roslaunch',
+                                '--wait',
+                                '--sigint-timeout',
+                                '8',
+                                '--sigterm-timeout',
+                                '3',
+                                'hybridnets_receiver',
+                                'video_only.launch',
+                            ],
+                            start_new_session=True,
+                        )
                         owner = pid
-                        notice('Started raw video only: UDP 5000 -> ROS image and /dev/video0')
+                        notice(
+                            'Started raw video only: UDP 5000 -> ROS image and /dev/video0'
+                        )
             stopped.wait(1)
     finally:
         stop_child(child)
 
 
-def wait_for_release(mode, timeout=30.):
+def wait_for_release(mode, timeout=30.0):
     """Wait for the old container supervisor, not just the docker client."""
-    deadline=time.monotonic()+timeout
+    deadline = time.monotonic() + timeout
     try:
-        with (RUNTIME/(mode+'.pid')).open('r') as handle:
+        with (RUNTIME / (mode + '.pid')).open('r') as handle:
             while True:
                 try:
-                    fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     return
                 except BlockingIOError:
-                    if time.monotonic()>=deadline:
+                    if time.monotonic() >= deadline:
                         raise TimeoutError('old %s supervisor has not stopped' % mode)
-                    time.sleep(.1)
+                    time.sleep(0.1)
     except FileNotFoundError:
         return
 
 
+# Stop only processes owned by this service, not unrelated live ROS or vehicle
+# processes.
+# Inputs: mode.
 def stop_owned(mode):
     try:
         pid = int((RUNTIME / (mode + '.pid')).read_text().strip())
@@ -144,8 +190,16 @@ def stop_owned(mode):
         pass
 
 
+# Run this module's command-line or ROS entry point. Keep startup, resource ownership,
+# and shutdown within this process.
+# Explicit rejection paths: SystemExit.
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ('master', 'video', 'stop-master', 'stop-video'):
+    if len(sys.argv) != 2 or sys.argv[1] not in (
+        'master',
+        'video',
+        'stop-master',
+        'stop-video',
+    ):
         raise SystemExit('Expected master, video, stop-master or stop-video')
     mode = sys.argv[1]
     if mode.startswith('stop-'):

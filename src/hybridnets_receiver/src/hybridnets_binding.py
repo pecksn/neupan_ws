@@ -1,8 +1,12 @@
+# Module contract: Single-producer challenge/lease protocol for trusted-LAN inference
+# sessions. Identity confirmation is not cryptographic sender authentication.
+
 """Single-producer authority and challenge/lease protocol (stdlib, ROS independent).
 
 This prevents accidental replay/session takeover on a trusted isolated LAN.
 It is NOT cryptographic sender authentication; UDP peers still need IP filtering.
 """
+
 import fcntl
 import json
 import os
@@ -15,12 +19,26 @@ PROTOCOL = 'hybridnets-binding-v1'
 LEASE_MS = 5000
 
 
+# Check that a supplied identity token has the required hexadecimal representation.
+# Inputs: value.
 def opaque(value):
-    return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(c in '0123456789abcdef' for c in value)
+    )
 
 
+# Own producer identity, lease state, and the management socket used by authorized
+# inference receivers.
 class ProducerAuthority:
-    def __init__(self, producer, identity, peer, port=6001, lock_path=None, on_bind=None):
+    # Establish producer identity and management-socket/lease ownership for the
+    # configured peer.
+    # Inputs: producer, identity, peer, port, lock_path, on_bind.
+    # Explicit rejection paths: RuntimeError.
+    def __init__(
+        self, producer, identity, peer, port=6001, lock_path=None, on_bind=None
+    ):
         self.producer = producer
         self.identity = identity  # returns (camera_epoch, time_ready)
         self.on_bind = on_bind
@@ -37,71 +55,119 @@ class ProducerAuthority:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             # No REUSEADDR: only the lock holder can own the fixed management port.
             self.sock.bind(('0.0.0.0', port))
-            self.sock.settimeout(.1)
+            self.sock.settimeout(0.1)
         except Exception:
             if self.sock is not None:
                 self.sock.close()
             os.close(self.fd)
-            raise RuntimeError('HybridNets publisher already running, or management port unavailable')
+            raise RuntimeError(
+                'HybridNets publisher already running, or management port unavailable'
+            )
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
+    # Process one management request and update binding state only through the supported
+    # protocol exchange.
+    # Inputs: request, sender, now.
     def handle(self, request, sender, now=None):
         now = time.monotonic() if now is None else now
         if sender[0] != self.peer or not isinstance(request, dict):
             return None
-        if (request.get('protocol') != PROTOCOL or not opaque(request.get('nonce')) or
-                not opaque(request.get('receiver_instance_id'))):
+        if (
+            request.get('protocol') != PROTOCOL
+            or not opaque(request.get('nonce'))
+            or not opaque(request.get('receiver_instance_id'))
+        ):
             return None
         epoch, ready = self.identity()
         with self.lock:
             if not ready or (self.lease and self.lease['epoch'] != epoch):
                 self.lease = None
-        answer = dict(protocol=PROTOCOL, nonce=request['nonce'],
-                      receiver_instance_id=request['receiver_instance_id'],
-                      producer_session_id=self.producer, camera_time_epoch=epoch)
+        answer = dict(
+            protocol=PROTOCOL,
+            nonce=request['nonce'],
+            receiver_instance_id=request['receiver_instance_id'],
+            producer_session_id=self.producer,
+            camera_time_epoch=epoch,
+        )
         if request.get('op') == 'probe':
             with self.lock:
-                self.challenges = {key: value for key,value in self.challenges.items() if value[0]>now}
+                self.challenges = {
+                    key: value
+                    for key, value in self.challenges.items()
+                    if value[0] > now
+                }
                 if len(self.challenges) >= 64:
                     return None
-                self.challenges[(sender, request['nonce'])] = (now+1., epoch, request['receiver_instance_id'])
+                self.challenges[(sender, request['nonce'])] = (
+                    now + 1.0,
+                    epoch,
+                    request['receiver_instance_id'],
+                )
             answer.update(op='identity', ready=bool(ready))
             return answer
         if request.get('op') != 'bind' or not ready:
             return None
-        if (request.get('producer_session_id') != self.producer or
-                request.get('camera_time_epoch') != epoch or not opaque(request.get('binding_ticket'))):
+        if (
+            request.get('producer_session_id') != self.producer
+            or request.get('camera_time_epoch') != epoch
+            or not opaque(request.get('binding_ticket'))
+        ):
             return None
         ticket = request['binding_ticket']
         with self.lock:
             challenge = self.challenges.pop((sender, request.get('probe_nonce')), None)
-            if (challenge is None or challenge[0] <= now or challenge[1] != epoch or
-                    challenge[2] != request['receiver_instance_id']):
+            if (
+                challenge is None
+                or challenge[0] <= now
+                or challenge[1] != epoch
+                or challenge[2] != request['receiver_instance_id']
+            ):
                 return None
             # One receiver owns a live lease. A second receiver cannot replace it.
-            if (self.lease and self.lease['deadline'] > now and
-                    self.lease['epoch'] == epoch and (self.lease['ticket'] != ticket or
-                    self.lease['receiver'] != request['receiver_instance_id'])):
+            if (
+                self.lease
+                and self.lease['deadline'] > now
+                and self.lease['epoch'] == epoch
+                and (
+                    self.lease['ticket'] != ticket
+                    or self.lease['receiver'] != request['receiver_instance_id']
+                )
+            ):
                 return None
-            renewing = (self.lease and self.lease['ticket'] == ticket and
-                        self.lease['epoch'] == epoch and self.lease['deadline'] > now)
+            renewing = (
+                self.lease
+                and self.lease['ticket'] == ticket
+                and self.lease['epoch'] == epoch
+                and self.lease['deadline'] > now
+            )
             activation = self.lease['activation_ns'] if renewing else time.time_ns()
-            self.lease = dict(ticket=ticket, epoch=epoch, deadline=now+LEASE_MS/1000.,
-                              activation_ns=activation, receiver=request['receiver_instance_id'])
+            self.lease = dict(
+                ticket=ticket,
+                epoch=epoch,
+                deadline=now + LEASE_MS / 1000.0,
+                activation_ns=activation,
+                receiver=request['receiver_instance_id'],
+            )
         if not renewing and getattr(self, 'on_bind', None):
             self.on_bind()  # outside authority lock: drop queued old image context
         answer.update(op='bound', binding_ticket=ticket, lease_ms=LEASE_MS)
         return answer
 
+    # Build a diagnostic snapshot of the component's current state for its consumer.
+    # Inputs: capture_ns (nanoseconds).
     def snapshot(self, capture_ns):
         return self.frame_binding(capture_ns).get('binding_ticket')
 
+    # Invalidate the active lease so prior binding evidence no longer authorizes
+    # inference observations.
     def invalidate(self):
         with self.lock:
             self.lease = None
             self.challenges.clear()
 
+    # Build the producer binding fields associated with the current frame publication.
+    # Inputs: capture_ns (nanoseconds).
     def frame_binding(self, capture_ns):
         epoch, ready = self.identity()
         with self.lock:
@@ -109,11 +175,19 @@ class ProducerAuthority:
             if not ready or (lease and lease['epoch'] != epoch):
                 self.lease = None
                 return {}
-            if (not ready or not lease or lease['deadline'] <= time.monotonic() or
-                    lease['epoch'] != epoch or capture_ns < lease['activation_ns']):
+            if (
+                not ready
+                or not lease
+                or lease['deadline'] <= time.monotonic()
+                or lease['epoch'] != epoch
+                or capture_ns < lease['activation_ns']
+            ):
                 return {}
-            return dict(binding_ticket=lease['ticket'], receiver_instance_id=lease['receiver'])
+            return dict(
+                binding_ticket=lease['ticket'], receiver_instance_id=lease['receiver']
+            )
 
+    # Serve binding requests until the authority is closed.
     def run(self):
         while not self.stop.is_set():
             try:
@@ -126,58 +200,91 @@ class ProducerAuthority:
             except (ValueError, UnicodeError, TypeError, OSError):
                 pass  # malformed management traffic never changes the authority
 
+    # Release resources owned by this component; do not transfer ownership to a later
+    # polling cycle.
     def close(self):
         self.stop.set()
-        self.thread.join(timeout=1.)
+        self.thread.join(timeout=1.0)
         self.sock.close()
         os.close(self.fd)  # release flock; never unlink the lock inode
 
 
+# Binding confirms which producer/session downstream observations belong to.
+# It is a freshness/identity contract on the trusted LAN, not encryption or a
+# replacement for sender filtering and network access control.
 class ReceiverBinding:
     """Monotonic lease state machine. Only challenged replies can change binding."""
+
+    # Initialize receiver-side challenge and lease state before a producer is confirmed.
     def __init__(self):
         self.instance_id = secrets.token_hex(32)
         self.bound = None
         self.pending = None
-        self.next_probe = 0.
+        self.next_probe = 0.0
         self.reason = 'binding_unconfirmed'
 
+    # Check whether the stored binding lease remains usable at the supplied time.
+    # Inputs: now.
     def alive(self, now):
         return self.bound is not None and self.bound['deadline'] > now
 
+    # Build the next management request for confirming or renewing producer identity.
+    # Inputs: now.
     def request(self, now):
         if self.pending:
-            if now <= self.pending['sent']+1.:
+            if now <= self.pending['sent'] + 1.0:
                 return None
             self.pending = None
-            self.next_probe = now+.2
+            self.next_probe = now + 0.2
             self.reason = 'binding_reply_timeout'
         if now < self.next_probe:
             return None
-        message = dict(protocol=PROTOCOL, op='probe', nonce=secrets.token_hex(32), receiver_instance_id=self.instance_id)
+        message = dict(
+            protocol=PROTOCOL,
+            op='probe',
+            nonce=secrets.token_hex(32),
+            receiver_instance_id=self.instance_id,
+        )
         self.pending = dict(message=message, sent=now)
         return message
 
+    # Validate a management reply before updating receiver binding evidence.
+    # Inputs: response, now.
     def reply(self, response, now):
         pending = self.pending
-        if not pending or not isinstance(response, dict) or now > pending['sent']+1.:
+        if not pending or not isinstance(response, dict) or now > pending['sent'] + 1.0:
             return None
         request = pending['message']
-        if (response.get('protocol') != PROTOCOL or response.get('nonce') != request['nonce'] or
-                response.get('receiver_instance_id') != self.instance_id):
+        if (
+            response.get('protocol') != PROTOCOL
+            or response.get('nonce') != request['nonce']
+            or response.get('receiver_instance_id') != self.instance_id
+        ):
             return None
-        producer, epoch = response.get('producer_session_id'), response.get('camera_time_epoch')
-        if (not isinstance(producer, str) or not producer or len(producer)>128 or
-                (epoch is not None and (not isinstance(epoch, str) or not epoch or len(epoch)>128))):
+        producer, epoch = response.get('producer_session_id'), response.get(
+            'camera_time_epoch'
+        )
+        if (
+            not isinstance(producer, str)
+            or not producer
+            or len(producer) > 128
+            or (
+                epoch is not None
+                and (not isinstance(epoch, str) or not epoch or len(epoch) > 128)
+            )
+        ):
             return None
         identity = (producer, epoch)
         if request['op'] == 'probe':
-            if response.get('op') != 'identity' or type(response.get('ready')) is not bool:
+            if (
+                response.get('op') != 'identity'
+                or type(response.get('ready')) is not bool
+            ):
                 return None
             if response['ready'] is False:
                 self.bound = self.pending = None
                 self.reason = 'authority_time_not_ready'
-                self.next_probe = now+.2
+                self.next_probe = now + 0.2
                 return None
             if self.bound and self.bound['identity'] != identity:
                 # A challenged authority reply explicitly invalidates the old
@@ -186,29 +293,47 @@ class ReceiverBinding:
                 self.reason = 'authority_changed_waiting_bind'
             reuse = self.alive(now) and self.bound['identity'] == identity
             ticket = self.bound['ticket'] if reuse else secrets.token_hex(32)
-            message = dict(protocol=PROTOCOL, op='bind', nonce=secrets.token_hex(32),
-                           receiver_instance_id=self.instance_id,
-                           probe_nonce=request['nonce'],
-                           producer_session_id=producer, camera_time_epoch=epoch, binding_ticket=ticket)
+            message = dict(
+                protocol=PROTOCOL,
+                op='bind',
+                nonce=secrets.token_hex(32),
+                receiver_instance_id=self.instance_id,
+                probe_nonce=request['nonce'],
+                producer_session_id=producer,
+                camera_time_epoch=epoch,
+                binding_ticket=ticket,
+            )
             self.pending = dict(message=message, sent=now)
             return message
-        if (response.get('op') != 'bound' or response.get('binding_ticket') != request['binding_ticket'] or
-                identity != (request['producer_session_id'], request['camera_time_epoch']) or
-                type(response.get('lease_ms')) is not int or not 1000 <= response['lease_ms'] <= LEASE_MS):
+        if (
+            response.get('op') != 'bound'
+            or response.get('binding_ticket') != request['binding_ticket']
+            or identity
+            != (request['producer_session_id'], request['camera_time_epoch'])
+            or type(response.get('lease_ms')) is not int
+            or not 1000 <= response['lease_ms'] <= LEASE_MS
+        ):
             return None
-        deadline = pending['sent']+response['lease_ms']/1000.-.2
+        deadline = pending['sent'] + response['lease_ms'] / 1000.0 - 0.2
         if deadline <= now:
             return None
-        self.bound = dict(identity=identity, ticket=request['binding_ticket'], deadline=deadline)
+        self.bound = dict(
+            identity=identity, ticket=request['binding_ticket'], deadline=deadline
+        )
         self.pending = None
-        self.next_probe = now+1.5
+        self.next_probe = now + 1.5
         self.reason = 'bound'
         return None
 
+    # Check whether inference metadata matches the active producer binding.
+    # Inputs: packet, now.
     def accepts(self, packet, now):
         if not self.alive(now):
             return False, 'binding_expired' if self.bound else 'binding_unconfirmed'
-        if (packet.get('producer_session_id'), packet.get('camera_time_epoch')) != self.bound['identity']:
+        if (
+            packet.get('producer_session_id'),
+            packet.get('camera_time_epoch'),
+        ) != self.bound['identity']:
             return False, 'binding_identity_mismatch'
         if packet.get('binding_ticket') != self.bound['ticket']:
             return False, 'binding_ticket_mismatch'
@@ -216,10 +341,21 @@ class ReceiverBinding:
             return False, 'binding_receiver_mismatch'
         return True, 'bound'
 
+    # Build the status representation consumed by callers; do not confuse reporting with
+    # accepting new evidence.
+    # Inputs: now.
     def status(self, now):
-        return dict(confirmed=self.alive(now), reason=self.reason if self.alive(now) else
-                    ('binding_expired' if self.bound else self.reason),
-                    receiver_instance_id=self.instance_id,
-                    producer_session_id=self.bound['identity'][0] if self.bound else None,
-                    camera_time_epoch=self.bound['identity'][1] if self.bound else None,
-                    lease_remaining_ms=max(0,(self.bound['deadline']-now)*1000) if self.bound else 0)
+        return dict(
+            confirmed=self.alive(now),
+            reason=(
+                self.reason
+                if self.alive(now)
+                else ('binding_expired' if self.bound else self.reason)
+            ),
+            receiver_instance_id=self.instance_id,
+            producer_session_id=self.bound['identity'][0] if self.bound else None,
+            camera_time_epoch=self.bound['identity'][1] if self.bound else None,
+            lease_remaining_ms=(
+                max(0, (self.bound['deadline'] - now) * 1000) if self.bound else 0
+            ),
+        )

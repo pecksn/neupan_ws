@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Module contract: Offline geometry comparison between geographic measurements and OSM
+# road segments. Distances are diagnostic evidence rather than online localization
+# corrections.
+
 import argparse
 import csv
 import json
@@ -11,15 +15,28 @@ from pathlib import Path
 EARTH_RADIUS = 6378137.0
 
 
+# Project latitude/longitude into planar metres about the selected map origin.
+# Inputs: lat, lon, origin_lat, origin_lon.
 def latlon_to_xy(lat, lon, origin_lat, origin_lon):
-    x = (lon - origin_lon) * math.pi / 180.0 * EARTH_RADIUS * math.cos(origin_lat * math.pi / 180.0)
+    x = (
+        (lon - origin_lon)
+        * math.pi
+        / 180.0
+        * EARTH_RADIUS
+        * math.cos(origin_lat * math.pi / 180.0)
+    )
     y = (lat - origin_lat) * math.pi / 180.0 * EARTH_RADIUS
     return x, y
 
 
+# Parse offline analysis input paths and coordinate options.
 def parse_args():
-    parser = argparse.ArgumentParser(description="Measure GPS-to-OSM road alignment from JSONL logs.")
-    parser.add_argument("logs", nargs="+", help="system_run_logger or compact open_loop JSONL logs")
+    parser = argparse.ArgumentParser(
+        description="Measure GPS-to-OSM road alignment from JSONL logs."
+    )
+    parser.add_argument(
+        "logs", nargs="+", help="system_run_logger or compact open_loop JSONL logs"
+    )
     parser.add_argument("--osm", default="/home/nuc/lxw/ros_maps/map.osm")
     parser.add_argument("--origin-lat", type=float, default=23.0398)
     parser.add_argument("--origin-lon", type=float, default=113.39002)
@@ -30,6 +47,8 @@ def parse_args():
     return parser.parse_args()
 
 
+# Read OSM road geometry and convert the selected segments into the local planar map.
+# Inputs: osm_path, origin_lat, origin_lon.
 def load_osm_segments(osm_path, origin_lat, origin_lon):
     root = ET.parse(osm_path).getroot()
     nodes = {}
@@ -42,7 +61,10 @@ def load_osm_segments(osm_path, origin_lat, origin_lon):
 
     segments = []
     for way in root.findall("way"):
-        tags = {tag.attrib.get("k", ""): tag.attrib.get("v", "") for tag in way.findall("tag")}
+        tags = {
+            tag.attrib.get("k", ""): tag.attrib.get("v", "")
+            for tag in way.findall("tag")
+        }
         highway = tags.get("highway", "")
         if not highway:
             continue
@@ -69,6 +91,8 @@ def load_osm_segments(osm_path, origin_lat, origin_lon):
     return segments
 
 
+# Extract a usable geographic coordinate pair from an input record.
+# Inputs: record.
 def extract_lat_lon(record):
     data = record.get("data", record)
     gps_fix = data.get("gps_fix")
@@ -85,6 +109,8 @@ def extract_lat_lon(record):
     return None
 
 
+# Read supported measurement records into the point set used by the alignment report.
+# Inputs: log_paths, origin_lat, origin_lon, sample_step, max_samples.
 def load_points(log_paths, origin_lat, origin_lon, sample_step, max_samples):
     points = []
     seen = 0
@@ -109,12 +135,17 @@ def load_points(log_paths, origin_lat, origin_lon, sample_step, max_samples):
                 if seen % max(1, sample_step) != 0:
                     continue
                 x, y = latlon_to_xy(lat, lon, origin_lat, origin_lon)
-                points.append({"lat": lat, "lon": lon, "x": x, "y": y, "log": str(log_path)})
+                points.append(
+                    {"lat": lat, "lon": lon, "x": x, "y": y, "log": str(log_path)}
+                )
                 if len(points) >= max_samples:
                     return points
     return points
 
 
+# Find the nearest supported OSM segment and return the corresponding geometric
+# evidence.
+# Inputs: point, segments.
 def nearest_segment(point, segments):
     best = None
     px, py = point["x"], point["y"]
@@ -145,15 +176,21 @@ def nearest_segment(point, segments):
     return best
 
 
+# Compute the arithmetic mean of the supplied values.
+# Inputs: values.
 def mean(values):
     return sum(values) / len(values) if values else float("nan")
 
 
+# Run the offline alignment analysis and report distances; this tool does not publish
+# vehicle commands.
 def main():
     args = parse_args()
     log_paths = [Path(path) for path in args.logs]
     segments = load_osm_segments(args.osm, args.origin_lat, args.origin_lon)
-    points = load_points(log_paths, args.origin_lat, args.origin_lon, args.sample_step, args.max_samples)
+    points = load_points(
+        log_paths, args.origin_lat, args.origin_lon, args.sample_step, args.max_samples
+    )
     rows = []
     for point in points:
         nearest = nearest_segment(point, segments)
@@ -167,14 +204,22 @@ def main():
 
     print("samples:", len(rows))
     print("mean_dist_m: %.3f" % mean([row["dist"] for row in rows]))
-    print("mean_east_error_m: %.3f  (OSM snap x - GPS x)" % mean([row["east_error"] for row in rows]))
-    print("mean_north_error_m: %.3f (OSM snap y - GPS y)" % mean([row["north_error"] for row in rows]))
+    print(
+        "mean_east_error_m: %.3f  (OSM snap x - GPS x)"
+        % mean([row["east_error"] for row in rows])
+    )
+    print(
+        "mean_north_error_m: %.3f (OSM snap y - GPS y)"
+        % mean([row["north_error"] for row in rows])
+    )
 
     by_way = defaultdict(list)
     for row in rows:
         by_way[row["way_id"]].append(row)
     print("\nTop ways by sample count:")
-    for way_id, group in sorted(by_way.items(), key=lambda item: len(item[1]), reverse=True)[:10]:
+    for way_id, group in sorted(
+        by_way.items(), key=lambda item: len(item[1]), reverse=True
+    )[:10]:
         first = group[0]
         print(
             "way=%s count=%d name=%r highway=%s mean_dist=%.2f mean_east=%.2f mean_north=%.2f heading=%.1f"

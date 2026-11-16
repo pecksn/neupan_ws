@@ -1,4 +1,7 @@
 #!/usr/bin/python3
+# Module contract: Record overlay images and their matched inference metadata. Encoded
+# MP4 playback time and original image capture timestamps are different time axes.
+
 """Record matched HybridNets debug images and JSON to MP4/JSONL pairs."""
 
 import datetime
@@ -15,11 +18,22 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 
+# Own one overlay MP4 and its JSONL sidecar, including idle finalization and matching
+# metadata to recorded image identities.
 class DebugMp4Recorder:
+    # Validate recording FPS/idle limits, allocate matching buffers and a lock, and
+    # register callbacks. The writer is opened only when recording begins.
+    # Explicit rejection paths: ValueError.
     def __init__(self):
         self.topic = rospy.get_param("~image_topic", "/hybridnets/debug_image")
-        self.output_dir = os.path.abspath(os.path.expanduser(rospy.get_param(
-            "~output_directory", "/home/nuc/lxw/neupan_ws/videos/hybridnets_debug")))
+        self.output_dir = os.path.abspath(
+            os.path.expanduser(
+                rospy.get_param(
+                    "~output_directory",
+                    "/home/nuc/lxw/neupan_ws/videos/hybridnets_debug",
+                )
+            )
+        )
         self.fps = float(rospy.get_param("~fps", 30.0))
         self.idle_timeout = float(rospy.get_param("~idle_timeout_sec", 3.0))
         if self.fps <= 0 or self.idle_timeout <= 0:
@@ -37,30 +51,47 @@ class DebugMp4Recorder:
         self.recorded_images = OrderedDict()
         self.pending_results = OrderedDict()
 
-        rospy.Subscriber(self.topic, Image, self.on_image, queue_size=1,
-                         buff_size=1920 * 1080 * 3 * 2)
-        rospy.Subscriber("/hybridnets/debug_result_json", String,
-                         self.on_result, queue_size=100)
+        rospy.Subscriber(
+            self.topic,
+            Image,
+            self.on_image,
+            queue_size=1,
+            buff_size=1920 * 1080 * 3 * 2,
+        )
+        rospy.Subscriber(
+            "/hybridnets/debug_result_json", String, self.on_result, queue_size=100
+        )
         rospy.Timer(rospy.Duration(0.5), self.check_idle)
         rospy.on_shutdown(self.finish)
-        rospy.loginfo("Waiting for %s; MP4 output directory: %s", self.topic,
-                      self.output_dir)
+        rospy.loginfo(
+            "Waiting for %s; MP4 output directory: %s", self.topic, self.output_dir
+        )
 
+    # Open the video writer and exclusive sidecar for the decoded image dimensions. Do
+    # not overwrite an existing recording.
+    # Inputs: width, height.
+    # Explicit rejection paths: RuntimeError.
     def start(self, width, height):
         os.makedirs(self.output_dir, exist_ok=True)
         timestamp = datetime.datetime.now(
-            datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y%m%d_%H%M%S")
+            datetime.timezone(datetime.timedelta(hours=8))
+        ).strftime("%Y%m%d_%H%M%S")
         path = os.path.join(self.output_dir, "%s.mp4" % timestamp)
         suffix = 1
-        while os.path.exists(path) or os.path.exists(os.path.splitext(path)[0] + ".jsonl"):
+        while os.path.exists(path) or os.path.exists(
+            os.path.splitext(path)[0] + ".jsonl"
+        ):
             path = os.path.join(self.output_dir, "%s_%d.mp4" % (timestamp, suffix))
             suffix += 1
-        writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"),
-                                 self.fps, (width, height))
+        writer = cv2.VideoWriter(
+            path, cv2.VideoWriter_fourcc(*"mp4v"), self.fps, (width, height)
+        )
         if not writer.isOpened():
             raise RuntimeError("Could not open MP4 writer: %s" % path)
         try:
-            self.json_file = open(os.path.splitext(path)[0] + ".jsonl", "x", buffering=1)
+            self.json_file = open(
+                os.path.splitext(path)[0] + ".jsonl", "x", buffering=1
+            )
         except OSError:
             writer.release()
             raise
@@ -72,8 +103,19 @@ class DebugMp4Recorder:
         self.last_frame = None
         rospy.loginfo("Recording HybridNets debug MP4: %s", path)
 
+    # Associate pending inference metadata with an image already written to the MP4. The
+    # caller must hold the recorder lock.
+    # Inputs: key.
     def write_result_locked(self, key):
-        if self.json_file is None or key not in self.recorded_images or key not in self.pending_results:
+        # Join by the overlay's image identity, never by callback arrival order.
+        # The JSON sidecar records the actual encoded-frame index; MP4 time is
+        # derived from configured output FPS, not the camera's capture clock.
+        # The caller holds the recorder lock while consuming both pending maps.
+        if (
+            self.json_file is None
+            or key not in self.recorded_images
+            or key not in self.pending_results
+        ):
             return
         frame_index = self.recorded_images.pop(key)
         result = self.pending_results.pop(key)
@@ -81,6 +123,9 @@ class DebugMp4Recorder:
         result["mp4_time_sec"] = frame_index / self.fps
         self.json_file.write(json.dumps(result, separators=(",", ":")) + "\n")
 
+    # Receive overlay-result JSON and retain it for joining to the corresponding image
+    # identity.
+    # Inputs: message.
     def on_result(self, message):
         try:
             result = json.loads(message.data)
@@ -93,11 +138,16 @@ class DebugMp4Recorder:
             while len(self.pending_results) > 512:
                 self.pending_results.popitem(last=False)
 
+    # Encode a received overlay image and associate its frame index with pending
+    # metadata under the recorder lock.
+    # Inputs: message.
     def on_image(self, message):
         width, height = message.width, message.height
-        if (message.encoding not in ("bgr8", "rgb8") or
-                message.step != width * 3 or
-                len(message.data) != width * height * 3):
+        if (
+            message.encoding not in ("bgr8", "rgb8")
+            or message.step != width * 3
+            or len(message.data) != width * height * 3
+        ):
             rospy.logwarn_throttle(3.0, "MP4 recorder needs packed bgr8/rgb8 images")
             return
 
@@ -132,8 +182,7 @@ class DebugMp4Recorder:
                 written_index = None
                 # Preserve message time in a constant-frame-rate MP4. Sparse
                 # inference frames are held until the next matched result.
-                target_index = max(0, int(round(
-                    (stamp - self.first_stamp) * self.fps)))
+                target_index = max(0, int(round((stamp - self.first_stamp) * self.fps)))
                 while self.frame_count < target_index:
                     self.writer.write(self.last_frame)
                     self.frame_count += 1
@@ -150,12 +199,19 @@ class DebugMp4Recorder:
             self.last_frame = frame.copy()
             self.last_frame_at = time.monotonic()
 
+    # Detect an inactive image stream and finalize the recording rather than keeping an
+    # incomplete MP4 open indefinitely.
+    # Inputs: _event.
     def check_idle(self, _event):
         with self.lock:
-            if (self.writer is not None and self.last_frame_at is not None and
-                    time.monotonic() - self.last_frame_at >= self.idle_timeout):
+            if (
+                self.writer is not None
+                and self.last_frame_at is not None
+                and time.monotonic() - self.last_frame_at >= self.idle_timeout
+            ):
                 self.finish_locked()
 
+    # Close the current writer and sidecar while holding the recorder lock.
     def finish_locked(self):
         if self.writer is None:
             return
@@ -165,8 +221,9 @@ class DebugMp4Recorder:
             self.json_file = None
         self.recorded_images.clear()
         self.pending_results.clear()
-        rospy.loginfo("Saved HybridNets debug MP4: %s (%d frames)",
-                      self.path, self.frame_count)
+        rospy.loginfo(
+            "Saved HybridNets debug MP4: %s (%d frames)", self.path, self.frame_count
+        )
         self.writer = None
         self.size = None
         self.path = None
@@ -175,6 +232,7 @@ class DebugMp4Recorder:
         self.first_stamp = None
         self.last_frame = None
 
+    # Acquire the recorder lock and finalize owned recording resources safely.
     def finish(self):
         with self.lock:
             self.finish_locked()

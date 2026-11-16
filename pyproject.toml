@@ -1,0 +1,9 @@
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+# Preserve literal spelling during the initial formatting-only migration.
+skip-string-normalization = true
+include = '\.py$'
+extend-exclude = '''
+/(build|devel|install|tracker_logs|videos|rosbags|\.git|\.venv)/
+'''

@@ -1,4 +1,8 @@
+# Module contract: Read-only planner diagnostics and failure evidence. Recording a
+# diagnostic must not retime controls or refresh stale input measurements.
+
 """Write one-off planner failure evidence outside the planning hot path."""
+
 import json
 import hashlib
 import inspect
@@ -18,20 +22,42 @@ def save_failure(node, exc_info, log_dir):
     error = exc_info[1]
     record = {
         'stamp': stamp,
-        'local_time': datetime.fromtimestamp(stamp, timezone(timedelta(hours=8))).isoformat(),
+        'local_time': datetime.fromtimestamp(
+            stamp, timezone(timedelta(hours=8))
+        ).isoformat(),
         'pid': os.getpid(),
         'stage': getattr(node, 'diagnostic_stage', 'initialization'),
-        'shutdown_requested': bool(getattr(node,'shutdown_requested',False) or __import__('rospy').is_shutdown()),
-        'phase': 'shutdown' if getattr(node,'shutdown_requested',False) or __import__('rospy').is_shutdown() else 'runtime',
-        'planner_session_id': getattr(node,'planner_session_id',None),
-        'shutdown_source': 'rospy_on_shutdown' if getattr(node,'shutdown_requested',False) else None,
+        'shutdown_requested': bool(
+            getattr(node, 'shutdown_requested', False)
+            or __import__('rospy').is_shutdown()
+        ),
+        'phase': (
+            'shutdown'
+            if getattr(node, 'shutdown_requested', False)
+            or __import__('rospy').is_shutdown()
+            else 'runtime'
+        ),
+        'planner_session_id': getattr(node, 'planner_session_id', None),
+        'shutdown_source': (
+            'rospy_on_shutdown' if getattr(node, 'shutdown_requested', False) else None
+        ),
         'planner_fault': getattr(node, 'planner_fault', None),
-        'publish_input_ages': getattr(node,'publish_input_ages',None),
-        'safety_check_ms': getattr(node,'safety_check_ms',None),
-        'motion_feedback':getattr(getattr(node,'motion_policy',None),'feedback_snapshot',None),
-        'obstacle_selection':None if getattr(node,'obstacle_adapter',None) is None else dict(node.obstacle_adapter.report),
-        'stop_reasons':getattr(node,'stop_registry',None).snapshot() if getattr(node,'stop_registry',None) else {},
-        'camera_execution_contract':getattr(node,'camera_execution_contract',None),
+        'publish_input_ages': getattr(node, 'publish_input_ages', None),
+        'safety_check_ms': getattr(node, 'safety_check_ms', None),
+        'motion_feedback': getattr(
+            getattr(node, 'motion_policy', None), 'feedback_snapshot', None
+        ),
+        'obstacle_selection': (
+            None
+            if getattr(node, 'obstacle_adapter', None) is None
+            else dict(node.obstacle_adapter.report)
+        ),
+        'stop_reasons': (
+            getattr(node, 'stop_registry', None).snapshot()
+            if getattr(node, 'stop_registry', None)
+            else {}
+        ),
+        'camera_execution_contract': getattr(node, 'camera_execution_contract', None),
         'exception_type': type(error).__module__ + '.' + type(error).__name__,
         'message': str(error),
         'traceback': ''.join(traceback.format_exception(*exc_info)),
@@ -39,7 +65,11 @@ def save_failure(node, exc_info, log_dir):
         'diagnostic_errors': [],
     }
     arrays = {}
+
     # Snapshot only known numeric inputs, not arbitrary frame locals.
+    # Append one diagnostic reason/value entry to the accumulating report.
+    # Inputs: name, value.
+    # Explicit rejection paths: ValueError.
     def add(name, value):
         if value is None:
             return
@@ -49,12 +79,16 @@ def save_failure(node, exc_info, log_dir):
             value = np.asarray(value)
             if value.dtype.kind not in 'biufc':
                 raise ValueError('non-numeric snapshot')
-            if value.size > 2000000 or sum(v.size for v in arrays.values())+value.size > 10000000:
+            if (
+                value.size > 2000000
+                or sum(v.size for v in arrays.values()) + value.size > 10000000
+            ):
                 raise ValueError('numeric snapshot exceeds bounded diagnostic budget')
             value = value.copy()
             arrays[name] = value
             record['arrays'][name] = {
-                'shape': list(value.shape), 'dtype': str(value.dtype),
+                'shape': list(value.shape),
+                'dtype': str(value.dtype),
                 'nonfinite_count': int(np.count_nonzero(~np.isfinite(value))),
             }
         except Exception as snapshot_error:
@@ -71,7 +105,10 @@ def save_failure(node, exc_info, log_dir):
         record['incoming_route_kind'] = incoming[0]
         record['incoming_route_identity'] = repr(incoming[2])
         try:
-            add('incoming_route', np.hstack(incoming[1]) if incoming[0] != 'goal' else incoming[1])
+            add(
+                'incoming_route',
+                np.hstack(incoming[1]) if incoming[0] != 'goal' else incoming[1],
+            )
         except Exception as snapshot_error:
             record['diagnostic_errors'].append('incoming_route: %s' % snapshot_error)
     planner = getattr(node, 'neupan_planner', None)
@@ -89,11 +126,13 @@ def save_failure(node, exc_info, log_dir):
         except (TypeError, OSError) as source_error:
             record['diagnostic_errors'].append('implementation: %s' % source_error)
     add('generated_reference', getattr(ipath, 'last_reference', None))
-    add('checked_action',getattr(node,'diagnostic_command_action',None))
-    add('checked_trajectory',getattr(node,'diagnostic_checked_trajectory',None))
-    add('checked_controls',getattr(node,'diagnostic_checked_controls',None))
+    add('checked_action', getattr(node, 'diagnostic_command_action', None))
+    add('checked_trajectory', getattr(node, 'diagnostic_checked_trajectory', None))
+    add('checked_controls', getattr(node, 'diagnostic_checked_controls', None))
     add('reference_progress', getattr(ipath, 'last_reference_progress', None))
-    snapshot = getattr(node, 'diagnostic_safety_scan', getattr(node, 'safety_scan', None))
+    snapshot = getattr(
+        node, 'diagnostic_safety_scan', getattr(node, 'safety_scan', None)
+    )
     if snapshot is not None:
         add('full_safety_scan', snapshot[0])
         record['full_safety_scan_stamp_ns'] = int(snapshot[1])
@@ -139,8 +178,13 @@ def save_failure(node, exc_info, log_dir):
     }
     folder = os.path.abspath(log_dir)
     os.makedirs(folder, exist_ok=True)
-    prefix = 'neupan_failure_' + datetime.fromtimestamp(
-        stamp, timezone(timedelta(hours=8))).strftime('%Y%m%d_%H%M%S') + '_'
+    prefix = (
+        'neupan_failure_'
+        + datetime.fromtimestamp(stamp, timezone(timedelta(hours=8))).strftime(
+            '%Y%m%d_%H%M%S'
+        )
+        + '_'
+    )
     fd, path = tempfile.mkstemp(prefix=prefix, suffix='.json', dir=folder)
     record['snapshot_json'] = path
     record['snapshot_npz'] = path[:-5] + '.npz'
@@ -162,23 +206,36 @@ def save_failure(node, exc_info, log_dir):
 def report_failure(node, exc_info):
     """Best effort diagnostics must never replace the original exception."""
     import rospy
+
     # Also cover failures outside the solver boundary. This must precede disk IO.
     if node is not None:
         try:
             from geometry_msgs.msg import Twist
+
             node.vel_pub.publish(Twist())
         except Exception:
             pass
     try:
-        folder = rospy.get_param('~diagnostic_log_dir', '/home/nuc/lxw/neupan_ws/tracker_logs')
+        folder = rospy.get_param(
+            '~diagnostic_log_dir', '/home/nuc/lxw/neupan_ws/tracker_logs'
+        )
         record = save_failure(node, exc_info, folder)
-        rospy.logfatal('NeuPAN failed at %s; evidence: %s\n%s',
-                       record['stage'], record['snapshot_json'], record['traceback'])
+        rospy.logfatal(
+            'NeuPAN failed at %s; evidence: %s\n%s',
+            record['stage'],
+            record['snapshot_json'],
+            record['traceback'],
+        )
         from std_msgs.msg import String
+
         publisher = getattr(node, 'failure_pub', None)
         if publisher is None:
-            publisher = rospy.Publisher('/neupan/failure', String, queue_size=1, latch=True)
+            publisher = rospy.Publisher(
+                '/neupan/failure', String, queue_size=1, latch=True
+            )
         publisher.publish(String(data=json.dumps(record, ensure_ascii=True)))
     except Exception as diagnostic_error:
-        sys.stderr.write('Cannot persist NeuPAN failure evidence: %s\n' % diagnostic_error)
+        sys.stderr.write(
+            'Cannot persist NeuPAN failure evidence: %s\n' % diagnostic_error
+        )
         sys.stderr.write(''.join(traceback.format_exception(*exc_info)))

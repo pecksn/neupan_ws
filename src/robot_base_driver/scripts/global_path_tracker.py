@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+# Module contract: Planar global-path tracking utility. It computes commands from
+# pose/path evidence and publishes stop on its existing task/input failure branches.
+
 import json
 import math
 
@@ -10,10 +13,14 @@ from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion
 
 
+# Clamp a scalar to the supplied inclusive bounds.
+# Inputs: value, low, high.
 def clamp(value, low, high):
     return max(low, min(high, value))
 
 
+# Normalize a planar angle into the signed-pi interval.
+# Inputs: angle.
 def wrap_to_pi(angle):
     while angle > math.pi:
         angle -= 2.0 * math.pi
@@ -22,7 +29,10 @@ def wrap_to_pi(angle):
     return angle
 
 
+# Own the reference path, pose source, goal checks, and tracking command publication.
 class GlobalPathTracker(object):
+    # Configure path tracking limits, pose sources, task state, command output, and
+    # diagnostic history.
     def __init__(self):
         rospy.init_node("global_path_tracker")
 
@@ -34,21 +44,35 @@ class GlobalPathTracker(object):
         self.control_rate = rospy.get_param("~control_rate", 10.0)
         self.lookahead_dist = rospy.get_param("~lookahead_dist", 2.5)
         self.goal_tolerance = rospy.get_param("~goal_tolerance", 1.2)
-        self.goal_stop_tolerance = rospy.get_param("~goal_stop_tolerance", self.goal_tolerance)
-        self.clicked_goal_stop_tolerance = rospy.get_param("~clicked_goal_stop_tolerance", 2.0)
-        self.projected_goal_stop_tolerance = rospy.get_param("~projected_goal_stop_tolerance", 1.5)
+        self.goal_stop_tolerance = rospy.get_param(
+            "~goal_stop_tolerance", self.goal_tolerance
+        )
+        self.clicked_goal_stop_tolerance = rospy.get_param(
+            "~clicked_goal_stop_tolerance", 2.0
+        )
+        self.projected_goal_stop_tolerance = rospy.get_param(
+            "~projected_goal_stop_tolerance", 1.5
+        )
         self.goal_approach_radius = rospy.get_param("~goal_approach_radius", 4.0)
         self.goal_overshoot_margin = rospy.get_param("~goal_overshoot_margin", 0.5)
         self.end_path_point_window = int(rospy.get_param("~end_path_point_window", 3))
-        self.end_path_point_tolerance = rospy.get_param("~end_path_point_tolerance", 1.5)
-        self.terminal_index_overshoot_margin = rospy.get_param("~terminal_index_overshoot_margin", 0.3)
+        self.end_path_point_tolerance = rospy.get_param(
+            "~end_path_point_tolerance", 1.5
+        )
+        self.terminal_index_overshoot_margin = rospy.get_param(
+            "~terminal_index_overshoot_margin", 0.3
+        )
         self.slowdown_radius = rospy.get_param("~slowdown_radius", 4.0)
         self.wheelbase = rospy.get_param("~wheelbase", 0.67)
         self.cruise_speed = rospy.get_param("~cruise_speed", 0.8)
         self.min_speed = rospy.get_param("~min_speed", 0.25)
         self.max_steering = rospy.get_param("~max_steering", 0.43)
-        self.max_heading_error_for_drive = rospy.get_param("~max_heading_error_for_drive", 1.2)
-        self.final_segment_lateral_tolerance = rospy.get_param("~final_segment_lateral_tolerance", 1.5)
+        self.max_heading_error_for_drive = rospy.get_param(
+            "~max_heading_error_for_drive", 1.2
+        )
+        self.final_segment_lateral_tolerance = rospy.get_param(
+            "~final_segment_lateral_tolerance", 1.5
+        )
         self.stop_on_missing_path = rospy.get_param("~stop_on_missing_path", True)
         self.debug_log = rospy.get_param("~debug_log", True)
         self.yaw_offset_deg = rospy.get_param("~yaw_offset_deg", 0.0)
@@ -57,10 +81,18 @@ class GlobalPathTracker(object):
         self.tf_map_frame = rospy.get_param("~tf_map_frame", "map")
         self.tf_base_frame = rospy.get_param("~tf_base_frame", "base_link")
         self.road_half_width = rospy.get_param("~road_half_width", 4.5)
-        self.lateral_deadband = rospy.get_param("~lateral_deadband", self.road_half_width)
-        self.straight_segment_angle_deg = rospy.get_param("~straight_segment_angle_deg", 10.0)
-        self.straight_heading_deadband_deg = rospy.get_param("~straight_heading_deadband_deg", 8.0)
-        self.status_topic = rospy.get_param("~status_topic", "/global_path_tracker/status")
+        self.lateral_deadband = rospy.get_param(
+            "~lateral_deadband", self.road_half_width
+        )
+        self.straight_segment_angle_deg = rospy.get_param(
+            "~straight_segment_angle_deg", 10.0
+        )
+        self.straight_heading_deadband_deg = rospy.get_param(
+            "~straight_heading_deadband_deg", 8.0
+        )
+        self.status_topic = rospy.get_param(
+            "~status_topic", "/global_path_tracker/status"
+        )
 
         self.path_points = []
         self.robot_pose = None
@@ -90,8 +122,13 @@ class GlobalPathTracker(object):
             self.use_tf_pose,
         )
 
+    # Receive the reference path and update its cumulative-length tracking
+    # representation.
+    # Inputs: msg.
     def path_callback(self, msg):
-        self.path_points = [(pose.pose.position.x, pose.pose.position.y) for pose in msg.poses]
+        self.path_points = [
+            (pose.pose.position.x, pose.pose.position.y) for pose in msg.poses
+        ]
         self.path_cumulative = self.compute_cumulative_lengths(self.path_points)
         self.last_path_stamp = rospy.Time.now()
         self.goal_active = len(self.path_points) >= 2
@@ -101,6 +138,8 @@ class GlobalPathTracker(object):
         self.clicked_goal_entered_approach_zone = False
         self.closest_terminal_dist_seen = None
 
+    # Retain vehicle pose from the configured odometry source.
+    # Inputs: msg.
     def odom_callback(self, msg):
         if self.use_tf_pose:
             return
@@ -114,6 +153,7 @@ class GlobalPathTracker(object):
         )
         self.pose_source = "odom"
 
+    # Refresh the tracking pose from the configured TF frames when available.
     def update_tf_pose(self):
         if not self.use_tf_pose:
             return
@@ -144,16 +184,21 @@ class GlobalPathTracker(object):
         self.robot_pose = (trans[0], trans[1], yaw)
         self.pose_source = "tf"
 
+    # Receive a new goal and update task state used by completion checks.
+    # Inputs: msg.
     def goal_callback(self, msg):
         self.current_goal = (msg.pose.position.x, msg.pose.position.y)
         self.goal_active = True
         self.closest_clicked_goal_dist_seen = None
         self.clicked_goal_entered_approach_zone = False
 
+    # Publish a zero-motion command through this tracker's output path.
     def publish_stop(self):
         cmd = Twist()
         self.cmd_pub.publish(cmd)
 
+    # Retain a diagnostic tracking sample without changing the selected command.
+    # Inputs: event, **kwargs.
     def _record_debug_sample(self, event, **kwargs):
         sample = {
             "stamp": rospy.Time.now().to_sec(),
@@ -164,6 +209,8 @@ class GlobalPathTracker(object):
         sample.update(kwargs)
         self.status_pub.publish(String(data=json.dumps(sample, separators=(",", ":"))))
 
+    # Compute arclength in metres along the planar reference polyline.
+    # Inputs: points.
     @staticmethod
     def compute_cumulative_lengths(points):
         cumulative = [0.0]
@@ -173,6 +220,9 @@ class GlobalPathTracker(object):
             cumulative.append(cumulative[-1] + math.hypot(px1 - px0, py1 - py0))
         return cumulative
 
+    # Project the current point onto supported path segments and return tracking
+    # progress evidence.
+    # Inputs: x, y.
     def project_onto_path(self, x, y):
         if len(self.path_points) < 2:
             return None
@@ -215,6 +265,8 @@ class GlobalPathTracker(object):
 
         return best
 
+    # Return the path tangent heading in radians at the projected segment.
+    # Inputs: projection.
     def segment_heading_at_projection(self, projection):
         if projection is None:
             return None
@@ -225,6 +277,8 @@ class GlobalPathTracker(object):
         x1, y1 = self.path_points[seg_idx + 1]
         return math.atan2(y1 - y0, x1 - x0)
 
+    # Select the tracking target by path progress and configured lookahead.
+    # Inputs: x, y, projection.
     def find_target_point(self, x, y, projection=None):
         if not self.path_points:
             return None, None, None
@@ -246,14 +300,20 @@ class GlobalPathTracker(object):
 
         return closest_idx, closest_dist, self.path_points[target_idx]
 
-    def should_stop_at_goal(self, x, y, closest_idx=None, closest_dist=None, projection=None):
+    # Evaluate the existing geometric/task conditions for goal completion.
+    # Inputs: x, y, closest_idx, closest_dist, projection.
+    def should_stop_at_goal(
+        self, x, y, closest_idx=None, closest_dist=None, projection=None
+    ):
         if self.current_goal is not None:
             clicked_goal_x, clicked_goal_y = self.current_goal
             clicked_goal_dist = math.hypot(clicked_goal_x - x, clicked_goal_y - y)
             if self.closest_clicked_goal_dist_seen is None:
                 self.closest_clicked_goal_dist_seen = clicked_goal_dist
             else:
-                self.closest_clicked_goal_dist_seen = min(self.closest_clicked_goal_dist_seen, clicked_goal_dist)
+                self.closest_clicked_goal_dist_seen = min(
+                    self.closest_clicked_goal_dist_seen, clicked_goal_dist
+                )
 
             if clicked_goal_dist <= self.goal_approach_radius:
                 self.clicked_goal_entered_approach_zone = True
@@ -264,7 +324,8 @@ class GlobalPathTracker(object):
             if (
                 self.clicked_goal_entered_approach_zone
                 and self.closest_clicked_goal_dist_seen is not None
-                and clicked_goal_dist > self.closest_clicked_goal_dist_seen + self.goal_overshoot_margin
+                and clicked_goal_dist
+                > self.closest_clicked_goal_dist_seen + self.goal_overshoot_margin
             ):
                 return True, "clicked_goal_distance_rebound"
 
@@ -307,8 +368,13 @@ class GlobalPathTracker(object):
                     closest_dist = d
                     closest_idx = i
 
-        terminal_start_idx = max(0, len(self.path_points) - max(1, self.end_path_point_window))
-        if closest_idx >= terminal_start_idx and closest_dist <= self.end_path_point_tolerance:
+        terminal_start_idx = max(
+            0, len(self.path_points) - max(1, self.end_path_point_window)
+        )
+        if (
+            closest_idx >= terminal_start_idx
+            and closest_dist <= self.end_path_point_tolerance
+        ):
             return True, "near_terminal_path_points"
 
         terminal_idx = len(self.path_points) - 1
@@ -316,11 +382,14 @@ class GlobalPathTracker(object):
             if self.closest_terminal_dist_seen is None:
                 self.closest_terminal_dist_seen = closest_dist
             else:
-                self.closest_terminal_dist_seen = min(self.closest_terminal_dist_seen, closest_dist)
+                self.closest_terminal_dist_seen = min(
+                    self.closest_terminal_dist_seen, closest_dist
+                )
 
             if (
                 self.closest_terminal_dist_seen is not None
-                and closest_dist > self.closest_terminal_dist_seen + self.terminal_index_overshoot_margin
+                and closest_dist
+                > self.closest_terminal_dist_seen + self.terminal_index_overshoot_margin
             ):
                 return True, "terminal_index_distance_rebound"
 
@@ -346,13 +415,23 @@ class GlobalPathTracker(object):
 
         return False, "not_at_goal"
 
+    # Compute the tracker's command from the current pose, path projection, and target
+    # geometry.
     def compute_command(self):
         self.update_tf_pose()
         if self.robot_pose is None:
             if self.debug_log:
-                source = "tf {}->{}".format(self.tf_map_frame, self.tf_base_frame) if self.use_tf_pose else self.odom_topic
-                rospy.logwarn_throttle(1.0, "global_path_tracker waiting for robot pose from %s", source)
-            self._record_debug_sample("waiting_robot_pose", pose_source=self.pose_source)
+                source = (
+                    "tf {}->{}".format(self.tf_map_frame, self.tf_base_frame)
+                    if self.use_tf_pose
+                    else self.odom_topic
+                )
+                rospy.logwarn_throttle(
+                    1.0, "global_path_tracker waiting for robot pose from %s", source
+                )
+            self._record_debug_sample(
+                "waiting_robot_pose", pose_source=self.pose_source
+            )
             return None
         if not self.goal_active:
             if self.debug_log:
@@ -361,7 +440,9 @@ class GlobalPathTracker(object):
             return Twist()
         if not self.path_points:
             if self.debug_log:
-                rospy.logwarn_throttle(1.0, "global_path_tracker waiting for path from %s", self.path_topic)
+                rospy.logwarn_throttle(
+                    1.0, "global_path_tracker waiting for path from %s", self.path_topic
+                )
             self._record_debug_sample("waiting_path")
             return Twist() if self.stop_on_missing_path else None
 
@@ -399,7 +480,9 @@ class GlobalPathTracker(object):
             return Twist()
 
         if target is None:
-            self._record_debug_sample("no_target", x=x, y=y, yaw=yaw, projection=projection)
+            self._record_debug_sample(
+                "no_target", x=x, y=y, yaw=yaw, projection=projection
+            )
             return Twist()
 
         tx, ty = target
@@ -412,7 +495,10 @@ class GlobalPathTracker(object):
             segment_heading_error = wrap_to_pi(segment_heading - yaw)
             straight_like = abs(math.degrees(alpha)) <= self.straight_segment_angle_deg
             within_lane = abs(projection["lateral"]) <= self.lateral_deadband
-            heading_small = abs(math.degrees(segment_heading_error)) <= self.straight_heading_deadband_deg
+            heading_small = (
+                abs(math.degrees(segment_heading_error))
+                <= self.straight_heading_deadband_deg
+            )
             if straight_like and within_lane and heading_small:
                 control_alpha = 0.0
                 speed_reason = "lane_deadband_hold"
@@ -490,6 +576,7 @@ class GlobalPathTracker(object):
                 )
         return cmd
 
+    # Run tracking and stop/publication branches until ROS shutdown.
     def run(self):
         rate = rospy.Rate(self.control_rate)
         while not rospy.is_shutdown():

@@ -1,3 +1,6 @@
+# Module contract: Parse supported Unicore receiver solution messages with checksum
+# validation. Numeric fields retain their receiver protocol meaning and units.
+
 """PVTSLNA, N4 protocol table 7-81 (header excluded from field indexes)."""
 
 import math
@@ -13,6 +16,10 @@ def crc32(data):
     return crc
 
 
+# Validate and parse the supported PVTSLNA solution fields; reject malformed or
+# checksum-invalid receiver evidence.
+# Inputs: sentence.
+# Explicit rejection paths: ValueError.
 def parse_pvtslna(sentence):
     body, checksum = sentence.strip().rsplit('*', 1)
     if not body.startswith('#PVTSLNA,') or len(checksum) != 8:
@@ -29,21 +36,30 @@ def parse_pvtslna(sentence):
     satellites = int(fields[25])
     if not all(math.isfinite(v) for v in (length, heading, pitch, latitude, longitude)):
         raise ValueError('Non-finite PVTSLNA data')
-    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180
-            and 0 <= length <= 3000 and 0 <= heading <= 360
-            and -90 <= pitch <= 90 and satellites >= 0):
+    if not (
+        -90 <= latitude <= 90
+        and -180 <= longitude <= 180
+        and 0 <= length <= 3000
+        and 0 <= heading <= 360
+        and -90 <= pitch <= 90
+        and satellites >= 0
+    ):
         raise ValueError('Out-of-range PVTSLNA data')
     # N4 table 0-4: both are integer solutions; preserve the exact type,
     # do not claim equal precision or admit FLOAT/NONE/unknown types.
-    heading_fixed = heading_type in ('NARROW_INT','L1_INT')
+    heading_fixed = heading_type in ('NARROW_INT', 'L1_INT')
     return {
         'source': 'PVTSLNA',
         'position_type': position_type,
-        'position_fixed': position_type in ('NARROW_INT','L1_INT'),
-        'latitude': latitude, 'longitude': longitude,
-        'heading_type': heading_type, 'heading_fixed': heading_fixed,
+        'position_fixed': position_type in ('NARROW_INT', 'L1_INT'),
+        'latitude': latitude,
+        'longitude': longitude,
+        'heading_type': heading_type,
+        'heading_fixed': heading_fixed,
         'heading_quality_class': heading_type,
         'heading_valid': heading_fixed and length > 0 and satellites > 0,
-        'baseline_m': length, 'heading_deg': heading,
-        'pitch_deg': pitch, 'heading_satellites': satellites,
+        'baseline_m': length,
+        'heading_deg': heading,
+        'pitch_deg': pitch,
+        'heading_satellites': satellites,
     }

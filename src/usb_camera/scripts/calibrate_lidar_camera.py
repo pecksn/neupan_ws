@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Module contract: Offline LiDAR/camera target fitting and rigid extrinsic estimation.
+# Coordinate direction and image orientation must match the datasets used for
+# calibration.
+
 """Offline MID360/camera extrinsic calibration from FAST-Calib target scenes."""
 
 import argparse
@@ -12,12 +16,23 @@ import numpy as np
 import rosbag
 
 
-K = np.array([[1056.5434295756897, 0.0, 887.6099684823234],
-              [0.0, 1057.3350109603232, 687.9125738476482],
-              [0.0, 0.0, 1.0]], dtype=np.float64)
-D = np.array([-0.40130317211542343, 0.1845567579908426,
-              0.00034687862877420003, 0.0014981691723600034,
-              -0.04118561811519803])
+K = np.array(
+    [
+        [1056.5434295756897, 0.0, 887.6099684823234],
+        [0.0, 1057.3350109603232, 687.9125738476482],
+        [0.0, 0.0, 1.0],
+    ],
+    dtype=np.float64,
+)
+D = np.array(
+    [
+        -0.40130317211542343,
+        0.1845567579908426,
+        0.00034687862877420003,
+        0.0014981691723600034,
+        -0.04118561811519803,
+    ]
+)
 
 MARKER_SIZE = 0.20
 MARKER_HALF_WIDTH = 0.55
@@ -27,14 +42,21 @@ CIRCLE_HEIGHT = 0.40
 CIRCLE_RADIUS = 0.12
 
 
+# Extract finite XYZ samples from a PointCloud2 message using the requested stride.
+# Inputs: msg, stride.
 def pointcloud_xyz(msg, stride=3):
-    dtype = {"names": ["x", "y", "z"],
-             "formats": ["<f4", "<f4", "<f4"],
-             "offsets": [0, 4, 8], "itemsize": msg.point_step}
+    dtype = {
+        "names": ["x", "y", "z"],
+        "formats": ["<f4", "<f4", "<f4"],
+        "offsets": [0, 4, 8],
+        "itemsize": msg.point_step,
+    }
     data = np.ndarray((msg.width * msg.height,), dtype=dtype, buffer=msg.data)
     return np.column_stack((data["x"], data["y"], data["z"]))[::stride]
 
 
+# Load the supported LiDAR point representation for offline target fitting.
+# Inputs: path.
 def load_lidar_points(path):
     clouds = []
     with rosbag.Bag(path) as bag:
@@ -43,11 +65,20 @@ def load_lidar_points(path):
     points = np.vstack(clouds)
     valid = np.isfinite(points).all(axis=1)
     points = points[valid]
-    return points[(points[:, 0] > 1.7) & (points[:, 0] < 2.7) &
-                  (points[:, 1] > -1.5) & (points[:, 1] < 1.5) &
-                  (points[:, 2] > 0.03) & (points[:, 2] < 1.8)]
+    return points[
+        (points[:, 0] > 1.7)
+        & (points[:, 0] < 2.7)
+        & (points[:, 1] > -1.5)
+        & (points[:, 1] < 1.5)
+        & (points[:, 2] > 0.03)
+        & (points[:, 2] < 1.8)
+    ]
 
 
+# Fit the calibration target plane with the supplied deterministic seed and return the
+# supported plane evidence.
+# Inputs: points, seed.
+# Explicit rejection paths: RuntimeError.
 def fit_target_plane(points, seed=7):
     rng = np.random.default_rng(seed)
     best = None
@@ -79,15 +110,21 @@ def fit_target_plane(points, seed=7):
     return plane, center, axes, uv
 
 
+# Fit the target circle in planar coordinates for correspondence extraction.
+# Inputs: points_2d.
 def fit_circle(points_2d):
-    a = np.column_stack((2.0 * points_2d[:, 0], 2.0 * points_2d[:, 1],
-                         np.ones(len(points_2d))))
-    b = np.sum(points_2d ** 2, axis=1)
+    a = np.column_stack(
+        (2.0 * points_2d[:, 0], 2.0 * points_2d[:, 1], np.ones(len(points_2d)))
+    )
+    b = np.sum(points_2d**2, axis=1)
     cx, cy, c = np.linalg.lstsq(a, b, rcond=None)[0]
     radius = np.sqrt(max(0.0, c + cx * cx + cy * cy))
     return np.array([cx, cy]), radius
 
 
+# Extract target-circle centers from the LiDAR bag evidence.
+# Inputs: bag_path.
+# Explicit rejection paths: RuntimeError.
 def lidar_circle_centers(bag_path):
     points = load_lidar_points(bag_path)
     plane, origin, axes, uv = fit_target_plane(points)
@@ -97,10 +134,12 @@ def lidar_circle_centers(bag_path):
 
     fitted = []
     radii = []
-    for du, dv in [(-CIRCLE_WIDTH / 2, CIRCLE_HEIGHT / 2),
-                   (CIRCLE_WIDTH / 2, CIRCLE_HEIGHT / 2),
-                   (CIRCLE_WIDTH / 2, -CIRCLE_HEIGHT / 2),
-                   (-CIRCLE_WIDTH / 2, -CIRCLE_HEIGHT / 2)]:
+    for du, dv in [
+        (-CIRCLE_WIDTH / 2, CIRCLE_HEIGHT / 2),
+        (CIRCLE_WIDTH / 2, CIRCLE_HEIGHT / 2),
+        (CIRCLE_WIDTH / 2, -CIRCLE_HEIGHT / 2),
+        (-CIRCLE_WIDTH / 2, -CIRCLE_HEIGHT / 2),
+    ]:
         guess = board_center + np.array([du, dv])
         radial = np.linalg.norm(uv - guess, axis=1)
         ring = uv[(radial > 0.085) & (radial < 0.165)]
@@ -114,11 +153,13 @@ def lidar_circle_centers(bag_path):
         fitted.append(circle)
         radii.append(radius)
 
-    centers = np.array([origin + p[0] * axes[0] + p[1] * axes[1]
-                        for p in fitted])
+    centers = np.array([origin + p[0] * axes[0] + p[1] * axes[1] for p in fitted])
     return centers, np.asarray(radii), len(plane)
 
 
+# Extract target-circle centers from the supplied calibration image.
+# Inputs: image_path.
+# Explicit rejection paths: RuntimeError.
 def camera_circle_centers(image_path):
     image = cv2.imread(image_path)
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
@@ -127,10 +168,12 @@ def camera_circle_centers(image_path):
     if ids is None or set(ids.ravel()) != {1, 2, 3, 4}:
         raise RuntimeError("expected ArUco IDs 1,2,3,4")
 
-    marker_positions = {1: (-MARKER_HALF_WIDTH, MARKER_HALF_HEIGHT),
-                        2: (MARKER_HALF_WIDTH, MARKER_HALF_HEIGHT),
-                        4: (MARKER_HALF_WIDTH, -MARKER_HALF_HEIGHT),
-                        3: (-MARKER_HALF_WIDTH, -MARKER_HALF_HEIGHT)}
+    marker_positions = {
+        1: (-MARKER_HALF_WIDTH, MARKER_HALF_HEIGHT),
+        2: (MARKER_HALF_WIDTH, MARKER_HALF_HEIGHT),
+        4: (MARKER_HALF_WIDTH, -MARKER_HALF_HEIGHT),
+        3: (-MARKER_HALF_WIDTH, -MARKER_HALF_HEIGHT),
+    }
     board_points = []
     marker_image_centers = []
     for detected, marker_id in zip(corners, ids.ravel()):
@@ -144,25 +187,33 @@ def camera_circle_centers(image_path):
     normalized_markers = cv2.undistortPoints(
         np.asarray(marker_image_centers, np.float64).reshape(-1, 1, 2), K, D
     ).reshape(-1, 2)
-    homography, _ = cv2.findHomography(np.asarray(board_points, np.float64),
-                                      normalized_markers)
-    target = np.array([[-CIRCLE_WIDTH / 2, CIRCLE_HEIGHT / 2, 0],
-                       [CIRCLE_WIDTH / 2, CIRCLE_HEIGHT / 2, 0],
-                       [CIRCLE_WIDTH / 2, -CIRCLE_HEIGHT / 2, 0],
-                       [-CIRCLE_WIDTH / 2, -CIRCLE_HEIGHT / 2, 0]],
-                      dtype=np.float64)
+    homography, _ = cv2.findHomography(
+        np.asarray(board_points, np.float64), normalized_markers
+    )
+    target = np.array(
+        [
+            [-CIRCLE_WIDTH / 2, CIRCLE_HEIGHT / 2, 0],
+            [CIRCLE_WIDTH / 2, CIRCLE_HEIGHT / 2, 0],
+            [CIRCLE_WIDTH / 2, -CIRCLE_HEIGHT / 2, 0],
+            [-CIRCLE_WIDTH / 2, -CIRCLE_HEIGHT / 2, 0],
+        ],
+        dtype=np.float64,
+    )
     normalized_holes = cv2.perspectiveTransform(
         target[:, :2].reshape(-1, 1, 2), homography
     ).reshape(-1, 2)
-    ok, rvec, tvec = cv2.solvePnP(target, normalized_holes,
-                                  np.eye(3), np.zeros(5),
-                                  flags=cv2.SOLVEPNP_IPPE)
+    ok, rvec, tvec = cv2.solvePnP(
+        target, normalized_holes, np.eye(3), np.zeros(5), flags=cv2.SOLVEPNP_IPPE
+    )
     if not ok:
         raise RuntimeError("camera target pose solve failed")
     rotation = cv2.Rodrigues(rvec)[0]
     return (rotation @ target.T).T + tvec.reshape(1, 3)
 
 
+# Estimate the rigid transformation mapping the source point set to the target point
+# set.
+# Inputs: source, target.
 def rigid_transform(source, target):
     source_mean = source.mean(axis=0)
     target_mean = target.mean(axis=0)
@@ -173,9 +224,12 @@ def rigid_transform(source, target):
         rotation = vt.T @ u.T
     translation = target_mean - rotation @ source_mean
     residual = (rotation @ source.T).T + translation - target
-    return rotation, translation, np.sqrt(np.mean(np.sum(residual ** 2, axis=1)))
+    return rotation, translation, np.sqrt(np.mean(np.sum(residual**2, axis=1)))
 
 
+# Run this module's command-line or ROS entry point. Keep startup, resource ownership,
+# and shutdown within this process.
+# Explicit rejection paths: RuntimeError.
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("scene_dir")
@@ -183,11 +237,15 @@ def main():
     args = parser.parse_args()
 
     bag_paths = sorted(glob.glob(os.path.join(args.scene_dir, "scene_*.bag")))
-    scene_names = [os.path.splitext(os.path.basename(path))[0]
-                   for path in bag_paths
-                   if os.path.isfile(os.path.join(
-                       args.scene_dir,
-                       os.path.splitext(os.path.basename(path))[0] + ".jpg"))]
+    scene_names = [
+        os.path.splitext(os.path.basename(path))[0]
+        for path in bag_paths
+        if os.path.isfile(
+            os.path.join(
+                args.scene_dir, os.path.splitext(os.path.basename(path))[0] + ".jpg"
+            )
+        )
+    ]
     if len(scene_names) < 3:
         raise RuntimeError("at least three scene_*.bag/.jpg pairs are required")
     lidar_sets = []
@@ -195,30 +253,39 @@ def main():
     diagnostics = []
     for name in scene_names:
         lidar, radii, plane_count = lidar_circle_centers(
-            os.path.join(args.scene_dir, name + ".bag"))
+            os.path.join(args.scene_dir, name + ".bag")
+        )
         camera = camera_circle_centers(os.path.join(args.scene_dir, name + ".jpg"))
         lidar_sets.append(lidar)
         camera_sets.append(camera)
-        diagnostics.append({"scene": name, "plane_points": plane_count,
-                            "fitted_radii_m": radii.tolist()})
+        diagnostics.append(
+            {
+                "scene": name,
+                "plane_points": plane_count,
+                "fitted_radii_m": radii.tolist(),
+            }
+        )
 
     # Select the rectangle symmetry using the measured mechanical initial guess.
     # Use the previously verified calibration as a correspondence prior. The
     # four-hole rectangle has a 180-degree symmetry, so a coarse axis-only
     # prior can choose the wrong labeling for strongly angled scenes.
-    initial_rotation = np.array([
-        [-0.031382438, -0.999488148, -0.006211597],
-        [-0.013786343, 0.006646921, -0.999882871],
-        [0.999412367, -0.031293127, -0.013987883],
-    ])
-    initial_translation = np.array([0.001691342, -0.080829955,
-                                    -0.071189642])
+    initial_rotation = np.array(
+        [
+            [-0.031382438, -0.999488148, -0.006211597],
+            [-0.013786343, 0.006646921, -0.999882871],
+            [0.999412367, -0.031293127, -0.013987883],
+        ]
+    )
+    initial_translation = np.array([0.001691342, -0.080829955, -0.071189642])
     ordered_lidar = []
     used_camera = []
     for index, (lidar, camera) in enumerate(zip(lidar_sets, camera_sets)):
         predicted = (initial_rotation @ lidar.T).T + initial_translation
-        permutation = min(itertools.permutations(range(4)),
-                          key=lambda p: np.sum((predicted[list(p)] - camera) ** 2))
+        permutation = min(
+            itertools.permutations(range(4)),
+            key=lambda p: np.sum((predicted[list(p)] - camera) ** 2),
+        )
         candidate = lidar[list(permutation)]
         _, _, geometry_rmse = rigid_transform(candidate, camera)
         diagnostics[index]["single_scene_geometry_rmse_m"] = float(geometry_rmse)
@@ -233,10 +300,13 @@ def main():
     all_lidar = np.vstack(ordered_lidar)
     all_camera = np.vstack(used_camera)
     rotation, translation, rmse = rigid_transform(all_lidar, all_camera)
-    result = {"convention": "p_camera = R_camera_lidar * p_lidar + t_camera_lidar",
-              "R_camera_lidar": rotation.tolist(),
-              "t_camera_lidar": translation.tolist(),
-              "rmse_m": float(rmse), "scenes": diagnostics}
+    result = {
+        "convention": "p_camera = R_camera_lidar * p_lidar + t_camera_lidar",
+        "R_camera_lidar": rotation.tolist(),
+        "t_camera_lidar": translation.tolist(),
+        "rmse_m": float(rmse),
+        "scenes": diagnostics,
+    }
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
