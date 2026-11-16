@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Module contract: Legacy host-side wrapper for UTC preflight and container launch.
+# This script runs on the host, then enters Neupan; it is not a command to paste
+# into an already-entered ROS container. Keep normal operator startup separate.
+# Forward positional arguments unchanged so this wrapper does not silently
+# replace caller-selected launch parameters. Do not execute it for a code audit.
 # Host-only preflight; no GNSS serial access or clock adjustment.
 set -euo pipefail
 task_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

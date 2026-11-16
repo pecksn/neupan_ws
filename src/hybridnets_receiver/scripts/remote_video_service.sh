@@ -1,4 +1,8 @@
 #!/bin/bash
+# Module contract: Noninteractive container entry point for raw-video supervision.
+# Establish only the ROS environment required by the receiver service; this is
+# not the vehicle navigation startup path. exec preserves service-manager signal
+# delivery and exit status by replacing the shell with the owned Python process.
 # Noninteractive system-service entry: no menu, conda or vehicle launch.
 set -eo pipefail
 source /opt/ros/noetic/setup.bash

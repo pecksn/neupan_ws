@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Module contract: Executable ROS entry point for the NeuPAN implementation modules.
+# Keep packaging/import setup separate from the planner's control logic.
+
 """ROS executable entry; planner and diagnostics remain in the package's src/."""
 import os
 import sys
@@ -17,6 +20,8 @@ except ModuleNotFoundError:
 from neupan_diagnostics import report_failure
 
 
+# Run this module's command-line or ROS entry point. Keep startup, resource ownership,
+# and shutdown within this process.
 def main():
     node = None
     try:

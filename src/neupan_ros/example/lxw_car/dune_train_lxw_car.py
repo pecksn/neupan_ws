@@ -1,3 +1,6 @@
+# Module contract: Offline vehicle-specific DUNE training entry point. Training
+# artifacts and training geometry are not online navigation commands.
+
 from neupan import neupan
 
 if __name__ == '__main__':

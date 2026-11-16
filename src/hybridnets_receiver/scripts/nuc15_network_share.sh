@@ -1,4 +1,8 @@
 #!/bin/bash
+# Module contract: Host firewall adapter for the configured Jetson peer only.
+# Requires host privileges and existing Docker firewall integration. start/stop
+# affect the service-owned chains, not the complete firewall or default routes.
+# Route metrics outside this script choose the active Wi-Fi/cellular uplink.
 # Host-only IPv4 forwarding for the single Jetson peer. Keep Docker rules intact.
 set -euo pipefail
 peer=192.168.1.20/32
@@ -6,7 +10,11 @@ gpu_if=enxec1ac30270b6
 cell_if=enxec1ac30270b0
 forward_chain=NEUPAN-JETSON-FWD
 nat_chain=NEUPAN-JETSON-NAT
+# Wait for the xtables lock before applying one rule operation. Preserve every
+# argument so table/chain ownership remains explicit at each call site.
 ipt() { /usr/sbin/iptables -w 5 "$@"; }
+# Add a rule only when the identical rule is absent. Repeated service startup
+# must not accumulate duplicate forwarding/NAT rules in the owned chains.
 ensure() {
     local table=$1 chain=$2
     shift 2

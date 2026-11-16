@@ -1,7 +1,14 @@
 #!/bin/bash
+# Module contract: Desktop-session status terminal for the raw-video service.
+# This is a readiness display, not a camera viewer or navigation launcher.
+# --check performs the same readiness probe without opening a terminal window.
+# Do not run graphical-session setup as a root system service.
 # Run as desktop user after graphical login, never as a root system service.
 set -u
 
+# Require active services, a running container, and a reachable ROS video node.
+# Service state alone is not sufficient: the XML-RPC probe verifies the node's
+# current process endpoint instead of trusting an obsolete registration.
 video_ready() {
     /usr/bin/systemctl is-active --quiet neupan-ros-master.service &&
     /usr/bin/systemctl is-active --quiet neupan-remote-video.service &&
