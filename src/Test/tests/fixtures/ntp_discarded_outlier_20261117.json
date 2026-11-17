@@ -1,0 +1,18 @@
+{
+  "accepted": {
+    "utc_ns": 1794916652346827500,
+    "monotonic_ns": 11315061903064,
+    "boot_id": "7f4ff54f-1086-4cff-b17e-204371b25a42",
+    "ntp_synchronized": "yes",
+    "properties": "LinkNTPServers=\nSystemNTPServers=ntp.tencent.com ntp1.aliyun.com\nFallbackNTPServers=ntp.ubuntu.com\nServerName=ntp1.aliyun.com\nServerAddress=118.31.3.89\nRootDistanceMaxUSec=5s\nPollIntervalMinUSec=32s\nPollIntervalMaxUSec=1min 4s\nPollIntervalUSec=1min 4s\nNTPMessage={ Leap=0, Version=4, Mode=4, Stratum=2, Precision=-25, RootDelay=4.684ms, RootDispersion=10.070ms, Reference=64643D5B, OriginateTimestamp=Tue 2026-11-17 19:56:37 CST, ReceiveTimestamp=Tue 2026-11-17 19:56:37 CST, TransmitTimestamp=Tue 2026-11-17 19:56:37 CST, DestinationTimestamp=Tue 2026-11-17 19:56:37 CST, Ignored=no PacketCount=3, Jitter=27.276ms }\nFrequency=32768000\n",
+    "status": "       Server: 118.31.3.89 (ntp1.aliyun.com)\nPoll interval: 1min 4s (min: 32s; max 1min 4s)\n         Leap: normal\n      Version: 4\n      Stratum: 2\n    Reference: 64643D5B\n    Precision: 1us (-25)\nRoot distance: 12.412ms (max: 5s)\n       Offset: +74.767ms\n        Delay: 184.151ms\n       Jitter: 27.276ms\n Packet count: 3\n    Frequency: +500.000ppm\n"
+  },
+  "ignored": {
+    "utc_ns": 1794916682753551000,
+    "monotonic_ns": 11345468626306,
+    "boot_id": "7f4ff54f-1086-4cff-b17e-204371b25a42",
+    "ntp_synchronized": "yes",
+    "properties": "LinkNTPServers=\nSystemNTPServers=ntp.tencent.com ntp1.aliyun.com\nFallbackNTPServers=ntp.ubuntu.com\nServerName=ntp1.aliyun.com\nServerAddress=118.31.3.89\nRootDistanceMaxUSec=5s\nPollIntervalMinUSec=32s\nPollIntervalMaxUSec=1min 4s\nPollIntervalUSec=32s\nNTPMessage={ Leap=0, Version=4, Mode=4, Stratum=2, Precision=-25, RootDelay=4.684ms, RootDispersion=10.131ms, Reference=64643D5B, OriginateTimestamp=Tue 2026-11-17 19:57:41 CST, ReceiveTimestamp=Tue 2026-11-17 19:57:43 CST, TransmitTimestamp=Tue 2026-11-17 19:57:43 CST, DestinationTimestamp=Tue 2026-11-17 19:57:43 CST, Ignored=yes PacketCount=4, Jitter=421.905ms }\nFrequency=32768000\n",
+    "status": "       Server: 118.31.3.89 (ntp1.aliyun.com)\nPoll interval: 32s (min: 32s; max 1min 4s)\n         Leap: normal\n      Version: 4\n      Stratum: 2\n    Reference: 64643D5B\n    Precision: 1us (-25)\nRoot distance: 12.473ms (max: 5s)\n       Offset: +1.116893s\n        Delay: 2.496607s\n       Jitter: 421.905ms\n Packet count: 4\n"
+  }
+}

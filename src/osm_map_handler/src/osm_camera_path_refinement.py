@@ -2099,18 +2099,18 @@ class CameraRightPath:
             'vehicle_center',
         ):
             raise ValueError('unknown distance reference')
-        self.camera_clearance = float(rospy.get_param('~camera_clearance_m', 2.0))
-        self.clearance_min = float(rospy.get_param('~camera_clearance_min_m', 1.0))
-        self.clearance_max = float(rospy.get_param('~camera_clearance_max_m', 3.0))
+        self.camera_clearance = float(rospy.get_param('~camera_clearance_m', 1.25))
+        self.clearance_min = float(rospy.get_param('~camera_clearance_min_m', 0.5))
+        self.clearance_max = float(rospy.get_param('~camera_clearance_max_m', 2.0))
         if not (
-            1.0
+            0.5
             <= self.clearance_min
             <= self.camera_clearance
             <= self.clearance_max
             <= 3.0
         ):
             raise ValueError(
-                'camera clearance must satisfy 1 <= min <= preferred <= max <= 3'
+                'camera clearance must satisfy 0.5 <= min <= preferred <= max <= 3'
             )
         self.selected_clearance = None
         self.hazards = HazardMemory()

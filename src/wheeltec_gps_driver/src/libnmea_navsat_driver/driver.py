@@ -51,6 +51,7 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float32, String
 from libnmea_navsat_driver.unicore import parse_pvtslna
 from libnmea_navsat_driver.observation_time import ObservationTiming
+from libnmea_navsat_driver import observation_time
 from geometry_msgs.msg import TwistWithCovarianceStamped
 
 class RosNMEADriver(object):
@@ -110,7 +111,10 @@ class RosNMEADriver(object):
             pvt_period_sec=self.pvt_period_sec, gga_period_sec=self.gga_period_sec,
             cadence_margin_sec=self.cadence_margin_sec,
             transport_limit_sec=rospy.get_param('~gnss_transport_limit_sec',0.),
-            common_utc_verified=rospy.get_param('~gnss_common_utc_verified',False))
+            common_utc_verified=rospy.get_param('~gnss_common_utc_verified',False),
+            independent_clock_probe=(lambda: bool(rospy.get_param('~host_clock_evidence_file', '')) and observation_time.host_clock_evidence(
+                rospy.get_param('~host_clock_evidence_file', '')).get('host_snapshot_fresh') is True)
+            if rospy.get_param('~gnss_common_utc_verified',False) else None)
         # Coarse G90 installation sanity envelope, NOT an exact 0.67m
         # calibration. Only the newly admitted L1 class needs this extra gate;
         # existing NARROW_INT continuity/quality contract is unchanged.

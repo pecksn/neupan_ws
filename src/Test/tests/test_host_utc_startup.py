@@ -14,13 +14,13 @@ from libnmea_navsat_driver import host_utc_evidence as host
 
 
 class HostStartupTests(unittest.TestCase):
-    def test_full_main_publishes_wait_then_ready_before_one_serial_open(self):
+    def test_full_main_opens_serial_without_waiting_for_host(self):
         from libnmea_navsat_driver.serial_diagnostics import SerialDiagnostics,BoundedRawCapture
         source=ROOT/'src/wheeltec_gps_driver/src/libnmea_navsat_driver/nodes/nmea_serial_driver.py'
         functions=[n for n in ast.parse(source.read_text()).body if isinstance(n,ast.FunctionDef)]
         ros=Mock();ros.get_param.side_effect=lambda key,default=None: {
             '~gnss_common_utc_verified':True,'~host_clock_evidence_file':'test.json'}.get(key,default)
-        ros.is_shutdown.side_effect=[False,False,True]
+        ros.is_shutdown.return_value=True
         ros.Time.now.return_value.to_sec.return_value=1.
         ros.get_name.return_value='nmea_test'
         driver=Mock();driver.observation_timing.summary.return_value={}
@@ -36,7 +36,7 @@ class HostStartupTests(unittest.TestCase):
             String=lambda **kw:NS(**kw))
         def serial_open(**kwargs):
             reports=[json.loads(call.args[0].data) for call in ros.Publisher.return_value.publish.call_args_list]
-            self.assertEqual([v['state'] for v in reports],['waiting_host_utc_evidence','host_utc_ready'])
+            self.assertEqual(reports, [])
             return Mock()
         namespace['serial']=NS(Serial=Mock(side_effect=serial_open),SerialException=OSError)
         ros.ROSInterruptException=InterruptedError
@@ -104,22 +104,13 @@ class HostStartupTests(unittest.TestCase):
             self.assertFalse(result['qualified'])
             self.assertIn('connection refused', result['error'])
 
-    def test_actual_serial_entry_waits_with_diagnostics_before_device_open(self):
+    def test_actual_serial_entry_uses_background_evidence_not_preflight_wait(self):
         source=ROOT/'src/wheeltec_gps_driver/src/libnmea_navsat_driver/nodes/nmea_serial_driver.py'
         tree=ast.parse(source.read_text())
-        function=next(v for v in tree.body if isinstance(v,ast.FunctionDef) and v.name=='wait_for_host_utc')
-        namespace={'rospy':Mock(), 'refresh_host_utc':Mock(side_effect=[
-            {'qualified':False,'error':'host unavailable'}, {'qualified':True}])}
-        namespace['rospy'].is_shutdown.return_value=False
-        exec(compile(ast.Module(body=[function],type_ignores=[]),str(source),'exec'),namespace)
-        diagnostics=Mock(); publish=Mock()
-        self.assertTrue(namespace['wait_for_host_utc']('host.json',diagnostics,publish))
-        self.assertEqual(publish.call_count, 2)
-        diagnostics.set_state.assert_any_call('waiting_host_utc_evidence')
-        self.assertEqual(namespace['rospy'].sleep.call_count, 1)
         main=next(v for v in tree.body if isinstance(v,ast.FunctionDef) and v.name=='main')
         calls=[v.func.id for v in ast.walk(main) if isinstance(v,ast.Call) and isinstance(v.func,ast.Name)]
-        self.assertIn('wait_for_host_utc', calls)
+        self.assertNotIn('wait_for_host_utc', calls)
+        self.assertIn('HostUtcMonitor', calls)
 
 
 if __name__=='__main__': unittest.main()

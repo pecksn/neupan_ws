@@ -160,6 +160,7 @@ class ObservationTiming:
         cadence_margin_sec=0.3,
         transport_limit_sec=0.0,
         common_utc_verified=False,
+        independent_clock_probe=None,
     ):
         if mode not in ('host', 'shadow', 'measurement'):
             raise ValueError('time_mode must be host/shadow/measurement')
@@ -170,6 +171,7 @@ class ObservationTiming:
         self.mode = mode
         self.transport_limit_sec = float(transport_limit_sec)
         self.common_utc_verified = common_utc_verified is True
+        self.independent_clock_probe = independent_clock_probe
         if (
             not math.isfinite(self.transport_limit_sec)
             or not 0 <= self.transport_limit_sec <= 4.0
@@ -247,6 +249,29 @@ class ObservationTiming:
     # verification policy.
     # Inputs: event.
     def _auto_verify(self, event):
+        # Independent host evidence is a separate admission input, not permission
+        # to stop reading the receiver or an assertion inferred from RTK Fixed.
+        if (
+            self.independent_clock_probe is not None
+            and self.independent_clock_probe() is not True
+        ):
+            self.clock_verified = False
+            for samples in self.auto_samples.values():
+                samples.clear()
+            self.auto_reason = 'waiting_for_independent_host_utc'
+            event.update(
+                clock_verified=False,
+                clock_waiting=not self.auto_failed,
+                clock_gate_reason=self.auto_reason,
+                measurement_age_ms=None,
+                independent_host_utc_verified=False,
+                common_utc_verified=False,
+                transport_limit_sec=self.transport_limit_sec,
+            )
+            return
+        event['independent_host_utc_verified'] = (
+            self.independent_clock_probe is not None
+        )
         if not self.auto_clock:
             return
         mono = event['host_read_mono_ns']

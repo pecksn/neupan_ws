@@ -28,9 +28,9 @@
     <arg name="camera_right_max_source_age_ms" default="-1" />
     <arg name="camera_right_max_capture_age_ms" default="-1" />
     <arg name="camera_right_distance_reference" default="camera_center" doc="默认按相机光学中心的道路横向间距" />
-    <arg name="camera_right_camera_clearance_m" default="1.5" doc="相机光学中心到右边界的平面横向目标间距" />
+    <arg name="camera_right_camera_clearance_m" default="1.25" doc="相机光学中心到右边界的平面横向目标间距" />
     <arg name="camera_right_clearance_min_m" default="0.5" />
-    <arg name="camera_right_clearance_max_m" default="2.5" />
+    <arg name="camera_right_clearance_max_m" default="2.0" />
     <arg name="camera_right_base_link_height_m" default="0.20" doc="用户确认base_link离地约20cm；不改变传感器安装TF" />
     <arg name="enable_hybridnets_receiver" default="true" doc="随全系统启动GPU推理JSON接收；原视频由独立服务接收"/>
     <arg name="enable_hybridnets_video" default="false" doc="仅未使用独立原视频服务时设true，避免重复占用UDP5000"/>
