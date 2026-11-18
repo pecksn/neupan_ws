@@ -29,7 +29,7 @@ OSM 公共模块直接平铺在 `osm_map_handler/src/`，不再创建内层同�
 
 ## 日志职责
 
-业务节点计算并发布状态，`robot_base_driver/scripts/system_run_logger.py` 统一写入运行 JSONL；`vehicle_bag_recorder` 单独录制 ROS 话题。`Test/scripts/analyze_bridge_reference_log.py` 只离线分析已有日志，不新增常驻记录节点。
+业务节点计算并发布状态，`robot_base_driver/scripts/system_run_logger.py` 统一写入运行 JSONL；`vehicle_bag_recorder` 单独录制 ROS 话题。
 
 ## 业务代码格式与注释
 
