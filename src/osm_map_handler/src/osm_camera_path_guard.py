@@ -568,9 +568,21 @@ class CameraPathGuard:
                 and held is None
                 and not needs_contract
             ):
+                # Reuse the detached geometry only for the same task, digest,
+                # and reference version. Still retain the latest accepted status
+                # for a later partial replacement; selection checks run every time.
+                previous = self.accepted_advisory
+                same_geometry = bool(
+                    previous is not None
+                    and previous[0] == self.original_key
+                    and previous[2] == self.candidate_digest
+                    and (previous[3].get('inference_diagnostics') or {}).get(
+                        'reference_version'
+                    ) == detail.get('reference_version')
+                )
                 self.accepted_advisory = (
                     self.original_key,
-                    copy.deepcopy(self.candidate),
+                    previous[1] if same_geometry else copy.deepcopy(self.candidate),
                     self.candidate_digest,
                     copy.deepcopy(status),
                 )

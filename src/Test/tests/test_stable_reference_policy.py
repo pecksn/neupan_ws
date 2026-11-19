@@ -459,6 +459,37 @@ class AdvisoryConsumerTests(unittest.TestCase):
         guard,_=self.guard();state=guard.select(1000.,1000000000000)[2]
         self.assertEqual(state['source'],'camera');self.assertIsNone(state['execution_contract'])
 
+    def test_reuses_detached_geometry_but_refreshes_status_and_checks_stop(self):
+        guard, status = self.guard()
+        guard.select(1000., 1000000000000)
+        snapshot = guard.accepted_advisory[1]
+        self.assertIsNot(snapshot, guard.candidate)
+
+        guard.candidate_cb(copy.deepcopy(guard.candidate))
+        status['guidance_source'] = 'updated'
+        guard.status_cb(status, 1000.1)
+        state = guard.select(1000.2, 1000200000000)[2]
+        self.assertIs(guard.accepted_advisory[1], snapshot)
+        self.assertAlmostEqual(state['heartbeat_age_sec'], .1)
+        self.assertEqual(guard.accepted_advisory[3]['guidance_source'], 'updated')
+
+        status['inference_diagnostics']['reference_version'] = 2
+        guard.status_cb(status, 1000.2)
+        guard.select(1000.2, 1000200000000)
+        version_snapshot = guard.accepted_advisory[1]
+        self.assertIsNot(version_snapshot, snapshot)
+
+        candidate = protocol.path(middle=.1)
+        guard.candidate_cb(candidate)
+        status['control_path_digest'] = path_digest(candidate)
+        guard.status_cb(status, 1000.3)
+        guard.select(1000.3, 1000300000000)
+        self.assertIsNot(guard.accepted_advisory[1], version_snapshot)
+
+        status['corridor_stop_required'] = True
+        guard.status_cb(status, 1000.4)
+        self.assertEqual(guard.select(1000.4, 1000400000000)[2]['source'], 'stop')
+
     def test_advisory_heartbeat_loss_holds_reference_not_vehicle_stop(self):
         guard,_=self.guard();self.assertEqual(guard.select(1020.,1020000000000)[2]['source'],'camera')
 
