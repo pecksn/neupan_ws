@@ -2,30 +2,43 @@
 
 ### 中文简介
 
-本项目面向校园、园区等室外道路场景，开发了一套基于 ROS1 的阿克曼无人车自主导航系统。系统以 **OSM 开源路网地图和 GNSS 目标点** 为基础，不依赖高精地图，结合 FAST-LIO 激光里程计与 GNSS 定位，实现室外环境下的全局定位与点到点路径规划。
+本项目面向校园、园区等室外道路场景，开发了一套基于 ROS1 的阿克曼无人车自主导航系统。系统以 OpenStreetMap（OSM）开源路网和 GNSS 目标点为基础，实现不依赖高精地图的室外点到点自主导航。通过集成 FAST-LIO 开源激光里程计算法与 GNSS 定位，构建全局与局部定位协同工作的导航框架。
 
-在规划层，采用 OSM 路网 A\* 实现全局路径搜索，并针对车辆起步接入、掉头及复杂返程衔接等场景，引入选择性 Hybrid A\* 搜索，提高路径的运动学可行性。通过相机道路信息与 LiDAR 路沿检测，对全局参考路径进行在线靠右修正。在局部规划层，集成 NeuPAN 实现轨迹优化与动态障碍物避让，最终结合阿克曼底盘控制、定位安全保护及运行状态监测，构建从环境感知、定位、路径规划到车辆执行的完整室外自主导航系统。
+在系统规划方面，基于 OSM 路网实现全局 A* 路径搜索，并结合车辆运动学约束，设计选择性 Hybrid A* 调用机制，仅在掉头、反向接入等特定场景触发路径搜索。针对室外道路实际行驶需求，开发相机道路参考与 LiDAR 路沿检测相结合的路径修正模块，实现全局参考路径的在线靠右修正。局部规划层集成开源 NeuPAN 规划器，实现动态障碍物避让，并结合阿克曼底盘控制、定位保护、控制仲裁与运行日志，完成室外自主导航系统的集成与实车适配。
 
-**主要技术特点：**
+### 项目主要工作
 
-- 无高精地图导航：基于 OSM 路网与 GNSS 目标点实现全局导航。
-- 多源定位与鲁棒性增强：FAST-LIO 与 GNSS 协同定位，GPS Guard 支持卫星信号退化时的本地里程计续推。
-- 选择性 Hybrid A\*：面向特定路径连接和掉头场景进行运动学约束搜索。
-- 多源道路参考修正：结合相机道路信息与 LiDAR 路沿检测，实现路径靠右修正。
-- NeuPAN 局部规划：面向阿克曼车辆实现局部轨迹优化与动态障碍物避让。
+- **无高精地图导航：** 基于 OSM 路网构建全局路径规划模块，实现 GPS 目标点驱动的室外导航。
+- **定位系统集成与增强：** 集成 FAST-LIO 与 GNSS，开发 GPS Guard 定位保护机制，实现 GPS 失锁后的 LIO 续推及定位恢复后的渐进式校正。
+- **选择性路径搜索：** 基于已有 Hybrid A* 搜索实现，设计特定场景触发机制，处理掉头、反向接入及复杂路径衔接。
+- **道路参考路径修正：** 开发相机道路参考与 LiDAR 路沿检测模块，实现 OSM 全局路径的在线靠右修正。
+- **局部规划与底盘适配：** 集成 NeuPAN 局部规划器，完成阿克曼底盘的速度、转角控制及动态障碍物避让。
+- **系统安全与验证：** 实现定位异常保护、控制仲裁、速度限幅、运行状态监测及数据记录。
+
+### 第三方开源项目
+
+本项目使用并集成以下开源算法及软件：
+
+- FAST-LIO：LiDAR-Inertial Odometry.
+- NeuPAN：Neural Perception-based Autonomous Navigation Planner.
+- Hybrid A*：基于已有开源搜索实现进行系统集成与场景适配。
+- ROS1 Noetic：机器人操作系统。
 
 ### English Description
 
-This project develops a ROS1-based outdoor autonomous navigation system for Ackermann-steered unmanned vehicles, targeting campus roads, industrial parks, and other structured outdoor environments. It adopts **OpenStreetMap (OSM) road networks and GNSS waypoints** for global navigation without relying on high-definition (HD) maps. FAST-LIO LiDAR odometry and GNSS positioning are integrated to provide localization and point-to-point navigation capabilities.
+This project develops a ROS1-based outdoor autonomous navigation system for Ackermann-steered unmanned vehicles, targeting campus roads, industrial parks, and other structured outdoor environments. Based on OpenStreetMap (OSM) road networks and GNSS waypoints, the system enables point-to-point outdoor navigation without relying on high-definition (HD) maps. Open-source FAST-LIO and GNSS positioning are integrated to establish a global-local localization framework.
 
-At the global planning level, A\* search on the OSM road network generates reference paths, while a selective Hybrid A\* planner is introduced for specific scenarios such as initial route connection, U-turns, and complex return-path transitions. Camera-based road information and LiDAR-based curb detection are used as optional enhancements to refine the reference path and maintain right-side driving. At the local planning level, NeuPAN performs trajectory optimization and dynamic obstacle avoidance. Combined with Ackermann vehicle control, localization safety mechanisms, and system diagnostics, the project establishes an integrated outdoor autonomous navigation framework from perception and localization to planning and vehicle execution.
+For path planning, an OSM-based A* module is implemented for global route generation. A selective Hybrid A* invocation mechanism is designed to handle specific scenarios, including U-turns, reverse-direction connections, and complex route transitions. To improve real-world road-following performance, camera-based road references and LiDAR-based curb detection are integrated into customized path refinement modules for online right-side path correction. The open-source NeuPAN planner is integrated for local trajectory optimization and dynamic obstacle avoidance. The complete system is further adapted to an Ackermann vehicle platform with localization safeguards, control arbitration, and runtime diagnostics.
 
-**Key Features:**
+### Key Engineering Contributions
 
-- **HD-Map-Free Navigation:** Global route planning using OSM road networks and GNSS waypoints.
-- **Robust Multi-Source Localization:** FAST-LIO and GNSS integration with GPS Guard for degraded GNSS conditions.
-- *Selective Hybrid A Planning:*\* Kinematically feasible path generation for specific route connection and U-turn scenarios.
-- **Multi-Modal Path Refinement:** Camera-based road perception and LiDAR curb detection for right-side path correction.
-- **NeuPAN-Based Local Planning:** Trajectory optimization and dynamic obstacle avoidance for Ackermann vehicles.
+- **HD-Map-Free Navigation:** OSM-based global route planning with GNSS waypoint navigation.
+- **Localization Integration and Robustness:** Integration of FAST-LIO and GNSS, with a customized GPS Guard mechanism for LIO-based continuity during GNSS degradation and gradual localization recovery.
+- **Selective Hybrid A* Invocation:** Scenario-based activation of an existing Hybrid A* implementation for U-turns and complex route connections.
+- **Road-Aware Path Refinement:** Customized camera-based road reference and LiDAR curb detection modules for online right-side path correction.
+- **NeuPAN Integration and Ackermann Adaptation:** Integration of the open-source NeuPAN planner with Ackermann vehicle control for dynamic obstacle avoidance.
+- **System-Level Safety and Validation:** Localization protection, control arbitration, speed limiting, runtime monitoring, and data logging.
 
-**Framework:** ROS1 Noetic | FAST-LIO | GNSS/RTK | OpenStreetMap | Hybrid A\* | NeuPAN | Ackermann Chassis
+### Third-Party Acknowledgements
+
+This project builds upon and integrates existing open-source technologies, including FAST-LIO, NeuPAN, Hybrid A*, and ROS1 Noetic. Original algorithms and implementations are credited to their respective authors.
